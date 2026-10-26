@@ -118,6 +118,8 @@ struct Controller {
     liked: HashSet<u64>,
     /// Attempts to restart the current track after a broken download.
     retries: u32,
+    /// What is being fetched from SoundCloud right now, for the page's spinner.
+    loading: Mutex<Option<String>>,
 }
 
 fn fmt_ms(ms: u64) -> String {
@@ -267,6 +269,7 @@ impl Controller {
                 "token": self.settings.masked_token(),
             },
             "user": self.user,
+            "loading": self.loading.lock().unwrap().clone(),
         })
         .to_string()
     }
@@ -438,6 +441,8 @@ impl Controller {
         reply: Option<Sender<String>>,
         load: impl FnOnce(&Client) -> sc::Res<Vec<Track>> + Send + 'static,
     ) {
+        *self.loading.lock().unwrap() = Some(what.clone());
+        self.share_status();
         let client = self.client.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -447,6 +452,7 @@ impl Controller {
     }
 
     fn on_loaded(&mut self, what: String, result: sc::Res<Vec<Track>>, reply: Option<Sender<String>>) {
+        *self.loading.lock().unwrap() = None;
         match result {
             Ok(mut tracks) if !tracks.is_empty() => {
                 if self.shuffle {
@@ -1163,6 +1169,7 @@ fn daemon() {
         net_checking: false,
         liked: HashSet::new(),
         retries: 0,
+        loading: Mutex::new(None),
         rng: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)

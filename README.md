@@ -309,7 +309,10 @@ soundya — неофициальный проект и никак не связ�
 </p>
 
 <p align="center">
-  <img src="docs/usdt-qr.png" alt="USDT TRC-20: TSEJPa8FefWd8u8mo4USu8muSJr7589gWg" width="280">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/usdt-qr-dark.png">
+    <img src="docs/usdt-qr-light.png" alt="USDT TRC-20: TSEJPa8FefWd8u8mo4USu8muSJr7589gWg" width="260">
+  </picture>
 </p>
 
 <p align="center"><b>USDT · TRC-20 (Tron)</b> — только эта сеть<br><code>TSEJPa8FefWd8u8mo4USu8muSJr7589gWg</code></p>
