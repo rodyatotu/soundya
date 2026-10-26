@@ -71,6 +71,10 @@ pub struct Shared {
     /// Orange ring on (setting) and music actually playing (not paused).
     pub ring: AtomicBool,
     pub playing: AtomicBool,
+    /// A SoundCloud request (search, likes, …) is running.
+    pub fetching: AtomicBool,
+    /// The current track's controls, so the ring can tell when sound is stuck loading.
+    pub track: Mutex<Option<Arc<Flags>>>,
     keyword_only: AtomicBool,
     active: AtomicBool,
     queue: AtomicBool,
@@ -217,6 +221,8 @@ impl Controller {
         self.shared.playing.store(playing, Ordering::Release);
         self.shared.active.store(active, Ordering::Release);
         self.shared.queue.store(!self.queue.is_empty(), Ordering::Release);
+        self.shared.fetching.store(self.loading.lock().unwrap().is_some(), Ordering::Release);
+        *self.shared.track.lock().unwrap() = self.flags.clone();
     }
 
     fn current(&self) -> Option<&Track> {
@@ -442,6 +448,7 @@ impl Controller {
         load: impl FnOnce(&Client) -> sc::Res<Vec<Track>> + Send + 'static,
     ) {
         *self.loading.lock().unwrap() = Some(what.clone());
+        self.publish();
         self.share_status();
         let client = self.client.clone();
         let tx = self.tx.clone();
@@ -453,6 +460,7 @@ impl Controller {
 
     fn on_loaded(&mut self, what: String, result: sc::Res<Vec<Track>>, reply: Option<Sender<String>>) {
         *self.loading.lock().unwrap() = None;
+        self.publish();
         match result {
             Ok(mut tracks) if !tracks.is_empty() => {
                 if self.shuffle {
@@ -1111,6 +1119,8 @@ fn daemon() {
         duck: Duck::new(),
         ring: AtomicBool::new(settings.ring),
         playing: AtomicBool::new(false),
+        fetching: AtomicBool::new(false),
+        track: Mutex::new(None),
         keyword_only: AtomicBool::new(settings.keyword_only),
         active: AtomicBool::new(false),
         queue: AtomicBool::new(false),

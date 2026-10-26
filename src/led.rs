@@ -1,4 +1,5 @@
-//! Orange ring while SoundCloud plays (Station Lite: three RGB zones in sysfs).
+//! Orange ring while SoundCloud plays, pulsing while something loads
+//! (Station Lite: three RGB zones in sysfs).
 //!
 //! Alice's own animations (listening, speaking, volume) write the same LEDs, so
 //! the ring is only set while Alice is idle and put back after her animations.
@@ -15,6 +16,27 @@ use crate::Shared;
 
 /// SoundCloud orange as it looks on the ring (the green LED is much brighter).
 const ORANGE: (u8, u8, u8) = (255, 50, 0);
+const TICK_MS: u64 = 50;
+/// Alice quiet for this long before the ring is ours again.
+const IDLE_MS: u64 = 1000;
+/// A playing track whose position has not moved for this long is loading.
+const STUCK_MS: u64 = 1500;
+/// One breath of the loading animation: fades out and back in.
+const BREATH_MS: f32 = 1600.0;
+/// Lowest brightness of a breath, as a share of full.
+const BREATH_MIN: f32 = 0.06;
+
+/// Orange at `level` (0..1) of full brightness.
+fn orange(level: f32) -> (u8, u8, u8) {
+    let l = level.clamp(0.0, 1.0);
+    ((ORANGE.0 as f32 * l).round() as u8, (ORANGE.1 as f32 * l).round() as u8, 0)
+}
+
+/// Smooth fade out and in, 1 → BREATH_MIN → 1 over BREATH_MS.
+fn breath(ms: u64) -> f32 {
+    let phase = (ms % BREATH_MS as u64) as f32 / BREATH_MS * std::f32::consts::TAU;
+    BREATH_MIN + (1.0 - BREATH_MIN) * (0.5 + 0.5 * phase.cos())
+}
 
 struct Zone {
     r: PathBuf,
@@ -70,26 +92,80 @@ pub fn run(shared: Arc<Shared>) {
         ring.set((0, 0, 0));
     }
     thread::spawn(move || {
-        let mut lit = false;
-        let mut idle_since = 0u32;
+        // The colour we last wrote; if the ring shows anything else, Alice has taken it.
+        let mut shown: Option<(u8, u8, u8)> = None;
+        let mut idle_ms = 0u64;
+        let mut clock = 0u64;
+        // Position of the current track and how long it has not moved.
+        let mut last_pos = u64::MAX;
+        let mut still_ms = 0u64;
         loop {
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_millis(TICK_MS));
+            clock += TICK_MS;
             let alice_busy = shared.duck.active();
-            idle_since = if alice_busy { 0 } else { idle_since.saturating_add(1) };
-            let want = shared.ring.load(Ordering::Acquire) && shared.playing.load(Ordering::Acquire);
-            if want {
-                // Give Alice's own animation a second to finish before taking the ring back.
-                if idle_since >= 2 && !ring.is(ORANGE) {
-                    ring.set(ORANGE);
+            idle_ms = if alice_busy { 0 } else { idle_ms.saturating_add(TICK_MS) };
+
+            let track = shared.track.lock().unwrap().clone();
+            let stuck = match &track {
+                Some(f) if !f.paused.load(Ordering::Acquire) => {
+                    let pos = f.position_ms.load(Ordering::Acquire);
+                    still_ms = if pos == last_pos { still_ms.saturating_add(TICK_MS) } else { 0 };
+                    last_pos = pos;
+                    still_ms >= STUCK_MS
                 }
-                lit = true;
-            } else if lit {
-                // Only switch off our own colour, never one of Alice's animations.
-                if !alice_busy && ring.is(ORANGE) {
-                    ring.set((0, 0, 0));
+                _ => {
+                    last_pos = u64::MAX;
+                    still_ms = 0;
+                    false
                 }
-                lit = false;
+            };
+            let loading = shared.fetching.load(Ordering::Acquire) || stuck;
+            let want = if !shared.ring.load(Ordering::Acquire) {
+                None
+            } else if loading {
+                // Breathing orange: the speaker is working on it.
+                Some(orange(breath(clock)))
+            } else if shared.playing.load(Ordering::Acquire) {
+                Some(ORANGE)
+            } else {
+                None
+            };
+            match want {
+                Some(colour) if idle_ms >= IDLE_MS => {
+                    if shown != Some(colour) || !ring.is(colour) {
+                        ring.set(colour);
+                    }
+                    shown = Some(colour);
+                }
+                // Alice is animating: leave the ring to her.
+                Some(_) => shown = None,
+                None => {
+                    // Only switch off our own colour, never one of Alice's animations.
+                    if let Some(c) = shown {
+                        if !alice_busy && ring.is(c) {
+                            ring.set((0, 0, 0));
+                        }
+                    }
+                    shown = None;
+                }
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn breath_fades_smoothly() {
+        assert_eq!(orange(breath(0)), ORANGE);
+        let low = orange(breath(BREATH_MS as u64 / 2));
+        assert!(low.0 <= 20 && low.0 > 0 && low.2 == 0, "{low:?}");
+        // No jumps between neighbouring frames.
+        for t in (0..3200).step_by(TICK_MS as usize) {
+            let (a, b) = (orange(breath(t)).0 as i32, orange(breath(t + TICK_MS)).0 as i32);
+            assert!((a - b).abs() <= 40, "{t}: {a} -> {b}");
+        }
+    }
 }

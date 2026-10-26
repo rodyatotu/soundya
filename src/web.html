@@ -650,6 +650,7 @@ try {
 } catch (e) {}
 
 // ---- status ----
+let stall = { pos: -1, id: null, since: 0 };
 async function refresh() {
   let s;
   try {
@@ -660,8 +661,14 @@ async function refresh() {
   }
   const names = { playing: 'играет', paused: 'пауза', stopped: 'остановлено' };
   // Something is in progress: say so, so it doesn't look frozen.
+  // A playing track whose time has not moved for 1.5 s is still loading.
+  const now = Date.now();
+  if (s.state !== 'playing' || s.position_ms !== stall.pos || s.current_id !== stall.id) {
+    stall = { pos: s.position_ms, id: s.current_id, since: now };
+  }
+  const stuck = s.state === 'playing' && (!s.position_ms || now - stall.since >= 1500);
   const busyText = s.loading ? 'загружаю: ' + s.loading + '…'
-    : s.state === 'playing' && !s.position_ms ? 'запускаю трек…' : '';
+    : stuck ? (s.position_ms ? 'подгружаю трек…' : 'запускаю трек…') : '';
   const st = $('state');
   st.classList.toggle('busy', !!busyText);
   if (busyText) {

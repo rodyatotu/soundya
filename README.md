@@ -315,7 +315,8 @@ soundya — неофициальный проект и никак не связ�
   </picture>
 </p>
 
-<p align="center"><b>USDT · TRC-20 (Tron)</b> — только эта сеть<br><code>TSEJPa8FefWd8u8mo4USu8muSJr7589gWg</code></p>
+<h3 align="center">USDT · TRC-20</h3>
+<p align="center"><code>TSEJPa8FefWd8u8mo4USu8muSJr7589gWg</code><br><sub>Только сеть Tron (TRC-20). Перевод в другой сети потеряется.</sub></p>
 
 ## Лицензия
 
