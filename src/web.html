@@ -48,6 +48,21 @@
   button:disabled { opacity: .5; cursor: default; }
   .controls button { flex: 1; font-size: 18px; padding: 8px 0; }
   .controls button.primary { flex: 1.4; }
+  button.icon { display: inline-flex; align-items: center; justify-content: center; }
+  button.icon svg { width: 22px; height: 22px; display: block; }
+  .controls.small button { padding: 9px 0; color: var(--muted); }
+  .controls.small button.icon svg { width: 19px; height: 19px; }
+  .controls.small button:hover:not(:disabled) { color: var(--ink); }
+  .controls.small button.on { color: var(--accent); border-color: var(--accent); }
+  button:disabled { opacity: .35; cursor: default; }
+  #likebtn.on { color: var(--accent); border-color: var(--accent); }
+  .picker { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .heart {
+    border: none; background: none; padding: 2px 6px; font-size: 16px; cursor: pointer;
+    color: var(--muted); flex-shrink: 0;
+  }
+  .heart.on { color: var(--accent); }
+  .heart:hover { color: var(--accent); }
   input[type=text], input[type=password] {
     width: 100%; font: inherit; color: var(--ink); background: var(--bg);
     border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; outline: none;
@@ -77,6 +92,52 @@
   ul.list li.now .t::before { content: "▶ "; color: var(--accent); }
   ul.queue { max-height: 340px; overflow: auto; }
   .empty { color: var(--muted); font-size: 14px; }
+  .donate-title { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .donate-main {
+    display: block; margin-top: 12px; padding: 12px 14px; border-radius: 12px; text-align: center;
+    background: var(--accent); color: var(--accent-ink); font-weight: 600; text-decoration: none;
+  }
+  .donate-main small { display: block; font-weight: 400; font-size: 12px; opacity: .85; }
+  .wallet { display: flex; gap: 14px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+  .wallet .qr { background: #fff; border-radius: 10px; padding: 6px; line-height: 0; flex-shrink: 0; }
+  .wallet .qr svg { width: 132px; height: 132px; }
+  .wallet .info { flex: 1; min-width: 180px; }
+  .wallet .info b { display: block; }
+  .wallet .info small { color: var(--muted); font-size: 12px; }
+  .wallet .copy { display: flex; gap: 6px; margin-top: 8px; }
+  .wallet input { flex: 1; min-width: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding: 8px; }
+  .wallet button { padding: 8px 10px; font-size: 13px; }
+  .donate-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .donate-links a {
+    display: inline-flex; flex-direction: column; text-decoration: none; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; min-width: 120px;
+  }
+  .donate-links a:hover { border-color: var(--accent); }
+  .donate-links a small { color: var(--muted); font-size: 12px; }
+  .crypto { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .crypto span { font-size: 13px; color: var(--muted); min-width: 92px; }
+  .crypto input { flex: 1; min-width: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding: 8px; }
+  .crypto button { padding: 8px 10px; font-size: 13px; }
+  .headright { display: flex; align-items: center; gap: 10px; }
+  .netpill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; font-size: 12px;
+    color: var(--muted); border-radius: 999px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.good { background: #2f9e5b; } .dot.slow { background: #e0a100; } .dot.bad { background: var(--err); }
+  h2.section { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .net { border: 1px solid var(--line); border-radius: 10px; padding: 4px 12px; }
+  .netrow { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; font-size: 14px; }
+  .netrow + .netrow { border-top: 1px solid var(--line); }
+  .netrow span { color: var(--muted); }
+  .netrow b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  .netrow b.good { color: #2f9e5b; } .netrow b.slow { color: #c48a00; } .netrow b.bad { color: var(--err); }
+  .notice { margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.45;
+    background: var(--bg); border: 1px solid var(--line); }
+  .notice button { margin-top: 8px; display: block; }
+  .notice.warn { border-color: #e0a100; }
+  h3.split { display: flex; justify-content: space-between; align-items: baseline; }
+  button.link { border: none; padding: 0; color: var(--accent); font-size: 13px; background: none; }
   .who { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .who b { font-size: 16px; }
 </style>
@@ -85,7 +146,12 @@
 <main>
   <header>
     <h1>sound<span>ya</span></h1>
-    <div class="state" id="state">…</div>
+    <div class="headright">
+      <button class="netpill" id="netpill" onclick="openTab('settings')" title="Соединение с SoundCloud">
+        <i class="dot" id="netdot"></i><span id="nettext">сеть…</span>
+      </button>
+      <div class="state" id="state">…</div>
+    </div>
   </header>
 
   <section>
@@ -93,11 +159,24 @@
     <div class="bar"><i id="progress"></i></div>
     <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
     <div class="controls">
-      <button onclick="cmd('prev')" title="Назад">⏮</button>
-      <button class="primary" id="toggle" onclick="cmd('toggle')" title="Пауза / продолжить">⏯</button>
-      <button onclick="cmd('next')" title="Следующий">⏭</button>
-      <button onclick="cmd('stop')" title="Стоп">⏹</button>
+      <button class="icon" onclick="cmd('prev')" title="Назад" aria-label="Назад"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 5h2.4v14H6zM19 5.6v12.8a.6.6 0 0 1-.92.5L9.2 12.5a.6.6 0 0 1 0-1L18.08 5.1a.6.6 0 0 1 .92.5z"/></svg></button>
+      <button class="primary icon" id="toggle" onclick="cmd('toggle')" title="Пауза / продолжить" aria-label="Пауза или продолжить"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.6v12.8a.6.6 0 0 0 .92.5l9.6-6.4a.6.6 0 0 0 0-1L8.92 5.1A.6.6 0 0 0 8 5.6z"/></svg></button>
+      <button class="icon" onclick="cmd('next')" title="Следующий" aria-label="Следующий"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.6 5H18v14h-2.4zM5 5.6v12.8a.6.6 0 0 0 .92.5l8.88-6.4a.6.6 0 0 0 0-1L5.92 5.1A.6.6 0 0 0 5 5.6z"/></svg></button>
+      <button class="icon" onclick="cmd('stop')" title="Стоп" aria-label="Стоп"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 6h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z"/></svg></button>
     </div>
+    <div class="controls small">
+      <button class="icon" id="shufflebtn" onclick="cmd('shuffle ' + (state.shuffle ? 'off' : 'on'))" title="Перемешать" aria-label="Перемешать"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h4v4"/><path d="M4 20 20 4"/><path d="M20 16v4h-4"/><path d="M14.5 14.5 20 20"/><path d="M4 4l5 5"/></svg></button>
+      <button class="icon" id="repeatbtn" onclick="cmd('repeat ' + (state.repeat ? 'off' : 'on'))" title="Повтор трека" aria-label="Повтор трека"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg></button>
+      <button id="likebtn" onclick="likeCurrent()" title="Лайк" style="display:none">♡</button>
+      <button id="plbtn" onclick="togglePicker()" title="Добавить в плейлист" style="display:none">＋ В плейлист</button>
+      <button class="icon" onclick="act('similar')" title="Включить похожие треки" aria-label="Похожие треки"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4"/><path d="M7.8 16.2a6 6 0 0 1 0-8.4"/><path d="M19 5a10 10 0 0 1 0 14"/><path d="M5 19A10 10 0 0 1 5 5"/></svg></button>
+      <button class="icon" id="openbtn" onclick="openCurrent()" title="Открыть трек на SoundCloud: лайк, плейлисты, репост" aria-label="Открыть на SoundCloud"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg></button>
+    </div>
+    <div id="picker" class="picker" style="display:none">
+      <div class="hint">В какой плейлист добавить текущий трек?</div>
+      <ul class="list" id="pickerlist"></ul>
+    </div>
+    <div class="msg" id="actmsg"></div>
   </section>
 
   <nav>
@@ -117,8 +196,43 @@
   </section>
 
   <section class="tab" id="tab-mine">
+    <div class="row">
+      <button class="primary" onclick="recs()">✨ Рекомендации</button>
+      <button id="likesbtn" onclick="likes()">♥ Мои лайки</button>
+    </div>
+    <div class="msg" id="minemsg"></div>
+    <div id="mineloggedout" class="notice" style="display:none">
+      Чтобы здесь появились ваши лайки и плейлисты, войдите в SoundCloud.
+      <button onclick="openTab('settings')">Открыть настройки</button>
+    </div>
+    <div id="mineloggedin" style="display:none">
+      <h3 class="split">Плейлисты <button class="link" onclick="library()">обновить</button></h3>
+      <ul class="list" id="mylists"></ul>
+      <div class="empty" id="mylistsempty">Загружаю…</div>
+    </div>
+    <p class="hint">Голосом: «Алиса, включи рекомендации», «включи мои лайки», «включи мой плейлист …».</p>
+  </section>
+
+  <section class="tab" id="tab-queue">
+    <ul class="list queue" id="queue"></ul>
+    <div class="empty" id="qempty">Пусто</div>
+  </section>
+
+  <section class="tab" id="tab-settings">
+    <h2>Соединение с SoundCloud</h2>
+    <div class="net" id="netbox">
+      <div class="netrow"><span>Состояние</span><b id="netverdict">проверяю…</b></div>
+      <div class="netrow"><span>Пинг через прокси</span><b id="netping">—</b></div>
+      <div class="netrow"><span>Скорость загрузки</span><b id="netspeed">—</b></div>
+      <div class="netrow"><span>Запас трека в памяти</span><b id="netbuffer">—</b></div>
+    </div>
+    <div class="notice warn" id="netwarn" style="display:none"></div>
+    <div class="row">
+      <button onclick="netCheck()" id="netbtn">Проверить сейчас</button>
+    </div>
+
+    <h2 class="section">Аккаунт SoundCloud</h2>
     <div id="loggedout">
-      <h2>Вход в SoundCloud</h2>
       <p class="hint">SoundCloud не даёт сторонним приложениям вход по паролю, поэтому используется токен из браузера:</p>
       <div class="hint"><ol>
         <li>Откройте <b>soundcloud.com</b> на компьютере и войдите в аккаунт.</li>
@@ -132,33 +246,16 @@
       <div class="row">
         <button class="primary" onclick="login()">Войти</button>
       </div>
-      <div class="msg" id="loginmsg"></div>
     </div>
-
     <div id="loggedin" style="display:none">
       <div class="who">
-        <div><span class="hint">Аккаунт</span><br><b id="username"></b></div>
+        <div><span class="hint">Вы вошли как</span><br><b id="username"></b></div>
         <button onclick="logout()">Выйти</button>
       </div>
-      <div class="row">
-        <button class="primary" onclick="likes()">♥ Мои лайки</button>
-        <button onclick="library()">Обновить плейлисты</button>
-      </div>
-      <div class="msg" id="minemsg"></div>
-      <h3>Плейлисты</h3>
-      <ul class="list" id="mylists"></ul>
-      <div class="empty" id="mylistsempty">Нажмите «Обновить плейлисты»</div>
-      <p class="hint">Голосом: «Алиса, включи мои лайки», «Алиса, включи мой плейлист …».</p>
     </div>
-  </section>
+    <div class="msg" id="loginmsg"></div>
 
-  <section class="tab" id="tab-queue">
-    <ul class="list queue" id="queue"></ul>
-    <div class="empty" id="qempty">Пусто</div>
-  </section>
-
-  <section class="tab" id="tab-settings">
-    <h2>Прокси</h2>
+    <h2 class="section">Прокси</h2>
     <input type="text" id="proxy" placeholder="socks5://user:pass@host:1080" autocomplete="off" spellcheck="false">
     <p class="hint">
       <code>http://host:port</code>, <code>socks5://host:port</code> или
@@ -169,19 +266,244 @@
       <span>Только по слову «саундклауд»<br>
         <span class="hint">«Алиса, включи Bonobo в саундклауде». Остальная музыка остаётся Алисе.</span></span>
     </label>
+    <label class="check">
+      <input type="checkbox" id="ring">
+      <span>Оранжевая подсветка, пока играет SoundCloud<br>
+        <span class="hint">Гаснет на паузе. Анимации Алисы не перебивает.</span></span>
+    </label>
     <div class="row">
       <button onclick="testProxy()" id="testbtn">Проверить прокси</button>
       <button class="primary" onclick="saveSettings()">Сохранить</button>
     </div>
     <div class="msg" id="setmsg"></div>
+
+    <div id="donate" style="display:none">
+      <h2 class="donate-title">Поддержать проект</h2>
+      <p class="hint">Если soundya вам пригодился — можно сказать спасибо:</p>
+      <a id="dabtn" class="donate-main" target="_blank" rel="noopener" style="display:none">
+        Задонатить через DonationAlerts
+        <small>банковской картой и другими способами DonationAlerts</small>
+      </a>
+      <div id="donatecrypto"></div>
+    </div>
   </section>
+
+
 </main>
 
 <script>
+// ---- Донаты: впишите свою ссылку и адреса. Пустые поля на странице не показываются. ----
+const DONATE = {
+  // Страница доната DonationAlerts: https://www.donationalerts.com/r/ВАШ_НИК
+  donationalerts: 'https://www.donationalerts.com/r/rodyatotu',
+  // Криптокошельки: сеть обязательно — перевод в другой сети пропадёт.
+  crypto: [
+    { name: 'USDT', network: 'TRC-20 (Tron)', address: 'TSEJPa8FefWd8u8mo4USu8muSJr7589gWg' },
+    { name: 'USDT', network: 'TON',           address: '' },
+    { name: 'TON',  network: 'TON',           address: '' },
+    { name: 'BTC',  network: 'Bitcoin',       address: '' },
+  ],
+};
+
+// ---- QR code (byte mode, error correction M, versions 1–10), rendered as SVG ----
+// Follows the QR specification (ISO/IEC 18004) as laid out in Project Nayuki's reference.
+const QR = (() => {
+  // [ec codewords per block, [blocks, data codewords]...] for level M, versions 1..10
+  const BLOCKS = [null,
+    [10, [1, 16]], [16, [1, 28]], [26, [1, 44]], [18, [2, 32]], [24, [2, 43]],
+    [16, [4, 27]], [18, [4, 31]], [22, [2, 38], [2, 39]], [22, [3, 36], [2, 37]], [26, [4, 43], [1, 44]]];
+  const ALIGN = [null, [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34],
+    [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
+
+  const mul = (x, y) => {
+    let z = 0;
+    for (let i = 7; i >= 0; i--) {
+      z = ((z << 1) ^ ((z >>> 7) * 0x11d)) & 0xff;
+      z ^= ((y >>> i) & 1) * x;
+    }
+    return z;
+  };
+  const divisor = degree => {
+    const r = new Array(degree - 1).fill(0).concat([1]);
+    let root = 1;
+    for (let i = 0; i < degree; i++) {
+      for (let j = 0; j < r.length; j++) {
+        r[j] = mul(r[j], root);
+        if (j + 1 < r.length) r[j] ^= r[j + 1];
+      }
+      root = mul(root, 2);
+    }
+    return r;
+  };
+  const remainder = (data, div) => {
+    const r = div.map(() => 0);
+    for (const b of data) {
+      const f = b ^ r.shift();
+      r.push(0);
+      div.forEach((c, i) => { r[i] ^= mul(c, f); });
+    }
+    return r;
+  };
+  const dataCapacity = v => BLOCKS[v].slice(1).reduce((s, [n, k]) => s + n * k, 0);
+
+  function encode(text) {
+    const bytes = Array.from(new TextEncoder().encode(text));
+    let v = 1;
+    while (v <= 10 && 4 + (v < 10 ? 8 : 16) + bytes.length * 8 > dataCapacity(v) * 8) v++;
+    if (v > 10) throw new Error('text too long for QR');
+    const cap = dataCapacity(v);
+    // Bit stream: mode, length, data, terminator, padding.
+    const bits = [];
+    const put = (val, len) => { for (let i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1); };
+    put(4, 4);
+    put(bytes.length, v < 10 ? 8 : 16);
+    bytes.forEach(b => put(b, 8));
+    put(0, Math.min(4, cap * 8 - bits.length));
+    while (bits.length % 8) bits.push(0);
+    const data = [];
+    for (let i = 0; i < bits.length; i += 8) data.push(parseInt(bits.slice(i, i + 8).join(''), 2));
+    for (let pad = 0xec; data.length < cap; pad ^= 0xec ^ 0x11) data.push(pad);
+    // Split into blocks, add error correction, interleave.
+    const [ecLen, ...groups] = BLOCKS[v];
+    const div = divisor(ecLen);
+    const blocks = [];
+    let off = 0;
+    for (const [n, k] of groups) for (let i = 0; i < n; i++) {
+      const d = data.slice(off, off + k);
+      off += k;
+      blocks.push({ d, e: remainder(d, div) });
+    }
+    const out = [];
+    const maxD = Math.max(...blocks.map(b => b.d.length));
+    for (let i = 0; i < maxD; i++) blocks.forEach(b => { if (i < b.d.length) out.push(b.d[i]); });
+    for (let i = 0; i < ecLen; i++) blocks.forEach(b => out.push(b.e[i]));
+    return { v, codewords: out };
+  }
+
+  function matrix(text) {
+    const { v, codewords } = encode(text);
+    const size = v * 4 + 17;
+    const m = Array.from({ length: size }, () => new Array(size).fill(false));
+    const fn = Array.from({ length: size }, () => new Array(size).fill(false));
+    const set = (x, y, dark) => { m[y][x] = dark; fn[y][x] = true; };
+
+    // Timing patterns.
+    for (let i = 0; i < size; i++) { set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+    // Finder patterns with separators.
+    const finder = (cx, cy) => {
+      for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+        const x = cx + dx, y = cy + dy;
+        if (x < 0 || y < 0 || x >= size || y >= size) continue;
+        const d = Math.max(Math.abs(dx), Math.abs(dy));
+        set(x, y, d !== 2 && d !== 4);
+      }
+    };
+    finder(3, 3); finder(size - 4, 3); finder(3, size - 4);
+    // Alignment patterns (not over the finders).
+    const al = ALIGN[v];
+    al.forEach((cy, i) => al.forEach((cx, j) => {
+      if ((i === 0 && j === 0) || (i === 0 && j === al.length - 1) || (i === al.length - 1 && j === 0)) return;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++)
+        set(cx + dx, cy + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    }));
+    // Format bits (level M = 0); written again once the mask is chosen.
+    const drawFormat = mask => {
+      const d = (0 << 3) | mask;
+      let r = d;
+      for (let i = 0; i < 10; i++) r = (r << 1) ^ ((r >>> 9) * 0x537);
+      const bits = ((d << 10) | r) ^ 0x5412;
+      const bit = i => ((bits >>> i) & 1) !== 0;
+      for (let i = 0; i <= 5; i++) set(8, i, bit(i));
+      set(8, 7, bit(6)); set(8, 8, bit(7)); set(7, 8, bit(8));
+      for (let i = 9; i < 15; i++) set(14 - i, 8, bit(i));
+      for (let i = 0; i < 8; i++) set(size - 1 - i, 8, bit(i));
+      for (let i = 8; i < 15; i++) set(8, size - 15 + i, bit(i));
+      set(8, size - 8, true);
+    };
+    drawFormat(0);
+    // Version bits (version 7 and up).
+    if (v >= 7) {
+      let r = v;
+      for (let i = 0; i < 12; i++) r = (r << 1) ^ ((r >>> 11) * 0x1f25);
+      const bits = (v << 12) | r;
+      for (let i = 0; i < 18; i++) {
+        const dark = ((bits >>> i) & 1) !== 0;
+        const a = size - 11 + (i % 3), b = Math.floor(i / 3);
+        set(a, b, dark); set(b, a, dark);
+      }
+    }
+    // Data, in the zigzag order.
+    let i = 0;
+    for (let right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (let vert = 0; vert < size; vert++) for (let j = 0; j < 2; j++) {
+        const x = right - j;
+        const up = ((right + 1) & 2) === 0;
+        const y = up ? size - 1 - vert : vert;
+        if (!fn[y][x] && i < codewords.length * 8) {
+          m[y][x] = ((codewords[i >>> 3] >>> (7 - (i & 7))) & 1) !== 0;
+          i++;
+        }
+      }
+    }
+    // Pick the mask with the lowest penalty.
+    const MASKS = [
+      (x, y) => (x + y) % 2 === 0, (x, y) => y % 2 === 0, (x, y) => x % 3 === 0, (x, y) => (x + y) % 3 === 0,
+      (x, y) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0, (x, y) => (x * y) % 2 + (x * y) % 3 === 0,
+      (x, y) => ((x * y) % 2 + (x * y) % 3) % 2 === 0, (x, y) => ((x + y) % 2 + (x * y) % 3) % 2 === 0];
+    const apply = k => {
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++)
+        if (!fn[y][x] && MASKS[k](x, y)) m[y][x] = !m[y][x];
+    };
+    const penalty = () => {
+      let p = 0, dark = 0;
+      for (let a = 0; a < size; a++) {
+        let rr = 1, rc = 1;
+        for (let b = 1; b < size; b++) {
+          if (m[a][b] === m[a][b - 1]) { rr++; if (rr === 5) p += 3; else if (rr > 5) p++; } else rr = 1;
+          if (m[b][a] === m[b - 1][a]) { rc++; if (rc === 5) p += 3; else if (rc > 5) p++; } else rc = 1;
+        }
+      }
+      for (let y = 0; y < size - 1; y++) for (let x = 0; x < size - 1; x++) {
+        const c = m[y][x];
+        if (c === m[y][x + 1] && c === m[y + 1][x] && c === m[y + 1][x + 1]) p += 3;
+      }
+      m.forEach(row => row.forEach(c => { if (c) dark++; }));
+      p += Math.floor(Math.abs(dark * 20 - size * size * 10) / (size * size)) * 10;
+      return p;
+    };
+    let best = 0, bestP = Infinity;
+    for (let k = 0; k < 8; k++) {
+      apply(k); drawFormat(k);
+      const p = penalty();
+      if (p < bestP) { bestP = p; best = k; }
+      apply(k);
+    }
+    apply(best); drawFormat(best);
+    return m;
+  }
+
+  function svg(text, px = 4) {
+    const m = matrix(text), n = m.length, q = 4, s = n + q * 2;
+    let path = '';
+    m.forEach((row, y) => row.forEach((c, x) => { if (c) path += `M${x + q} ${y + q}h1v1h-1z`; }));
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${s} ${s}" width="${s * px}" height="${s * px}" shape-rendering="crispEdges">` +
+      `<rect width="${s}" height="${s}" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+  }
+
+  return { matrix, svg };
+})();
+
 const $ = id => document.getElementById(id);
 let settings = { proxy: '', keyword_only: false, token: '' };
 let settingsLoaded = false;
 let queueSig = '';
+const ICON_PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.6v12.8a.6.6 0 0 0 .92.5l9.6-6.4a.6.6 0 0 0 0-1L8.92 5.1A.6.6 0 0 0 8 5.6z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 5h3.4v14H7zM13.6 5H17v14h-3.4z"/></svg>';
+let state = { shuffle: false, repeat: false, current_id: null, current_liked: false, current_url: null };
+// Likes and playlist edits are off in the player (SoundCloud's captcha); see WRITES in main.rs.
+let writes = false;
+let myPlaylists = null;
 
 function mmss(ms) {
   const s = Math.floor(ms / 1000);
@@ -210,7 +532,28 @@ async function postJSON(body) {
   try { return JSON.parse(t); } catch (e) { return { error: t.replace(/^error:\s*/i, '') }; }
 }
 
-function item(title, sub, right, onclick, cls) {
+function heart(id, liked, onDone) {
+  const b = document.createElement('button');
+  b.className = 'heart' + (liked ? ' on' : '');
+  b.textContent = liked ? '♥' : '♡';
+  b.title = liked ? 'Убрать из лайков' : 'В лайки';
+  b.onclick = async e => {
+    e.stopPropagation();
+    const on = !b.classList.contains('on');
+    b.classList.toggle('on', on);
+    b.textContent = on ? '♥' : '♡';
+    const r = await post('/api/cmd', (on ? 'like ' : 'unlike ') + id);
+    if (/^error/i.test(r)) {
+      b.classList.toggle('on', !on);
+      b.textContent = !on ? '♥' : '♡';
+      show($('actmsg'), r);
+    }
+    if (onDone) onDone();
+  };
+  return b;
+}
+
+function item(title, sub, right, onclick, cls, extra) {
   const li = document.createElement('li');
   if (cls) li.className = cls;
   const t = document.createElement('div');
@@ -225,6 +568,7 @@ function item(title, sub, right, onclick, cls) {
   d.className = 'd';
   d.textContent = right || '';
   li.append(t, d);
+  if (extra) li.appendChild(extra);
   li.onclick = onclick;
   return li;
 }
@@ -240,6 +584,41 @@ function playlistItems(ul, lists, msgEl) {
   });
 }
 
+function openTab(name) {
+  const b = document.querySelector('nav button[data-tab="' + name + '"]');
+  if (b) b.click();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+const fmtSpeed = kbps => kbps >= 1000 ? (kbps / 1000).toFixed(1) + ' Мбит/с' : kbps + ' кбит/с';
+
+function renderNet(n) {
+  if (!n) return;
+  const level = n.level || 'unknown';
+  const labels = { good: 'хорошее', slow: 'медленное', bad: 'плохое', down: 'нет связи', unknown: 'проверяю…' };
+  const short = { good: 'сеть ок', slow: 'сеть медленная', bad: 'сеть плохая', down: 'нет связи', unknown: 'сеть…' };
+  const cls = { good: 'good', slow: 'slow', bad: 'bad', down: 'bad' }[level] || '';
+  $('netdot').className = 'dot ' + cls;
+  $('nettext').textContent = short[level];
+  $('netverdict').textContent = labels[level];
+  $('netverdict').className = cls;
+  $('netping').textContent = n.ping_ms != null ? n.ping_ms + ' мс' : (n.error ? 'ошибка' : '—');
+  $('netping').className = n.ping_ms == null ? '' : n.ping_ms <= 500 ? 'good' : n.ping_ms <= 1200 ? 'slow' : 'bad';
+  $('netspeed').textContent = n.speed_kbps ? fmtSpeed(n.speed_kbps) : 'появится во время игры';
+  $('netspeed').className = !n.speed_kbps ? '' : n.speed_kbps >= 600 ? 'good' : n.speed_kbps >= 200 ? 'slow' : 'bad';
+  $('netbuffer').textContent = n.buffer_s != null ? '≈ ' + n.buffer_s + ' с' : '—';
+  const warn = $('netwarn');
+  if (n.warning) { warn.textContent = n.warning; warn.style.display = 'block'; } else warn.style.display = 'none';
+}
+
+async function netCheck() {
+  $('netbtn').disabled = true;
+  $('netverdict').textContent = 'проверяю…'; $('netverdict').className = '';
+  await post('/api/cmd', 'netcheck');
+  await refresh();
+  $('netbtn').disabled = false;
+}
+
 // ---- tabs ----
 document.querySelectorAll('nav button').forEach(b => {
   b.onclick = () => {
@@ -247,6 +626,7 @@ document.querySelectorAll('nav button').forEach(b => {
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.id === 'tab-' + b.dataset.tab));
     try { localStorage.setItem('tab', b.dataset.tab); } catch (e) {}
     if (b.dataset.tab === 'mine' && settings.token && !$('mylists').children.length) library();
+    if (b.dataset.tab === 'settings') post('/api/cmd', 'netcheck').then(refresh);
   };
 });
 try {
@@ -270,16 +650,30 @@ async function refresh() {
   $('pos').textContent = mmss(s.position_ms);
   $('dur').textContent = mmss(s.duration_ms);
   $('progress').style.width = s.duration_ms ? Math.min(100, 100 * s.position_ms / s.duration_ms) + '%' : '0';
-  $('toggle').textContent = s.state === 'playing' ? '⏸' : '▶';
+  const want = s.state === 'playing' ? 'pause' : 'play';
+  if ($('toggle').dataset.icon !== want) {
+    $('toggle').dataset.icon = want;
+    $('toggle').innerHTML = want === 'pause' ? ICON_PAUSE : ICON_PLAY;
+  }
+  state = { shuffle: !!s.shuffle, repeat: !!s.repeat, current_id: s.current_id, current_liked: !!s.current_liked, current_url: s.current_url };
+  writes = !!s.writes;
+  $('likebtn').style.display = writes ? '' : 'none';
+  $('plbtn').style.display = writes ? '' : 'none';
+  $('openbtn').disabled = !state.current_url;
+  $('shufflebtn').classList.toggle('on', state.shuffle);
+  $('repeatbtn').classList.toggle('on', state.repeat);
+  $('likebtn').classList.toggle('on', state.current_liked);
+  $('likebtn').textContent = state.current_liked ? '♥' : '♡';
 
-  const sig = s.pos + '|' + s.state + '|' + s.queue.length + '|' + (s.queue[0] || '');
+  const sig = s.pos + '|' + s.state + '|' + s.queue.length + '|' + (s.queue[0] || '') + '|' + (s.queue_liked || []).join('');
   if (sig !== queueSig) {
     queueSig = sig;
     const q = $('queue');
     q.innerHTML = '';
     s.queue.forEach((name, i) => {
+      const h = writes && settings.token && s.queue_ids ? heart(s.queue_ids[i], s.queue_liked[i], refresh) : null;
       q.appendChild(item(name, '', String(i + 1), async () => { await post('/api/cmd', 'goto ' + i); refresh(); },
-        i === s.pos && s.state !== 'stopped' ? 'now' : ''));
+        i === s.pos && s.state !== 'stopped' ? 'now' : '', h));
     });
     $('qempty').style.display = s.queue.length ? 'none' : 'block';
   }
@@ -288,16 +682,67 @@ async function refresh() {
   const logged = !!settings.token;
   $('loggedout').style.display = logged ? 'none' : 'block';
   $('loggedin').style.display = logged ? 'block' : 'none';
+  $('mineloggedout').style.display = logged ? 'none' : 'block';
+  $('mineloggedin').style.display = logged ? 'block' : 'none';
+  $('likesbtn').style.display = logged ? '' : 'none';
   $('username').textContent = s.user || (logged ? 'токен сохранён, вход не подтверждён' : '');
+  renderNet(s.net);
   if (!settingsLoaded) {
     $('proxy').value = settings.proxy;
     $('keyword').checked = settings.keyword_only;
+    $('ring').checked = settings.ring !== false;
     settingsLoaded = true;
   }
 }
 
 async function cmd(c) {
   await post('/api/cmd', c);
+  refresh();
+}
+
+function openCurrent() {
+  if (state.current_url) window.open(state.current_url, '_blank', 'noopener');
+}
+
+async function likeCurrent() {
+  if (!state.current_id) { show($('actmsg'), 'error: сейчас ничего не играет'); return; }
+  if (!settings.token) { show($('actmsg'), 'error: войдите в SoundCloud во вкладке «Моя музыка»'); return; }
+  busy($('actmsg'), '…');
+  show($('actmsg'), await post('/api/cmd', (state.current_liked ? 'unlike ' : 'like ') + state.current_id));
+  refresh();
+}
+
+async function togglePicker() {
+  const box = $('picker');
+  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+  if (!state.current_id) { show($('actmsg'), 'error: сейчас ничего не играет'); return; }
+  if (!settings.token) { show($('actmsg'), 'error: войдите в SoundCloud во вкладке «Моя музыка»'); return; }
+  box.style.display = 'block';
+  const ul = $('pickerlist');
+  if (!myPlaylists) {
+    ul.innerHTML = '';
+    busy($('actmsg'), 'Загружаю ваши плейлисты…');
+    const r = await postJSON('myplaylists');
+    if (r.error) { show($('actmsg'), r.error, true); box.style.display = 'none'; return; }
+    myPlaylists = r.playlists;
+    $('actmsg').textContent = '';
+  }
+  ul.innerHTML = '';
+  if (!myPlaylists.length) {
+    const li = document.createElement('li'); li.textContent = 'У вас нет своих плейлистов'; ul.appendChild(li);
+  }
+  myPlaylists.forEach(p => ul.appendChild(item(p.title || '(без названия)', '', p.count ? p.count + ' тр.' : '', async () => {
+    busy($('actmsg'), 'Добавляю в «' + p.title + '»…');
+    const id = state.current_id;
+    show($('actmsg'), await post('/api/cmd', 'addpl ' + p.id + ' ' + id));
+    box.style.display = 'none';
+    myPlaylists = null; // track counts changed
+  })));
+}
+
+async function act(c) {
+  busy($('actmsg'), '…');
+  show($('actmsg'), await post('/api/cmd', c));
   refresh();
 }
 
@@ -325,7 +770,7 @@ async function search() {
       busy($('searchmsg'), 'Включаю…');
       show($('searchmsg'), await post('/api/cmd', 'pick ' + i));
       refresh();
-    })));
+    }, '', writes && settings.token ? heart(t.id, t.liked, refresh) : null)));
     box.append(h, ul);
   }
   if (r.playlists.length) {
@@ -340,7 +785,7 @@ $('query').addEventListener('keydown', e => { if (e.key === 'Enter') search(); }
 // ---- account ----
 function settingsBody(extra) {
   return JSON.stringify(Object.assign({
-    proxy: $('proxy').value, keyword_only: $('keyword').checked, token: settings.token
+    proxy: $('proxy').value, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token
   }, extra));
 }
 
@@ -355,7 +800,7 @@ async function login() {
 }
 
 async function logout() {
-  show($('minemsg'), await post('/api/settings', settingsBody({ token: '' })));
+  show($('loginmsg'), await post('/api/settings', settingsBody({ token: '' })));
   $('mylists').innerHTML = '';
   $('mylistsempty').style.display = 'block';
   refresh();
@@ -364,6 +809,12 @@ async function logout() {
 async function likes() {
   busy($('minemsg'), 'Загружаю лайки…');
   show($('minemsg'), await post('/api/cmd', 'likes'));
+  refresh();
+}
+
+async function recs() {
+  busy($('minemsg'), 'Подбираю…');
+  show($('minemsg'), await post('/api/cmd', 'recs'));
   refresh();
 }
 
@@ -390,6 +841,44 @@ async function saveSettings() {
   settingsLoaded = false;
   refresh();
 }
+
+// ---- donate ----
+function copyField(input, btn) {
+  input.focus(); input.select();
+  // The page is plain http on the local network, where the clipboard API is often unavailable.
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  if (!ok && navigator.clipboard) navigator.clipboard.writeText(input.value).then(() => {}, () => {});
+  btn.textContent = 'Скопировано';
+  setTimeout(() => { btn.textContent = 'Копировать'; }, 1500);
+}
+
+function renderDonate() {
+  const da = (DONATE.donationalerts || '').trim();
+  const wallets = DONATE.crypto.filter(c => (c.address || '').trim());
+  const daOk = /^https:\/\/(www\.)?donationalerts\.com\//.test(da);
+  if (!daOk && !wallets.length) return;
+  $('donate').style.display = 'block';
+  if (daOk) { $('dabtn').href = da; $('dabtn').style.display = 'block'; }
+  wallets.forEach(c => {
+    const address = c.address.trim();
+    const box = document.createElement('div'); box.className = 'wallet';
+    const qr = document.createElement('div'); qr.className = 'qr';
+    try { qr.innerHTML = QR.svg(address); } catch (e) { qr.style.display = 'none'; }
+    const info = document.createElement('div'); info.className = 'info';
+    const title = document.createElement('b'); title.textContent = c.name;
+    const net = document.createElement('small'); net.textContent = 'Сеть: ' + c.network + ' — только эта сеть';
+    const row = document.createElement('div'); row.className = 'copy';
+    const input = document.createElement('input'); input.type = 'text'; input.readOnly = true; input.value = address;
+    const btn = document.createElement('button'); btn.textContent = 'Копировать';
+    btn.onclick = () => copyField(input, btn);
+    row.append(input, btn);
+    info.append(title, net, row);
+    box.append(qr, info);
+    $('donatecrypto').appendChild(box);
+  });
+}
+renderDonate();
 
 refresh();
 setInterval(refresh, 2000);

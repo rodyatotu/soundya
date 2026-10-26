@@ -8,11 +8,13 @@ use std::{
     time::Duration,
 };
 
-use crate::{settings::Settings, Cmd};
+use std::sync::Arc;
+
+use crate::{settings::Settings, Cmd, Shared};
 
 const PAGE: &str = include_str!("web.html");
 
-pub fn serve(port: u16, tx: Sender<Cmd>) {
+pub fn serve(port: u16, tx: Sender<Cmd>, shared: Arc<Shared>) {
     let listener = match TcpListener::bind(("0.0.0.0", port)) {
         Ok(l) => l,
         Err(e) => {
@@ -24,8 +26,9 @@ pub fn serve(port: u16, tx: Sender<Cmd>) {
     thread::spawn(move || {
         for conn in listener.incoming().flatten() {
             let tx = tx.clone();
+            let shared = shared.clone();
             thread::spawn(move || {
-                let _ = handle(conn, &tx);
+                let _ = handle(conn, &tx, &shared);
             });
         }
     });
@@ -40,7 +43,7 @@ fn ask(tx: &Sender<Cmd>, make: impl FnOnce(Sender<String>) -> Cmd, wait: u64) ->
         .unwrap_or_else(|_| "error: timeout".into())
 }
 
-fn handle(conn: TcpStream, tx: &Sender<Cmd>) -> std::io::Result<()> {
+fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result<()> {
     conn.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut reader = BufReader::new(&conn);
     let mut request = String::new();
@@ -66,11 +69,15 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>) -> std::io::Result<()> {
 
     let (status, kind, reply) = match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", PAGE.to_owned()),
-        ("GET", "/api/status") => (
-            "200 OK",
-            "application/json",
-            ask(tx, |r| Cmd::Control("json".into(), r), 30),
-        ),
+        ("GET", "/api/status") => {
+            let cached = shared.status_json.lock().unwrap().clone();
+            let json = if cached.is_empty() {
+                ask(tx, |r| Cmd::Control("json".into(), r), 30)
+            } else {
+                cached
+            };
+            ("200 OK", "application/json", json)
+        }
         ("POST", "/api/cmd") => (
             "200 OK",
             "text/plain; charset=utf-8",

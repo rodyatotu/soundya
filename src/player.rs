@@ -81,14 +81,18 @@ impl Gain {
     }
 }
 
+/// `skip_ms`: resume a track that broke off, without sound up to that point.
+/// `duration_ms`: the track's length, to tell a broken download from the real end.
 pub fn play(
     source: Box<dyn Read + Send + Sync>,
     kind: Kind,
     device: &str,
     flags: &Flags,
     duck: &Duck,
+    skip_ms: u64,
+    duration_ms: u64,
 ) -> Outcome {
-    match run(source, kind, device, flags, duck) {
+    match run(source, kind, device, flags, duck, skip_ms, duration_ms) {
         Ok(o) => o,
         Err(e) => Outcome::Failed(e),
     }
@@ -100,6 +104,8 @@ fn run(
     device: &str,
     flags: &Flags,
     duck: &Duck,
+    skip_ms: u64,
+    duration_ms: u64,
 ) -> Result<Outcome, String> {
     let mss = MediaSourceStream::new(
         Box::new(ReadOnlySource::new(source)),
@@ -110,6 +116,7 @@ fn run(
     let probed = symphonia::default::get_probe()
         .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
         .map_err(|e| format!("probe: {e}"))?;
+    eprintln!("player: stream recognised");
     let mut format = probed.format;
     let track = format
         .tracks()
@@ -128,6 +135,7 @@ fn run(
     let mut gain = Gain(1.0);
     let mut frames_played: u64 = 0;
     let mut decode_errors = 0;
+    let mut reopened = 0;
 
     loop {
         if flags.stop.load(Ordering::Acquire) {
@@ -137,28 +145,31 @@ fn run(
             return Ok(Outcome::Stopped);
         }
         if flags.paused.load(Ordering::Acquire) {
-            if let Some(o) = out.as_mut() {
+            // Release the sound card while paused, so Alice can use the speaker
+            // freely; it is opened again with the next packet.
+            if let Some(mut o) = out.take() {
                 o.stop_now();
             }
+            eprintln!("player: paused");
             while flags.paused.load(Ordering::Acquire) && !flags.stop.load(Ordering::Acquire) {
                 thread::sleep(Duration::from_millis(50));
             }
-            if let Some(o) = out.as_mut() {
-                o.resume();
-            }
+            eprintln!("player: resumed");
             continue;
         }
 
+        let position = flags.position_ms.load(Ordering::Acquire);
+        // Stopping more than 5 s before the known length is a broken download, not the end.
+        let cut_short = duration_ms > 0 && position + 5_000 < duration_ms;
         let packet = match format.next_packet() {
             Ok(p) => p,
-            Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof && !cut_short => break,
             Err(SymError::ResetRequired) => break,
             Err(e) => {
-                if frames_played > 0 {
-                    eprintln!("player: stream ended early: {e}");
+                if !cut_short && frames_played > 0 {
                     break;
                 }
-                return Err(format!("read: {e}"));
+                return Err(format!("stream interrupted at {}:{:02}: {e}", position / 60_000, position / 1000 % 60));
             }
         };
         if packet.track_id() != track_id {
@@ -177,10 +188,19 @@ fn run(
         };
         let spec = *decoded.spec();
         let channels = spec.channels.count();
+        if skip_ms > 0 && (frames_played * 1000 / u64::from(spec.rate.max(1))) < skip_ms {
+            // Catching up to where the track broke off: decode without sound.
+            frames_played += decoded.frames() as u64;
+            flags
+                .position_ms
+                .store(frames_played * 1000 / spec.rate.max(1) as u64, Ordering::Release);
+            continue;
+        }
         if out.is_none() {
             out = Some(
                 Output::open(device, spec.rate, channels).map_err(|e| format!("alsa: {e}"))?,
             );
+            eprintln!("player: sound card open, {} Hz, {} ch", spec.rate, channels);
         }
         let need = decoded.capacity();
         if buf_frames < need {
@@ -193,10 +213,16 @@ fn run(
         pcm.extend_from_slice(sb.samples());
         let samples = pcm.as_mut_slice();
         gain.apply(samples, channels, spec.rate, duck.active());
-        out.as_mut()
-            .unwrap()
-            .write(samples)
-            .map_err(|e| format!("alsa write: {e}"))?;
+        if let Err(e) = out.as_mut().unwrap().write(samples) {
+            if e.kind() == std::io::ErrorKind::TimedOut && reopened < 2 {
+                // Close and reopen the card; the track goes on from the next packet.
+                reopened += 1;
+                eprintln!("alsa: {e}; reopening the sound card");
+                out = None;
+                continue;
+            }
+            return Err(format!("alsa write: {e}"));
+        }
         frames_played += (samples.len() / channels.max(1)) as u64;
         flags
             .position_ms

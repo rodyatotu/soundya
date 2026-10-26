@@ -1,25 +1,30 @@
 name: Build soundya
 
-"on":
-  push:
-    branches: ["**"]
-  workflow_dispatch: {}
+on:
+  workflow_dispatch:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - run: cargo test
 
   arm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/soundya
+            ~/.cargo/registry
+            target
+          key: arm-${{ hashFiles('Cargo.toml', 'scripts/build-arm.sh') }}
       - run: sh scripts/build-arm.sh
       - uses: actions/upload-artifact@v4
         with:
           name: soundya-armv7
-          path: dist/soundya-armv7.tar.gz
+          path: dist/soundya-armv7.tar
           if-no-files-found: error

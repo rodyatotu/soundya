@@ -28,6 +28,28 @@ pub enum Intent {
     Pause,
     Next,
     Previous,
+    /// Shuffle the queue on/off.
+    Shuffle(bool),
+    /// Load something and play it shuffled («включи мои лайки вперемешку»).
+    Shuffled(Box<Intent>),
+    /// Repeat the current track on/off.
+    Repeat(bool),
+    /// Play the current track from the start.
+    Restart,
+    /// Tracks similar to the current one.
+    Similar,
+    /// Like the current track on SoundCloud.
+    Like,
+    /// Say what is playing.
+    WhatPlaying,
+    /// «Включи саундклауд» with nothing else: continue, or play the likes.
+    Default,
+    /// Personal recommendations.
+    Recommend,
+    /// Remove the current track from likes.
+    Unlike,
+    /// Add the current track to one of the account's playlists.
+    AddToPlaylist(String),
 }
 
 fn normalize(text: &str) -> String {
@@ -69,8 +91,225 @@ pub fn strip_service(text: &str) -> (String, bool) {
     (out.split_whitespace().collect::<Vec<_>>().join(" "), found)
 }
 
+/// Playback control phrased in any of the usual ways:
+/// «продолжи воспроизведение», «поставь музыку на паузу», «включи следующую песню», …
+fn transport(text: &str) -> Option<Intent> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let first = *words.first()?;
+    let has = |stems: &[&str]| words.iter().any(|w| stems.iter().any(|s| w.starts_with(s)));
+    // Questions and requests for something new are not transport commands.
+    if has(&["почему", "что", "какой", "какая", "сколько", "когда", "где", "кто"]) || words.len() > 6 {
+        return None;
+    }
+    let music = has(&["музык", "воспроизвед", "трек", "песн", "плейлист", "композици", "проигрыв"]);
+    if first.starts_with("продолж") || first == "возобнови" || (first == "сними" && has(&["пауз"])) {
+        return Some(Intent::Resume);
+    }
+    if first == "пауза" || has(&["пауз"]) && !has(&["сними"]) {
+        return Some(Intent::Pause);
+    }
+    if matches!(first, "стоп" | "хватит" | "останови" | "остановись" | "приостанови" | "замолчи")
+        || (matches!(first, "выключи" | "останови" | "прекрати") && music)
+    {
+        return Some(Intent::Pause);
+    }
+    if has(&["следующ", "дальше", "пропусти", "переключи", "другую", "другой"])
+        && (music || words.len() <= 2 || has(&["следующ", "дальше", "пропусти"]))
+    {
+        return Some(Intent::Next);
+    }
+    if has(&["предыдущ", "назад", "прошл"]) && (music || words.len() <= 3) {
+        return Some(Intent::Previous);
+    }
+    None
+}
+
+/// Shuffle words: Some((text without them, on)) when present.
+fn shuffle_words(text: &str) -> Option<(String, bool)> {
+    const OFF: [&str; 10] = [
+        "не перемешивай",
+        "по порядку",
+        "выключи перемешивание",
+        "отключи перемешивание",
+        "без перемешивания",
+        "выключи шафл",
+        "отключи шафл",
+        "выключи случайный порядок",
+        "отключи случайный порядок",
+        "выключи рандом",
+    ];
+    if OFF.iter().any(|p| text.contains(p)) {
+        return Some((String::new(), false));
+    }
+    const ON: [&str; 15] = [
+        "в случайном порядке",
+        "случайный порядок",
+        "вперемешку",
+        "перемешанно",
+        "перемешай",
+        "перемешать",
+        "перемешивай",
+        "перемешивание",
+        "решаффл",
+        "решафл",
+        "шаффл",
+        "шафл",
+        "рандомно",
+        "в рандоме",
+        "рандом",
+    ];
+    let mut out = format!(" {text} ");
+    let mut found = false;
+    for w in ON {
+        let needle = format!(" {w} ");
+        while out.contains(&needle) {
+            out = out.replacen(&needle, " ", 1);
+            found = true;
+        }
+    }
+    found.then(|| (out.split_whitespace().collect::<Vec<_>>().join(" "), true))
+}
+
+/// Commands about the current track: what is it, like it, repeat it, more like it.
+fn extras(text: &str) -> Option<Intent> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let first = *words.first()?;
+    let has = |stems: &[&str]| words.iter().any(|w| stems.iter().any(|s| w.starts_with(s)));
+    const WHAT: [&str; 13] = [
+        "что играет",
+        "что сейчас играет",
+        "что это играет",
+        "что за песня",
+        "что за трек",
+        "что это за песня",
+        "что это за трек",
+        "как называется песня",
+        "как называется трек",
+        "как называется эта песня",
+        "как называется этот трек",
+        "кто поет",
+        "кто это поет",
+    ];
+    if WHAT.iter().any(|p| text == *p || text.starts_with(&format!("{p} "))) {
+        return Some(Intent::WhatPlaying);
+    }
+    if matches!(first, "убери" | "сними" | "удали") && has(&["лайк"]) || text.starts_with("удали из лайков") || text.starts_with("убери из лайков") {
+        return Some(Intent::Unlike);
+    }
+    for p in [
+        "добавь в плейлист ",
+        "добавь этот трек в плейлист ",
+        "добавь эту песню в плейлист ",
+        "добавь трек в плейлист ",
+        "добавь песню в плейлист ",
+        "сохрани в плейлист ",
+        "сохрани трек в плейлист ",
+        "сохрани песню в плейлист ",
+        "закинь в плейлист ",
+    ] {
+        if let Some(name) = text.strip_prefix(p) {
+            let name = name.trim().trim_matches('"').trim();
+            if !name.is_empty() {
+                return Some(Intent::AddToPlaylist(name.to_owned()));
+            }
+        }
+    }
+    if text.starts_with("мне не нравится") || first == "дизлайк" || text.starts_with("поставь дизлайк") {
+        return Some(Intent::Next);
+    }
+    if first == "лайкни"
+        || text == "лайк"
+        || text.starts_with("поставь лайк")
+        || text.starts_with("мне нравится")
+        || (first == "добавь" && has(&["лайк", "избранн", "любим"]))
+    {
+        return Some(Intent::Like);
+    }
+    if (matches!(first, "выключи" | "отключи" | "убери") && has(&["повтор"]))
+        || text.contains("без повтора")
+        || text.starts_with("хватит повторять")
+        || text.starts_with("не повторяй")
+    {
+        return Some(Intent::Repeat(false));
+    }
+    if (has(&["повтор"]) && (matches!(first, "поставь" | "включи") || text.contains("на повтор")))
+        || matches!(first, "повторяй" | "зацикли")
+    {
+        return Some(Intent::Repeat(true));
+    }
+    if matches!(text, "повтори трек" | "повтори песню" | "заново" | "сначала" | "с начала" | "включи заново" | "включи сначала" | "включи трек заново" | "включи песню заново") {
+        return Some(Intent::Restart);
+    }
+    if has(&["похож"]) && words.len() <= 5 && !has(&["почему", "на что"]) {
+        return Some(Intent::Similar);
+    }
+    None
+}
+
 /// `keyword_only`: intercept music requests only when SoundCloud is named.
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
+    let (norm, named) = strip_service(&normalize(text));
+    if named
+        && matches!(
+            norm.as_str(),
+            "" | "включи" | "запусти" | "открой" | "поставь" | "играй" | "включи музыку" | "запусти музыку"
+                | "поставь музыку" | "включи что-нибудь" | "поставь что-нибудь" | "включи музыку из"
+        )
+    {
+        return Some(Intent::Default);
+    }
+    const RECS: [&str; 16] = [
+        "включи рекомендации",
+        "поставь рекомендации",
+        "включи мои рекомендации",
+        "рекомендации",
+        "порекомендуй музыку",
+        "порекомендуй что-нибудь",
+        "посоветуй музыку",
+        "включи что-нибудь новое",
+        "включи что нибудь новое",
+        "включи новое",
+        "включи новую музыку",
+        "включи что-нибудь на мой вкус",
+        "включи на мой вкус",
+        "включи музыку на мой вкус",
+        "включи мою волну",
+        "включи волну",
+    ];
+    if RECS.contains(&norm.as_str()) {
+        return (named || !keyword_only).then_some(Intent::Recommend);
+    }
+    if let Some(i) = extras(&norm) {
+        return Some(i);
+    }
+    if let Some((core, on)) = shuffle_words(&norm) {
+        if !on {
+            return Some(Intent::Shuffle(false));
+        }
+        let generic = matches!(
+            core.as_str(),
+            "" | "включи" | "поставь" | "музыку" | "включи музыку" | "треки" | "песни" | "очередь" | "все" | "включи все" | "плейлист" | "этот плейлист"
+        );
+        if generic {
+            return Some(Intent::Shuffle(true));
+        }
+        let cmd = if ["включи ", "поставь ", "запусти ", "сыграй "].iter().any(|p| core.starts_with(p)) {
+            core
+        } else {
+            format!("включи {core}")
+        };
+        let cmd = if named { format!("{cmd} в саундклауде") } else { cmd };
+        return match intent_core(&cmd, keyword_only) {
+            Some(i @ (Intent::Play(_) | Intent::Playlist(_) | Intent::Likes | Intent::MyPlaylist(_))) => {
+                Some(Intent::Shuffled(Box::new(i)))
+            }
+            _ => Some(Intent::Shuffle(true)),
+        };
+    }
+    intent_core(text, keyword_only)
+}
+
+fn intent_core(text: &str, keyword_only: bool) -> Option<Intent> {
     let (text, named) = strip_service(&normalize(text));
     match text.as_str() {
         "стоп" | "пауза" | "останови музыку" | "выключи музыку" | "поставь на паузу"
@@ -83,6 +322,9 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
         }
         "включи музыку" if !named => return Some(Intent::Resume),
         _ => {}
+    }
+    if let Some(t) = transport(&text) {
+        return Some(t);
     }
     let rest = ["включи ", "поставь ", "запусти ", "сыграй ", "играй "]
         .iter()
@@ -207,6 +449,17 @@ fn number(data: &[u8], n: u64) -> Option<u64> {
     }
 }
 
+/// Alice's state from an AliceState frame (2 = speaking).
+fn alice_state(data: &[u8]) -> Option<u64> {
+    if number(data, 253) != Some(3) {
+        return None;
+    }
+    Some(number(bytes(data, 252)?, 1).unwrap_or(0))
+}
+
+/// Set while soundya itself is talking through Alice, so it is not cut off.
+static OWN_SPEECH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn alice_busy(data: &[u8]) -> Option<bool> {
     if number(data, 253) != Some(3) {
         return None;
@@ -285,6 +538,72 @@ pub fn cancel_alice() {
     let _ = send_native(&rpc("AliceCapability", 8, &[8, 3]));
 }
 
+/// Says `text` in Alice's voice (START_VOCALIZE, as in yandex-station-extended's alice-say.py).
+/// Runs a moment later so it is not swallowed by the cancel of the user's own request.
+pub fn say(text: String) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(600));
+        match speak(&text) {
+            Ok(()) => eprintln!("say: {text:?}"),
+            Err(e) => eprintln!("say: {text:?}: {e}"),
+        }
+    });
+}
+
+/// Subscribes to Alice's events and asks her to speak on the same connection,
+/// keeping it open until the speech ends: closing early can cut the speech off.
+fn speak(text: &str) -> io::Result<()> {
+    let address: SocketAddr = ADDRESS.parse().expect("address");
+    let mut socket = TcpStream::connect_timeout(&address, Duration::from_secs(1))?;
+    socket.set_read_timeout(Some(Duration::from_secs(15)))?;
+    let mut directive = Vec::new();
+    put_bytes(&mut directive, 1, text.as_bytes());
+    put_number(&mut directive, 2, 1);
+    let mut method = Vec::new();
+    put_number(&mut method, 1, 18); // START_VOCALIZE
+    put_number(&mut method, 3, 1); // send events
+    put_bytes(&mut method, 13, &directive);
+    let mut subscribe = Vec::new();
+    put_bytes(&mut subscribe, 1, b"AliceCapability");
+    let mut frames = rpc("AliceCapability", 20, &subscribe);
+    frames.extend(rpc("AliceCapability", 8, &method));
+    OWN_SPEECH.store(true, std::sync::atomic::Ordering::Release);
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            OWN_SPEECH.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let _done = Done;
+    socket.write_all(&frames)?;
+    let started = std::time::Instant::now();
+    let mut speaking = false;
+    let mut data = Vec::new();
+    while started.elapsed() < Duration::from_secs(30) {
+        let mut len = [0u8; 4];
+        socket.read_exact(&mut len)?;
+        let size = u32::from_le_bytes(len) as usize;
+        if size == 0 || size > MAX_FRAME {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "frame length"));
+        }
+        data.resize(size, 0);
+        socket.read_exact(&mut data)?;
+        if number(&data, 253) != Some(3) {
+            continue;
+        }
+        let Some(event) = bytes(&data, 252).and_then(|r| bytes(r, 18)) else {
+            continue;
+        };
+        match number(event, 1) {
+            Some(6) => speaking = true,          // TTS_STARTED
+            Some(1) if speaking => return Ok(()), // TTS_COMPLETED
+            Some(4) => return Err(io::Error::other("Alice reported an error")),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Random UUID v4 string (no extra crate needed).
 fn request_id() -> String {
     use std::hash::{BuildHasher, Hasher};
@@ -326,6 +645,9 @@ fn read_frames(
     seen: &mut VecDeque<String>,
 ) -> io::Result<()> {
     let mut data = Vec::with_capacity(4096);
+    // After taking over a phrase, Alice's own late answer («нужна подписка…») is cut off.
+    let mut suppress_until: Option<std::time::Instant> = None;
+    let mut last_cancel = std::time::Instant::now();
     loop {
         let mut len = [0u8; 4];
         socket.read_exact(&mut len)?;
@@ -338,6 +660,15 @@ fn read_frames(
         if let Some(busy) = alice_busy(&data) {
             shared.duck.set_busy(busy);
         }
+        if alice_state(&data) == Some(2)
+            && suppress_until.is_some_and(|t| std::time::Instant::now() < t)
+            && !OWN_SPEECH.load(std::sync::atomic::Ordering::Acquire)
+            && last_cancel.elapsed() > Duration::from_millis(400)
+        {
+            eprintln!("voice: cutting off Alice's own answer");
+            cancel_alice();
+            last_cancel = std::time::Instant::now();
+        }
         if let Some((request, text)) = recognized(&data) {
             if seen.contains(&request) {
                 continue;
@@ -347,19 +678,28 @@ fn read_frames(
                 seen.pop_front();
             }
             let Some(intent) = intent(&text, shared.keyword_only()) else {
+                eprintln!("voice: {text:?} left to Alice");
                 continue;
             };
             // Transport commands are ours only while SoundCloud owns the speaker.
             let ours = match intent {
-                Intent::Play(_) | Intent::Playlist(_) | Intent::Likes | Intent::MyPlaylist(_) => true,
-                Intent::Resume => shared.has_queue(),
+                Intent::Play(_)
+                | Intent::Playlist(_)
+                | Intent::Likes
+                | Intent::MyPlaylist(_)
+                | Intent::Shuffled(_)
+                | Intent::Default
+                | Intent::Recommend => true,
+                Intent::Resume | Intent::Shuffle(_) | Intent::Repeat(_) => shared.has_queue(),
                 _ => shared.is_active(),
             };
             if !ours {
+                eprintln!("voice: {text:?} -> {intent:?}, left to Alice (SoundCloud is not playing)");
                 continue;
             }
             eprintln!("voice: {text:?} -> {intent:?}");
             cancel_alice();
+            suppress_until = Some(std::time::Instant::now() + Duration::from_secs(6));
             let _ = tx.send(Cmd::Voice(intent));
         }
         if data.capacity() > 64 * 1024 {
@@ -413,6 +753,64 @@ mod tests {
         assert_eq!(intent("Алиса, включи мои лайки", false), Some(Intent::Likes));
         assert_eq!(intent("включи мой плейлист в дорогу", false), Some(Intent::MyPlaylist("в дорогу".into())));
         assert_eq!(intent("Останови музыку", false), Some(Intent::Pause));
+        for (s, want) in [
+            ("перемешай", Intent::Shuffle(true)),
+            ("перемешай музыку", Intent::Shuffle(true)),
+            ("включи случайный порядок", Intent::Shuffle(true)),
+            ("алиса, решафл", Intent::Shuffle(true)),
+            ("играй по порядку", Intent::Shuffle(false)),
+            ("включи мои лайки вперемешку", Intent::Shuffled(Box::new(Intent::Likes))),
+            ("перемешай мои лайки", Intent::Shuffled(Box::new(Intent::Likes))),
+            ("поставь на повтор", Intent::Repeat(true)),
+            ("включи повтор", Intent::Repeat(true)),
+            ("выключи повтор", Intent::Repeat(false)),
+            ("включи заново", Intent::Restart),
+            ("включи похожее", Intent::Similar),
+            ("включи что-то похожее", Intent::Similar),
+            ("лайкни", Intent::Like),
+            ("мне нравится этот трек", Intent::Like),
+            ("мне не нравится", Intent::Next),
+            ("что сейчас играет", Intent::WhatPlaying),
+            ("убери лайк", Intent::Unlike),
+            ("удали из лайков", Intent::Unlike),
+            ("добавь в плейлист в дорогу", Intent::AddToPlaylist("в дорогу".into())),
+            ("алиса, добавь эту песню в плейлист чилл осень", Intent::AddToPlaylist("чилл осень".into())),
+            ("как называется эта песня", Intent::WhatPlaying),
+        ] {
+            assert_eq!(intent(s, true), Some(want), "{s}");
+        }
+        assert_eq!(intent("включи мои лайки", true), Some(Intent::Likes));
+        assert_eq!(intent("включи рекомендации в саундклауде", true), Some(Intent::Recommend));
+        assert_eq!(intent("включи мою волну", false), Some(Intent::Recommend));
+        assert_eq!(intent("включи мою волну", true), None);
+        for s in ["Алиса, включи саундклауд", "включи музыку в саундклауде", "запусти soundcloud", "саундклауд"] {
+            assert_eq!(intent(s, true), Some(Intent::Default), "{s}");
+            assert_eq!(intent(s, false), Some(Intent::Default), "{s}");
+        }
+        assert_eq!(
+            intent("включи bonobo в случайном порядке", false),
+            Some(Intent::Shuffled(Box::new(Intent::Play("bonobo".into()))))
+        );
+        assert_eq!(
+            intent("включи bonobo вперемешку в саундклауде", true),
+            Some(Intent::Shuffled(Box::new(Intent::Play("bonobo".into()))))
+        );
+        for (s, want) in [
+            ("продолжи воспроизведение", Intent::Resume),
+            ("Алиса, продолжай играть", Intent::Resume),
+            ("сними с паузы", Intent::Resume),
+            ("поставь музыку на паузу", Intent::Pause),
+            ("выключи воспроизведение", Intent::Pause),
+            ("включи следующую песню", Intent::Next),
+            ("пропусти трек", Intent::Next),
+            ("переключи", Intent::Next),
+            ("включи предыдущий трек", Intent::Previous),
+        ] {
+            assert_eq!(intent(s, true), Some(want), "{s}");
+        }
+        for s in ["что сейчас играет", "почему музыка на паузе", "выключи свет", "переключи канал на телевизоре"] {
+            assert_eq!(transport(&normalize(s)), None, "{s}");
+        }
         assert_eq!(intent("следующий трек", false), Some(Intent::Next));
         for s in ["включи свет", "поставь таймер на пять минут", "включи блютуз", "какая погода"] {
             assert_eq!(intent(s, false), None, "{s}");

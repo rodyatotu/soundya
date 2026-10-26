@@ -26,6 +26,15 @@ case "${1:-}" in
         fi
         rm -f "$PID"
         for P in $(pidof soundya 2>/dev/null); do kill "$P" 2>/dev/null; done
+        sleep 1
+        # Switch off soundya's orange ring light (255/50/0) if it is still lit.
+        for Z in 1 2 3; do
+            L=/sys/class/leds/micro
+            [ -f "$L:red:ring$Z/brightness" ] || continue
+            if [ "$(cat "$L:red:ring$Z/brightness")" = 255 ] && [ "$(cat "$L:green:ring$Z/brightness")" = 50 ]; then
+                for C in red green blue; do echo 0 > "$L:$C:ring$Z/brightness"; done
+            fi
+        done
         echo "soundya stopped"
         ;;
     restart)

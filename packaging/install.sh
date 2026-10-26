@@ -21,9 +21,11 @@ ln -sf "$DIR/soundya" /usr/bin/soundya 2>/dev/null || true
 sync
 [ "$RO" -eq 0 ] || mount -o remount,ro /
 
+: > /tmp/soundya.log
+rm -f /run/soundya.stop
 /etc/init.d/S99soundya start
 echo
 echo "Installed. Try:  soundya play bonobo   or say «Алиса, включи Bonobo»"
 IP=$(ip -4 addr show wlan0 2>/dev/null | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | head -1)
-echo "Web page: http://${IP:-<IP колонки>}:8765/"
+echo "Web page: http://soundya.local:8765/  (or http://${IP:-<IP колонки>}:8765/)"
 echo "Log: /tmp/soundya.log"

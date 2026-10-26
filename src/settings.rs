@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
     /// "" = direct; "http://user:pass@host:port", "socks5://host:port" or "host:port".
     #[serde(default)]
@@ -15,6 +15,19 @@ pub struct Settings {
     /// SoundCloud `oauth_token` cookie value; "" = not logged in.
     #[serde(default)]
     pub token: String,
+    /// Orange ring light while SoundCloud plays.
+    #[serde(default = "yes")]
+    pub ring: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { proxy: String::new(), keyword_only: false, token: String::new(), ring: true }
+    }
 }
 
 fn path(dir: &Path) -> PathBuf {
@@ -23,12 +36,11 @@ fn path(dir: &Path) -> PathBuf {
 
 impl Settings {
     pub fn load(dir: &Path) -> Self {
-        let mut s: Settings = std::fs::read_to_string(path(dir))
-            .ok()
+        let mut s: Settings = crate::fsx::read_string(&path(dir))
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
         // First run: take the defaults from soundya.env.
-        if !path(dir).exists() {
+        if !crate::fsx::exists(&path(dir)) {
             s.keyword_only = std::env::var("SOUNDYA_KEYWORD_ONLY").is_ok_and(|v| v == "1");
             s.proxy = std::env::var("SOUNDYA_PROXY").unwrap_or_default();
         }

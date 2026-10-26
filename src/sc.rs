@@ -56,6 +56,8 @@ pub struct Track {
     pub media: Option<Media>,
     #[serde(default)]
     pub duration: Option<u64>,
+    #[serde(default)]
+    pub permalink_url: Option<String>,
 }
 
 impl Track {
@@ -68,30 +70,53 @@ impl Track {
     fn hydrated(&self) -> bool {
         self.media.is_some() && !self.title.is_empty()
     }
-    /// Best transcoding we can decode: progressive MP3, HLS MP3, then HLS/progressive AAC.
-    pub fn transcoding(&self) -> Option<(&Transcoding, Kind)> {
+    /// Streams we can decode, best first: progressive MP3, HLS MP3, then AAC.
+    /// SoundCloud still lists formats it no longer serves (404), so callers try them in turn.
+    pub fn candidates(&self) -> Vec<(&Transcoding, Kind)> {
         if matches!(self.policy.as_deref(), Some("BLOCK" | "SNIP")) {
-            return None;
+            return Vec::new();
         }
-        let mut best: Option<(u8, &Transcoding, Kind)> = None;
-        for t in &self.media.as_ref()?.transcodings {
+        let Some(media) = self.media.as_ref() else { return Vec::new() };
+        let mut out: Vec<(u8, &Transcoding, Kind)> = Vec::new();
+        for t in &media.transcodings {
             if t.snipped {
                 continue;
             }
             let mime = t.format.mime_type.to_ascii_lowercase();
             let (rank, kind) = match t.format.protocol.as_str() {
                 "progressive" if mime.contains("mpeg") => (0, Kind::Mp3),
-                "hls" if mime.contains("mpeg") => (1, Kind::Mp3),
+                "hls" if mime.contains("mpeg") && !mime.contains("mpegurl") => (1, Kind::Mp3),
                 "progressive" if mime.contains("mp4") => (2, Kind::Mp4),
                 "hls" if mime.contains("mp4") => (3, Kind::Mp4),
                 "hls" if mime.contains("aac") => (4, Kind::Adts),
                 _ => continue, // opus and encrypted streams are not supported
             };
-            if best.as_ref().is_none_or(|b| rank < b.0) {
-                best = Some((rank, t, kind));
-            }
+            out.push((rank, t, kind));
         }
-        best.map(|(_, t, k)| (t, k))
+        out.sort_by_key(|c| c.0);
+        out.into_iter().map(|(_, t, k)| (t, k)).collect()
+    }
+
+    pub fn transcoding(&self) -> Option<(&Transcoding, Kind)> {
+        self.candidates().into_iter().next()
+    }
+
+    /// All formats SoundCloud lists for the track, for error messages.
+    pub fn formats(&self) -> String {
+        let Some(media) = self.media.as_ref() else { return "нет данных".into() };
+        media
+            .transcodings
+            .iter()
+            .map(|t| {
+                format!(
+                    "{} {}{}",
+                    t.format.protocol,
+                    t.format.mime_type,
+                    if t.snipped { " (превью)" } else { "" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -124,7 +149,19 @@ pub struct Client {
     client_id: Arc<Mutex<Option<String>>>,
     token: Arc<Mutex<Option<String>>>,
     cache: Option<std::path::PathBuf>,
+    /// Formats that answered 404 this session; tried last from then on.
+    dead: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Recommendations built ahead of time, so «включи рекомендации» starts at once.
+    recs: Arc<Mutex<Option<(std::time::Instant, Vec<Track>)>>>,
+    /// A track's stream opened ahead of time (the next track, or the first
+    /// recommendation), so it starts without waiting for the proxy.
+    pub prefetch: Prefetch,
 }
+
+pub type Prefetch = Arc<Mutex<Option<(u64, Box<dyn Read + Send + Sync>, Kind)>>>;
+
+/// Prepared recommendations stay usable this long.
+const RECS_FRESH: Duration = Duration::from_secs(30 * 60);
 
 /// A playlist as shown in search results and the library.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -173,7 +210,7 @@ impl Client {
             .or_else(|| {
                 cache
                     .as_ref()
-                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .and_then(|p| crate::fsx::read_string(p))
                     .map(|s| s.trim().to_owned())
             })
             .filter(|s| s.len() >= 20);
@@ -182,6 +219,9 @@ impl Client {
             client_id: Arc::new(Mutex::new(cached)),
             token: Arc::new(Mutex::new(None)),
             cache,
+            dead: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            recs: Arc::new(Mutex::new(None)),
+            prefetch: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -251,8 +291,10 @@ impl Client {
         } else {
             format!("{API}{path_or_url}")
         };
-        for attempt in 0..2 {
-            let id = self.client_id(attempt == 1)?;
+        let mut refreshed = false;
+        let mut retried = false;
+        loop {
+            let id = self.client_id(refreshed)?;
             let mut req = self
                 .agent()
                 .get(&url)
@@ -266,16 +308,30 @@ impl Client {
             for (k, v) in query {
                 req = req.query(k, v);
             }
+            let short = url.split('?').next().unwrap_or(&url).to_owned();
             match req.call() {
                 Ok(resp) => return Ok(resp.into_json()?),
-                Err(e) if attempt == 0 && matches!(status_of(&e), Some(401 | 403)) => continue,
+                Err(e) if !refreshed && matches!(status_of(&e), Some(401 | 403)) => {
+                    refreshed = true;
+                    continue;
+                }
                 Err(e) if matches!(status_of(&e), Some(401)) && self.has_token() => {
                     return Err("SoundCloud не принял токен входа: обновите его на странице".into())
                 }
-                Err(e) => return Err(e.into()),
+                // Keep tokens out of messages and logs.
+                Err(ureq::Error::Status(code, _)) => return Err(format!("HTTP {code} на {short}").into()),
+                Err(ureq::Error::Transport(t)) if !retried => {
+                    // Proxies drop connections now and then: one quiet retry.
+                    eprintln!("soundcloud: {}: {}; retrying", t.kind(), t.message().unwrap_or(""));
+                    retried = true;
+                    thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+                Err(ureq::Error::Transport(t)) => {
+                    return Err(format!("{}: {}", t.kind(), t.message().unwrap_or("")).into())
+                }
             }
         }
-        unreachable!()
     }
 
     pub fn search_tracks(&self, q: &str) -> Res<Vec<Track>> {
@@ -338,6 +394,234 @@ impl Client {
             .filter_map(|t| serde_json::from_value(t).ok())
             .collect();
         self.hydrate(tracks)
+    }
+
+    pub fn has_fresh_recommendations(&self) -> bool {
+        self.recs
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(at, t)| at.elapsed() < RECS_FRESH && !t.is_empty())
+    }
+
+    /// Recommendations: the prepared set if there is one (and a new one is built
+    /// in the background for next time), otherwise built now.
+    pub fn recommendations(&self, seed: Option<u64>) -> Res<Vec<Track>> {
+        let cached = {
+            let mut slot = self.recs.lock().unwrap();
+            match slot.take() {
+                Some((at, tracks)) if at.elapsed() < RECS_FRESH && !tracks.is_empty() => Some(tracks),
+                _ => None,
+            }
+        };
+        match cached {
+            Some(tracks) => {
+                self.warm_recommendations();
+                Ok(tracks)
+            }
+            None => self.build_recommendations(seed),
+        }
+    }
+
+    /// Builds a recommendation set in the background if none is ready.
+    pub fn warm_recommendations(&self) {
+        if !self.has_token() {
+            return;
+        }
+        let client = self.clone();
+        thread::spawn(move || {
+            if client.has_fresh_recommendations() {
+                return;
+            }
+            match client.build_recommendations(None) {
+                Ok(tracks) if !tracks.is_empty() => {
+                    eprintln!("recommendations: {} tracks ready", tracks.len());
+                    let first = tracks[0].clone();
+                    *client.recs.lock().unwrap() = Some((std::time::Instant::now(), tracks));
+                    // Open the first track too: then «включи рекомендации» plays at once.
+                    let mut slot = client.prefetch.lock().unwrap();
+                    if slot.is_none() {
+                        drop(slot);
+                        if let Ok((reader, kind)) = client.open(&first) {
+                            slot = client.prefetch.lock().unwrap();
+                            if slot.is_none() {
+                                *slot = Some((first.id, reader, kind));
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("recommendations: {e}"),
+            }
+        });
+    }
+
+    /// A personal "wave": tracks related to a few random recent likes (and to
+    /// `seed`, usually the current track), minus tracks already liked, shuffled.
+    /// The related-track requests run in parallel: each is a round trip through the proxy.
+    fn build_recommendations(&self, seed: Option<u64>) -> Res<Vec<Track>> {
+        let liked: Vec<u64> = if self.has_token() { self.liked_list().unwrap_or_default() } else { Vec::new() };
+        let mut rng = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(7)
+            | 1;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let mut seeds: Vec<u64> = seed.into_iter().collect();
+        // Recent likes say most about current taste: pick from the newest 50.
+        let mut pool: Vec<u64> = liked.iter().take(50).copied().collect();
+        while seeds.len() < 6 && !pool.is_empty() {
+            let i = (next() % pool.len() as u64) as usize;
+            seeds.push(pool.swap_remove(i));
+        }
+        if seeds.is_empty() {
+            return Err("для рекомендаций нужен вход в SoundCloud или играющий трек".into());
+        }
+        let workers: Vec<_> = seeds
+            .into_iter()
+            .map(|id| {
+                let client = self.clone();
+                thread::spawn(move || client.related(id))
+            })
+            .collect();
+        let mut seen: std::collections::HashSet<u64> = liked.into_iter().collect();
+        let mut out = Vec::new();
+        for w in workers {
+            match w.join() {
+                Ok(Ok(tracks)) => out.extend(tracks.into_iter().filter(|t| seen.insert(t.id))),
+                Ok(Err(e)) => eprintln!("recommendations: {e}"),
+                Err(_) => {}
+            }
+        }
+        for i in (1..out.len()).rev() {
+            let j = (next() % (i as u64 + 1)) as usize;
+            out.swap(i, j);
+        }
+        Ok(out)
+    }
+
+    /// Round trip to SoundCloud through the proxy, in milliseconds: the second of
+    /// two requests, so it measures the connection, not the TLS handshake.
+    pub fn ping(&self) -> Res<u64> {
+        let once = || -> Res<u64> {
+            let start = std::time::Instant::now();
+            match self.agent().get(&format!("{API}/")).call() {
+                Ok(_) | Err(ureq::Error::Status(..)) => Ok(start.elapsed().as_millis() as u64),
+                Err(ureq::Error::Transport(t)) => {
+                    Err(format!("{}: {}", t.kind(), t.message().unwrap_or("")).into())
+                }
+            }
+        };
+        let first = once()?;
+        Ok(once().map(|second| second.min(first)).unwrap_or(first))
+    }
+
+    /// An authorised write (PUT/DELETE/POST) to api-v2.
+    fn write(&self, method: &str, path: &str, body: Option<Value>) -> Res<()> {
+        let token = self
+            .token
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("нужен вход в SoundCloud")?;
+        let id = self.client_id(false)?;
+        // Sent the way the website sends it.
+        let req = self
+            .agent()
+            .request(method, &format!("{API}{path}"))
+            .set("Origin", "https://soundcloud.com")
+            .set("Referer", "https://soundcloud.com/")
+            .set("Accept", "application/json, text/javascript, */*; q=0.1")
+            .set("Authorization", &format!("OAuth {token}"))
+            .query("client_id", &id)
+            .query("app_locale", "en");
+        let result = match body {
+            Some(b) => req.send_json(b),
+            None if method == "DELETE" => req.call(),
+            None => req.set("Content-Type", "application/json").send_bytes(b"{}"),
+        };
+        match result {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(code, resp)) => {
+                // Logged so a refusal can be diagnosed; the token is not in the body.
+                let text: String = resp.into_string().unwrap_or_default().chars().take(300).collect();
+                eprintln!("soundcloud: {method} {path}: HTTP {code}: {text}");
+                let lower = text.to_lowercase();
+                let hint = if lower.contains("captcha") || lower.contains("datadome") {
+                    ": SoundCloud принял запрос за бота (капча)"
+                } else if code == 401 {
+                    ": токен входа не подходит"
+                } else {
+                    ""
+                };
+                Err(format!("HTTP {code}{hint}").into())
+            }
+            Err(ureq::Error::Transport(t)) => Err(t.kind().to_string().into()),
+        }
+    }
+
+    /// Adds a track to the account's likes, or removes it.
+    pub fn set_like(&self, track_id: u64, on: bool) -> Res<()> {
+        let (uid, _) = self.me()?;
+        let path = format!("/users/{uid}/track_likes/{track_id}");
+        self.write(if on { "PUT" } else { "DELETE" }, &path, None)
+    }
+
+    /// Ids of liked tracks, newest first (up to 200): one request, no track details.
+    pub fn liked_list(&self) -> Res<Vec<u64>> {
+        let (uid, _) = self.me()?;
+        let v = self.api(&format!("/users/{uid}/track_likes"), &[("limit", "200")])?;
+        Ok(v.get("collection")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.pointer("/track/id").and_then(Value::as_u64))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Liked track ids, for the hearts on the page.
+    pub fn liked_ids(&self) -> Res<std::collections::HashSet<u64>> {
+        Ok(self.liked_list()?.into_iter().collect())
+    }
+
+    /// Playlists the account owns (the ones tracks can be added to).
+    pub fn owned_playlists(&self) -> Res<Vec<PlaylistInfo>> {
+        let (uid, name) = self.me()?;
+        let v = self.api(&format!("/users/{uid}/playlists"), &[("limit", "100")])?;
+        let c: Collection<Value> = serde_json::from_value(v)?;
+        let mut out: Vec<PlaylistInfo> = c.collection.iter().filter_map(playlist_info).collect();
+        if out.is_empty() {
+            out = self
+                .library()?
+                .into_iter()
+                .filter(|p| p.user == name && p.id.parse::<u64>().is_ok())
+                .collect();
+        }
+        Ok(out)
+    }
+
+    /// Appends a track to one of the account's playlists.
+    pub fn add_to_playlist(&self, playlist: u64, track_id: u64) -> Res<()> {
+        let v = self.api(&format!("/playlists/{playlist}"), &[])?;
+        let mut ids: Vec<u64> = v
+            .get("tracks")
+            .and_then(Value::as_array)
+            .map(|t| t.iter().filter_map(|x| x.get("id").and_then(Value::as_u64)).collect())
+            .unwrap_or_default();
+        if ids.contains(&track_id) {
+            return Err("трек уже есть в этом плейлисте".into());
+        }
+        ids.push(track_id);
+        let body = serde_json::json!({ "playlist": { "tracks": ids } });
+        self.write("PUT", &format!("/playlists/{playlist}"), Some(body))
     }
 
     /// A playlist from search or the library: numeric id, or a system playlist via its link.
@@ -442,7 +726,39 @@ impl Client {
 
     /// Opens a streaming reader for the track's audio.
     pub fn open(&self, track: &Track) -> Res<(Box<dyn Read + Send + Sync>, Kind)> {
-        let (t, kind) = track.transcoding().ok_or("no playable stream")?;
+        let mut errors = Vec::new();
+        let label = |t: &Transcoding| format!("{} {}", t.format.protocol, t.format.mime_type);
+        let mut candidates = track.candidates();
+        {
+            // Skip straight to formats that worked: each 404 costs a round trip through the proxy.
+            let dead = self.dead.lock().unwrap();
+            candidates.sort_by_key(|c| dead.contains(&label(c.0)));
+        }
+        for (t, kind) in candidates {
+            let name = label(t);
+            match self.open_one(track, t, kind) {
+                Ok(reader) => {
+                    eprintln!("stream: {name}");
+                    return Ok((Box::new(crate::buffer::Buffered::new(reader)), kind));
+                }
+                Err(e) => {
+                    let e = e.to_string();
+                    if e.contains("HTTP 404") {
+                        self.dead.lock().unwrap().insert(name.clone());
+                    }
+                    errors.push(format!("{name}: {e}"));
+                }
+            }
+        }
+        Err(format!(
+            "нет рабочего потока. Форматы: [{}]. Ошибки: [{}]",
+            track.formats(),
+            errors.join("; ")
+        )
+        .into())
+    }
+
+    fn open_one(&self, track: &Track, t: &Transcoding, _kind: Kind) -> Res<Box<dyn Read + Send + Sync>> {
         let url = self.media_url(track, t)?;
         let refresh: Refresh = {
             let client = self.clone();
@@ -451,9 +767,9 @@ impl Client {
             Arc::new(move || client.media_url(&track, &t).ok())
         };
         if t.format.protocol == "progressive" {
-            Ok((Box::new(Http::new(self.agent(), url, Some(refresh))), kind))
+            Ok(Box::new(Http::new(self.agent(), url, Some(refresh))))
         } else {
-            Ok((Box::new(Hls::new(self.agent(), &url, refresh)?), kind))
+            Ok(Box::new(Hls::new(self.agent(), &url, refresh)?))
         }
     }
 }
@@ -464,7 +780,10 @@ pub fn build_agent(proxy: &str) -> Res<ureq::Agent> {
     let mut b = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(30))
-        .user_agent(UA);
+        // Reuse connections: every new one costs several round trips through the proxy.
+        .max_idle_connections_per_host(8)
+        .user_agent(UA)
+        .resolver(crate::dns::Resolver::new());
     let proxy = proxy.trim();
     if !proxy.is_empty() {
         let full = if proxy.contains("://") { proxy.to_owned() } else { format!("http://{proxy}") };
@@ -569,6 +888,14 @@ impl Http {
     }
 }
 
+/// Attempts per read before an error is passed up: a flaky proxy drops
+/// connections now and then, and a dropped download should not end the track.
+const ATTEMPTS: u32 = 6;
+
+fn backoff(failures: u32) {
+    thread::sleep(Duration::from_millis(500 * u64::from(failures.min(6))));
+}
+
 impl Read for Http {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut failures = 0;
@@ -579,10 +906,11 @@ impl Read for Http {
             if self.inner.is_none() {
                 if let Err(e) = self.connect() {
                     failures += 1;
-                    if failures > 3 {
+                    if failures >= ATTEMPTS {
                         return Err(e);
                     }
-                    thread::sleep(Duration::from_millis(700));
+                    eprintln!("download: {e}; retry {failures}");
+                    backoff(failures);
                     continue;
                 }
                 continue;
@@ -597,12 +925,14 @@ impl Read for Http {
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
+                    // Resumes from the same byte with a Range request.
                     self.inner = None;
                     failures += 1;
-                    if failures > 3 {
+                    if failures >= ATTEMPTS {
                         return Err(e);
                     }
-                    thread::sleep(Duration::from_millis(700));
+                    eprintln!("download: {e}; retry {failures}");
+                    backoff(failures);
                 }
             }
         }
@@ -691,19 +1021,31 @@ impl Read for Hls {
                 Ok(0) => self.current = None,
                 Ok(n) => return Ok(n),
                 Err(e) => {
-                    // Segment URLs are signed and expire: reload the playlist and retry once.
+                    // Segment URLs are signed and expire: get fresh ones and continue
+                    // the same segment from the same byte, a few times over.
                     let pos = seg.pos;
-                    if self.reload() {
+                    let mut last = e;
+                    let mut resumed = false;
+                    for attempt in 1..=3u32 {
+                        eprintln!("download: segment {}: {last}; fresh links, attempt {attempt}", self.next);
+                        backoff(attempt);
+                        self.reload();
                         let mut fresh = Http::new(self.agent.clone(), self.urls[self.next - 1].clone(), None);
                         fresh.pos = pos;
-                        self.current = Some(fresh);
-                        match self.current.as_mut().unwrap().read(buf) {
-                            Ok(0) => self.current = None,
-                            Ok(n) => return Ok(n),
-                            Err(e) => return Err(e),
+                        match fresh.read(buf) {
+                            Ok(n) => {
+                                self.current = if n == 0 { None } else { Some(fresh) };
+                                if n > 0 {
+                                    return Ok(n);
+                                }
+                                resumed = true;
+                                break;
+                            }
+                            Err(e) => last = e,
                         }
-                    } else {
-                        return Err(e);
+                    }
+                    if !resumed {
+                        return Err(last);
                     }
                 }
             }

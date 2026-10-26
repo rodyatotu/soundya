@@ -41,5 +41,5 @@ mkdir -p dist/soundya
 cp "$BIN" dist/soundya/soundya
 cp packaging/install.sh packaging/run.sh packaging/S99soundya packaging/soundya.env dist/soundya/
 chmod 755 dist/soundya/soundya dist/soundya/install.sh dist/soundya/run.sh dist/soundya/S99soundya
-tar -C dist -czf dist/soundya-armv7.tar.gz soundya
-echo "Built dist/soundya-armv7.tar.gz"
+COPYFILE_DISABLE=1 tar -C dist -cf dist/soundya-armv7.tar soundya
+echo "Built dist/soundya-armv7.tar"
