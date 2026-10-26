@@ -690,7 +690,10 @@ fn read_frames(
                 | Intent::Shuffled(_)
                 | Intent::Default
                 | Intent::Recommend => true,
-                Intent::Resume | Intent::Shuffle(_) | Intent::Repeat(_) => shared.has_queue(),
+                // «Продолжи» is ours even with an empty queue (e.g. after a restart):
+                // Alice can only answer it with «нужна подписка».
+                Intent::Resume => true,
+                Intent::Shuffle(_) | Intent::Repeat(_) => shared.has_queue(),
                 _ => shared.is_active(),
             };
             if !ours {

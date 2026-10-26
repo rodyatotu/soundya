@@ -728,6 +728,11 @@ impl Controller {
                 self.set_paused(true);
                 respond(reply, "OK", None);
             }
+            Intent::Resume if self.queue.is_empty() => {
+                // Nothing to go back to (soundya was restarted): same as «включи саундклауд».
+                eprintln!("voice: nothing to resume; starting likes instead");
+                self.intent(Intent::Default, reply);
+            }
             Intent::Resume => {
                 self.set_paused(false);
                 respond(reply, "OK", None);
