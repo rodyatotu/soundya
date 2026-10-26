@@ -52,6 +52,84 @@ pub enum Intent {
     AddToPlaylist(String),
     /// Jump within the track by this many ms (negative: back).
     Seek(i64),
+    /// A command for the Windows PC (see pc.rs).
+    Pc(PcAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PcAction {
+    Wake,
+    Sleep,
+    Shutdown,
+    Restart,
+    Lock,
+    Open(String),
+    Close(String),
+    /// Connection check from the settings page.
+    Ping,
+}
+
+/// «включи компьютер», «открой телеграм на компьютере», «усыпи комп», …
+fn pc(text: &str) -> Option<PcAction> {
+    const PLACES: [&str; 8] = [
+        " на компьютере ",
+        " на компе ",
+        " на пк ",
+        " в компьютере ",
+        " на компьютер ",
+        " на комп ",
+        " на моем компьютере ",
+        " на моем компе ",
+    ];
+    const NOUNS: [&str; 7] = ["компьютер", "компьютера", "компьютеру", "комп", "компа", "компу", "пк"];
+    let mut rest = format!(" {text} ");
+    let mut found = false;
+    for place in PLACES {
+        if rest.contains(place) {
+            rest = rest.replacen(place, " ", 1);
+            found = true;
+            break;
+        }
+    }
+    let mut words: Vec<&str> = rest.split_whitespace().collect();
+    if !found {
+        let before = words.len();
+        words.retain(|w| !NOUNS.contains(w));
+        found = words.len() < before;
+    }
+    if !found {
+        return None;
+    }
+    words.retain(|w| !matches!(*w, "мой" | "моего" | "мне" | "пожалуйста"));
+    let (&verb, object) = words.split_first()?;
+    let mut object = object.join(" ");
+    for filler in ["программу ", "приложение ", "игру "] {
+        if let Some(o) = object.strip_prefix(filler) {
+            object = o.to_owned();
+        }
+    }
+    let all = words.join(" ");
+    if all.contains("спящ") || all.contains(" сон") || verb == "усыпи" {
+        return Some(PcAction::Sleep);
+    }
+    let open = matches!(verb, "открой" | "запусти" | "включи" | "открыть" | "запустить" | "включить");
+    let close = matches!(verb, "закрой" | "выключи" | "закрыть" | "выключить" | "отключи" | "выруби");
+    if !object.is_empty() {
+        return if open {
+            Some(PcAction::Open(object))
+        } else if close {
+            Some(PcAction::Close(object))
+        } else {
+            None
+        };
+    }
+    match verb {
+        "включи" | "включить" | "запусти" | "разбуди" => Some(PcAction::Wake),
+        "выключи" | "выключить" | "отключи" | "выруби" => Some(PcAction::Shutdown),
+        "перезагрузи" | "перезапусти" | "перезагрузить" => Some(PcAction::Restart),
+        "заблокируй" | "заблокировать" | "блокируй" => Some(PcAction::Lock),
+        _ => None,
+    }
 }
 
 fn normalize(text: &str) -> String {
@@ -322,6 +400,9 @@ fn seek_command(text: &str) -> Option<i64> {
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
     if let Some(ms) = seek_command(&normalize(text)) {
         return Some(Intent::Seek(ms));
+    }
+    if let Some(action) = pc(&normalize(text)) {
+        return Some(Intent::Pc(action));
     }
     let (norm, named) = strip_service(&normalize(text));
     if named
@@ -789,6 +870,8 @@ fn read_frames(
                 // «Продолжи» is ours even with an empty queue (e.g. after a restart):
                 // Alice can only answer it with «нужна подписка».
                 Intent::Resume => true,
+                // Only with a PC set up in the settings; otherwise the phrase stays Alice's.
+                Intent::Pc(_) => shared.pc_configured(),
                 Intent::Shuffle(_) | Intent::Repeat(_) => shared.has_queue(),
                 _ => shared.is_active(),
             };
@@ -843,6 +926,27 @@ mod tests {
         assert_eq!(s("перемотай на полторы минуты"), Some(Intent::Seek(90_000)));
         assert_eq!(s("перемотай вперед"), Some(Intent::Seek(30_000)));
         assert_eq!(s("перемотай на 45"), Some(Intent::Seek(45_000)));
+    }
+
+    #[test]
+    fn pc_commands() {
+        let pc = |t: &str| intent(t, false);
+        assert_eq!(pc("Алиса, включи компьютер"), Some(Intent::Pc(PcAction::Wake)));
+        assert_eq!(pc("включи мой комп"), Some(Intent::Pc(PcAction::Wake)));
+        assert_eq!(pc("Выключи компьютер."), Some(Intent::Pc(PcAction::Shutdown)));
+        assert_eq!(pc("усыпи компьютер"), Some(Intent::Pc(PcAction::Sleep)));
+        assert_eq!(pc("переведи компьютер в спящий режим"), Some(Intent::Pc(PcAction::Sleep)));
+        assert_eq!(pc("перезагрузи пк"), Some(Intent::Pc(PcAction::Restart)));
+        assert_eq!(pc("заблокируй компьютер"), Some(Intent::Pc(PcAction::Lock)));
+        assert_eq!(pc("открой телеграм на компьютере"), Some(Intent::Pc(PcAction::Open("телеграм".into()))));
+        assert_eq!(pc("запусти на компе стим"), Some(Intent::Pc(PcAction::Open("стим".into()))));
+        assert_eq!(pc("включи на компьютере игру дота"), Some(Intent::Pc(PcAction::Open("дота".into()))));
+        assert_eq!(pc("закрой хром на компе"), Some(Intent::Pc(PcAction::Close("хром".into()))));
+        assert_eq!(pc("выключи дискорд на компьютере"), Some(Intent::Pc(PcAction::Close("дискорд".into()))));
+        // Not about the PC: music and Alice's own commands stay as before.
+        assert_eq!(pc("включи компромат"), Some(Intent::Play("компромат".into())));
+        assert_ne!(pc("включи свет"), Some(Intent::Pc(PcAction::Wake)));
+        assert_eq!(super::pc("какая погода на компьютере"), None);
     }
 
     #[test]

@@ -1,0 +1,95 @@
+﻿# Installs soundya-pc: run once from this folder.
+#   Double-click install.cmd, or in PowerShell:
+#   powershell -ExecutionPolicy Bypass -File install.ps1
+# Asks for administrator rights (firewall rule, wake-on-LAN settings).
+
+param([string]$User = $env:USERNAME, [string]$AppData = $env:LOCALAPPDATA)
+$ErrorActionPreference = 'Stop'
+
+$admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $admin) {
+    # Restart elevated, but install for the user who started it.
+    Start-Process powershell.exe -Verb RunAs -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
+        '-User', $User, '-AppData', "`"$AppData`"")
+    exit
+}
+$Port = 8766
+$Dir = Join-Path $AppData 'soundya-pc'
+$Task = 'soundya-pc'
+
+Write-Host ''
+Write-Host '=== soundya-pc: установка ===' -ForegroundColor Cyan
+
+# 1. Files and key.
+New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+Copy-Item -Force (Join-Path $PSScriptRoot 'soundya-pc.ps1') (Join-Path $Dir 'soundya-pc.ps1')
+$ConfigPath = Join-Path $Dir 'config.json'
+if (Test-Path $ConfigPath) {
+    $Config = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+} else {
+    $bytes = New-Object byte[] 18
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $key = [Convert]::ToBase64String($bytes).Replace('+', 'x').Replace('/', 'y')
+    $Config = [pscustomobject]@{ port = $Port; key = $key; apps = [pscustomobject]@{} }
+    [IO.File]::WriteAllText($ConfigPath, ($Config | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+}
+Write-Host "[ok] файлы: $Dir"
+
+# 2. Firewall: only devices of the home network may connect.
+Get-NetFirewallRule -DisplayName $Task -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName $Task -Direction Inbound -Protocol TCP -LocalPort $Config.port `
+    -Action Allow -Profile Any -RemoteAddress LocalSubnet | Out-Null
+Write-Host "[ok] брандмауэр: порт $($Config.port) открыт для домашней сети"
+
+# 3. Start in the background at every logon (programs open on your desktop).
+$script = Join-Path $Dir 'soundya-pc.ps1'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+$principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
+Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
+Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | ForEach-Object {
+    try {
+        $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine
+        if ($cmd -like '*soundya-pc.ps1*') { Stop-Process -Id $_.Id -Force }
+    } catch {}
+}
+Start-ScheduledTask -TaskName $Task
+Write-Host '[ok] автозапуск при входе в Windows, уже запущен'
+
+# 4. Wake-on-LAN: wired adapter wakes on a magic packet; fast startup off
+# (with it on, most PCs ignore wake-on-LAN after "Shut down").
+$wired = Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
+    Where-Object { $_.Status -eq 'Up' -and $_.MediaType -eq '802.3' } | Select-Object -First 1
+if ($wired) {
+    try { Set-NetAdapterPowerManagement -Name $wired.Name -WakeOnMagicPacket Enabled -ErrorAction Stop } catch {}
+    foreach ($p in 'Wake on Magic Packet', '*WakeOnMagicPacket', 'Wake on magic packet') {
+        try { Set-NetAdapterAdvancedProperty -Name $wired.Name -DisplayName $p -DisplayValue 'Enabled' -ErrorAction Stop } catch {}
+        try { Set-NetAdapterAdvancedProperty -Name $wired.Name -RegistryKeyword $p -RegistryValue 1 -ErrorAction Stop } catch {}
+    }
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -Name HiberbootEnabled -Value 0
+    Write-Host "[ok] включение по сети: сетевая карта «$($wired.InterfaceDescription)», быстрый запуск выключен"
+    $mac = $wired.MacAddress.Replace('-', ':')
+    $ip = (Get-NetIPAddress -InterfaceIndex $wired.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
+} else {
+    Write-Host '[!] кабель не подключён: включать компьютер по сети не получится (только по проводу).' -ForegroundColor Yellow
+    $mac = ''
+    $up = Get-NetAdapter -Physical | Where-Object Status -eq 'Up' | Select-Object -First 1
+    $ip = if ($up) { (Get-NetIPAddress -InterfaceIndex $up.ifIndex -AddressFamily IPv4 | Select-Object -First 1).IPAddress } else { '' }
+}
+
+Write-Host ''
+Write-Host 'Готово. Откройте http://soundya.local:8765 -> Настройки -> Компьютер и впишите:' -ForegroundColor Green
+Write-Host "  Адрес компьютера:  $ip"
+Write-Host "  Ключ:              $($Config.key)"
+if ($mac) { Write-Host "  MAC-адрес:         $mac" }
+Write-Host ''
+Write-Host 'Ещё для включения по сети: в BIOS/UEFI включите Wake on LAN (Power On By PCI-E / LAN),'
+Write-Host 'а в роутере закрепите за компьютером IP-адрес.'
+Write-Host ''
+Read-Host 'Нажмите Enter, чтобы закрыть'

@@ -95,6 +95,8 @@
   label.check { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; cursor: pointer; }
   label.check input { margin-top: 3px; accent-color: var(--accent); }
   .hint { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+  label.field { display: block; font-size: 13px; color: var(--muted); margin-top: 12px; }
+  label.field input { margin-top: 5px; }
   .hint code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
   .hint ol { margin: 6px 0 0; padding-left: 20px; }
   .msg { font-size: 13px; margin-top: 10px; min-height: 1.2em; word-break: break-word; }
@@ -297,6 +299,25 @@
       <button class="primary" onclick="saveSettings()">Сохранить</button>
     </div>
     <div class="msg" id="setmsg"></div>
+
+    <h2 class="section">Компьютер</h2>
+    <p class="hint">«Алиса, включи компьютер», «открой телеграм на компьютере», «закрой хром на компе»,
+      «усыпи компьютер», «выключи компьютер». На компьютере с Windows нужна программа <b>soundya-pc</b>
+      из папки <code>pc</code> репозитория: её установщик покажет, что вписать сюда.</p>
+    <label class="field">Адрес компьютера
+      <input type="text" id="pchost" placeholder="192.168.1.50" autocomplete="off" spellcheck="false">
+    </label>
+    <label class="field">Ключ
+      <input type="password" id="pctoken" placeholder="ключ из установщика" autocomplete="off" spellcheck="false">
+    </label>
+    <label class="field">MAC-адрес — чтобы включать компьютер
+      <input type="text" id="pcmac" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="row">
+      <button onclick="testPc()" id="pctestbtn">Проверить связь</button>
+      <button class="primary" onclick="savePc()">Сохранить</button>
+    </div>
+    <div class="msg" id="pcmsg"></div>
 
     <div id="donate" style="display:none">
       <h2 class="donate-title">Поддержать проект</h2>
@@ -762,6 +783,9 @@ async function refresh() {
     $('proxy').value = settings.proxy;
     $('keyword').checked = settings.keyword_only;
     $('ring').checked = settings.ring !== false;
+    $('pchost').value = settings.pc_host || '';
+    $('pctoken').value = settings.pc_token || '';
+    $('pcmac').value = settings.pc_mac || '';
     settingsLoaded = true;
   }
 }
@@ -859,7 +883,8 @@ $('query').addEventListener('keydown', e => { if (e.key === 'Enter') search(); }
 // ---- account ----
 function settingsBody(extra) {
   return JSON.stringify(Object.assign({
-    proxy: $('proxy').value, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token
+    proxy: $('proxy').value, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
+    pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value
   }, extra));
 }
 
@@ -913,6 +938,23 @@ async function testProxy() {
 async function saveSettings() {
   show($('setmsg'), await post('/api/settings', settingsBody({})));
   settingsLoaded = false;
+  refresh();
+}
+
+async function savePc() {
+  show($('pcmsg'), await post('/api/settings', settingsBody({})));
+  settingsLoaded = false;
+  refresh();
+}
+
+async function testPc() {
+  $('pctestbtn').disabled = true;
+  busy($('pcmsg'), 'Сохраняю и проверяю…');
+  const saved = await post('/api/settings', settingsBody({}));
+  if (saved.startsWith('error')) { show($('pcmsg'), saved); $('pctestbtn').disabled = false; return; }
+  settingsLoaded = false;
+  show($('pcmsg'), await post('/api/cmd', 'pc ping'));
+  $('pctestbtn').disabled = false;
   refresh();
 }
 

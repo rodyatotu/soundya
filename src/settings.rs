@@ -18,6 +18,15 @@ pub struct Settings {
     /// Orange ring light while SoundCloud plays.
     #[serde(default = "yes")]
     pub ring: bool,
+    /// Windows PC with soundya-pc: its address ("192.168.1.50" or "host:port").
+    #[serde(default)]
+    pub pc_host: String,
+    /// The key soundya-pc's installer printed.
+    #[serde(default)]
+    pub pc_token: String,
+    /// The PC's wired network card, for switching it on (wake-on-LAN).
+    #[serde(default)]
+    pub pc_mac: String,
 }
 
 fn yes() -> bool {
@@ -26,7 +35,15 @@ fn yes() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { proxy: String::new(), keyword_only: false, token: String::new(), ring: true }
+        Self {
+            proxy: String::new(),
+            keyword_only: false,
+            token: String::new(),
+            ring: true,
+            pc_host: String::new(),
+            pc_token: String::new(),
+            pc_mac: String::new(),
+        }
     }
 }
 
@@ -55,12 +72,16 @@ impl Settings {
 
     /// Token hidden except its last 4 characters.
     pub fn masked_token(&self) -> String {
-        let t = self.token.trim();
-        if t.is_empty() {
-            return String::new();
-        }
-        let tail: String = t.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
-        format!("••••••••{tail}")
+        mask(&self.token)
+    }
+
+    pub fn masked_pc_token(&self) -> String {
+        mask(&self.pc_token)
+    }
+
+    /// Commands can go to the PC (switching on needs only the MAC address).
+    pub fn pc_configured(&self) -> bool {
+        !self.pc_host.trim().is_empty() || !self.pc_mac.trim().is_empty()
     }
 
     /// Proxy with the password hidden, for showing on the page.
@@ -77,6 +98,16 @@ impl Settings {
             None => p.clone(),
         }
     }
+}
+
+/// A secret hidden except its last 4 characters.
+fn mask(secret: &str) -> String {
+    let t = secret.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let tail: String = t.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("••••••••{tail}")
 }
 
 #[cfg(test)]
