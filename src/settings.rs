@@ -1,0 +1,83 @@
+//! Settings edited from the web page, stored in <state dir>/config.json.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Settings {
+    /// "" = direct; "http://user:pass@host:port", "socks5://host:port" or "host:port".
+    #[serde(default)]
+    pub proxy: String,
+    /// Take over only phrases that name SoundCloud.
+    #[serde(default)]
+    pub keyword_only: bool,
+    /// SoundCloud `oauth_token` cookie value; "" = not logged in.
+    #[serde(default)]
+    pub token: String,
+}
+
+fn path(dir: &Path) -> PathBuf {
+    dir.join("config.json")
+}
+
+impl Settings {
+    pub fn load(dir: &Path) -> Self {
+        let mut s: Settings = std::fs::read_to_string(path(dir))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        // First run: take the defaults from soundya.env.
+        if !path(dir).exists() {
+            s.keyword_only = std::env::var("SOUNDYA_KEYWORD_ONLY").is_ok_and(|v| v == "1");
+            s.proxy = std::env::var("SOUNDYA_PROXY").unwrap_or_default();
+        }
+        s
+    }
+
+    pub fn save(&self, dir: &Path) -> std::io::Result<()> {
+        let tmp = dir.join("config.json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
+        std::fs::rename(tmp, path(dir))
+    }
+
+    /// Token hidden except its last 4 characters.
+    pub fn masked_token(&self) -> String {
+        let t = self.token.trim();
+        if t.is_empty() {
+            return String::new();
+        }
+        let tail: String = t.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+        format!("••••••••{tail}")
+    }
+
+    /// Proxy with the password hidden, for showing on the page.
+    pub fn masked_proxy(&self) -> String {
+        let p = &self.proxy;
+        let Some(scheme_end) = p.find("://").map(|i| i + 3) else {
+            return p.clone();
+        };
+        let Some(at) = p[scheme_end..].find('@').map(|i| i + scheme_end) else {
+            return p.clone();
+        };
+        match p[scheme_end..at].find(':') {
+            Some(colon) => format!("{}:••••{}", &p[..scheme_end + colon], &p[at..]),
+            None => p.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masks_password_only() {
+        let s = Settings { proxy: "socks5://bob:secret@1.2.3.4:1080".into(), ..Default::default() };
+        assert_eq!(s.masked_proxy(), "socks5://bob:••••@1.2.3.4:1080");
+        let s = Settings { proxy: "http://1.2.3.4:3128".into(), ..Default::default() };
+        assert_eq!(s.masked_proxy(), "http://1.2.3.4:3128");
+        let s = Settings { token: "2-123456-abcdEFGH".into(), ..Default::default() };
+        assert_eq!(s.masked_token(), "••••••••EFGH");
+    }
+}

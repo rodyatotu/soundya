@@ -1,0 +1,40 @@
+#!/bin/sh
+DIR=/data/opt/soundya
+LOG=/tmp/soundya.log
+PID=/run/soundya.pid
+
+running() {
+    [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null
+}
+
+case "${1:-}" in
+    start)
+        rm -f /run/soundya.stop
+        if running; then
+            echo "soundya already running"
+            exit 0
+        fi
+        nohup setsid "$DIR/run.sh" </dev/null >>"$LOG" 2>&1 &
+        echo "soundya started (log: $LOG)"
+        ;;
+    stop)
+        touch /run/soundya.stop
+        if running; then
+            P=$(cat "$PID")
+            # run.sh is a session leader: stop it together with the daemon.
+            kill -TERM -- "-$P" 2>/dev/null || kill -TERM "$P" 2>/dev/null
+        fi
+        rm -f "$PID"
+        for P in $(pidof soundya 2>/dev/null); do kill "$P" 2>/dev/null; done
+        echo "soundya stopped"
+        ;;
+    restart)
+        "$0" stop
+        sleep 1
+        "$0" start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}" >&2
+        exit 1
+        ;;
+esac

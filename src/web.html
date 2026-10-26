@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soundya</title>
+<style>
+  :root {
+    --bg: #f4f1ec; --card: #fffdf9; --ink: #1d1b18; --muted: #77716a;
+    --line: #e4ded5; --hover: #f1ece4; --accent: #ff5500; --accent-ink: #fff;
+    --ok: #2f7d4f; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141312; --card: #1d1c1a; --ink: #f1ede7; --muted: #9a938a;
+      --line: #2e2c29; --hover: #262422; --accent: #ff6a1f; --accent-ink: #160b04;
+      --ok: #6fcf97; --err: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+  }
+  main { max-width: 600px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; gap: 12px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  h1 span { color: var(--accent); }
+  .state { font-size: 13px; color: var(--muted); text-align: right; }
+  nav { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  nav button { flex: 1; min-width: 0; padding: 8px 6px; font-size: 14px; }
+  nav button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  .tab { display: none; } .tab.on { display: block; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  h3 { font-size: 13px; color: var(--muted); margin: 16px 0 6px; font-weight: 600; }
+  .track { font-size: 17px; font-weight: 600; min-height: 1.45em; word-break: break-word; }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; margin: 12px 0 6px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .5s linear; }
+  .times { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .controls { display: flex; gap: 8px; margin-top: 12px; }
+  button {
+    font: inherit; border: 1px solid var(--line); background: transparent; color: var(--ink);
+    border-radius: 10px; padding: 9px 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .controls button { flex: 1; font-size: 18px; padding: 8px 0; }
+  .controls button.primary { flex: 1.4; }
+  input[type=text], input[type=password] {
+    width: 100%; font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+  .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .row button { flex: 1; }
+  .search { display: flex; gap: 8px; }
+  .search input { flex: 1; min-width: 0; }
+  label.check { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; cursor: pointer; }
+  label.check input { margin-top: 3px; accent-color: var(--accent); }
+  .hint { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+  .hint code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
+  .hint ol { margin: 6px 0 0; padding-left: 20px; }
+  .msg { font-size: 13px; margin-top: 10px; min-height: 1.2em; word-break: break-word; }
+  .msg.ok { color: var(--ok); } .msg.err { color: var(--err); }
+  ul.list { list-style: none; margin: 0; padding: 0; }
+  ul.list li {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+    padding: 8px 10px; margin: 0 -10px; border-radius: 8px; cursor: pointer;
+  }
+  ul.list li:hover { background: var(--hover); }
+  ul.list li .t { min-width: 0; overflow-wrap: anywhere; }
+  ul.list li .t small { display: block; color: var(--muted); font-size: 12px; }
+  ul.list li .d { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  ul.list li.now { font-weight: 600; }
+  ul.list li.now .t::before { content: "▶ "; color: var(--accent); }
+  ul.queue { max-height: 340px; overflow: auto; }
+  .empty { color: var(--muted); font-size: 14px; }
+  .who { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .who b { font-size: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>sound<span>ya</span></h1>
+    <div class="state" id="state">…</div>
+  </header>
+
+  <section>
+    <div class="track" id="track">—</div>
+    <div class="bar"><i id="progress"></i></div>
+    <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+    <div class="controls">
+      <button onclick="cmd('prev')" title="Назад">⏮</button>
+      <button class="primary" id="toggle" onclick="cmd('toggle')" title="Пауза / продолжить">⏯</button>
+      <button onclick="cmd('next')" title="Следующий">⏭</button>
+      <button onclick="cmd('stop')" title="Стоп">⏹</button>
+    </div>
+  </section>
+
+  <nav>
+    <button data-tab="search" class="on">Поиск</button>
+    <button data-tab="mine">Моя музыка</button>
+    <button data-tab="queue">Очередь</button>
+    <button data-tab="settings">Настройки</button>
+  </nav>
+
+  <section class="tab on" id="tab-search">
+    <div class="search">
+      <input type="text" id="query" placeholder="Трек, исполнитель или ссылка soundcloud.com" autocomplete="off">
+      <button class="primary" onclick="search()">Найти</button>
+    </div>
+    <div class="msg" id="searchmsg"></div>
+    <div id="results"></div>
+  </section>
+
+  <section class="tab" id="tab-mine">
+    <div id="loggedout">
+      <h2>Вход в SoundCloud</h2>
+      <p class="hint">SoundCloud не даёт сторонним приложениям вход по паролю, поэтому используется токен из браузера:</p>
+      <div class="hint"><ol>
+        <li>Откройте <b>soundcloud.com</b> на компьютере и войдите в аккаунт.</li>
+        <li>Откройте инструменты разработчика: <b>Cmd+Option+I</b> (Mac) или <b>F12</b>.</li>
+        <li>Вкладка <b>Application</b> (в Safari — <b>Storage</b>) → <b>Cookies</b> → <code>https://soundcloud.com</code>.</li>
+        <li>Найдите строку <code>oauth_token</code>, скопируйте значение (вида <code>2-123456-…</code>) и вставьте ниже.</li>
+      </ol></div>
+      <div class="row">
+        <input type="password" id="token" placeholder="oauth_token" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="row">
+        <button class="primary" onclick="login()">Войти</button>
+      </div>
+      <div class="msg" id="loginmsg"></div>
+    </div>
+
+    <div id="loggedin" style="display:none">
+      <div class="who">
+        <div><span class="hint">Аккаунт</span><br><b id="username"></b></div>
+        <button onclick="logout()">Выйти</button>
+      </div>
+      <div class="row">
+        <button class="primary" onclick="likes()">♥ Мои лайки</button>
+        <button onclick="library()">Обновить плейлисты</button>
+      </div>
+      <div class="msg" id="minemsg"></div>
+      <h3>Плейлисты</h3>
+      <ul class="list" id="mylists"></ul>
+      <div class="empty" id="mylistsempty">Нажмите «Обновить плейлисты»</div>
+      <p class="hint">Голосом: «Алиса, включи мои лайки», «Алиса, включи мой плейлист …».</p>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-queue">
+    <ul class="list queue" id="queue"></ul>
+    <div class="empty" id="qempty">Пусто</div>
+  </section>
+
+  <section class="tab" id="tab-settings">
+    <h2>Прокси</h2>
+    <input type="text" id="proxy" placeholder="socks5://user:pass@host:1080" autocomplete="off" spellcheck="false">
+    <p class="hint">
+      <code>http://host:port</code>, <code>socks5://host:port</code> или
+      <code>socks5://user:pass@host:port</code>. Пустое поле — без прокси. Через прокси идут и поиск, и звук.
+    </p>
+    <label class="check">
+      <input type="checkbox" id="keyword">
+      <span>Только по слову «саундклауд»<br>
+        <span class="hint">«Алиса, включи Bonobo в саундклауде». Остальная музыка остаётся Алисе.</span></span>
+    </label>
+    <div class="row">
+      <button onclick="testProxy()" id="testbtn">Проверить прокси</button>
+      <button class="primary" onclick="saveSettings()">Сохранить</button>
+    </div>
+    <div class="msg" id="setmsg"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let settings = { proxy: '', keyword_only: false, token: '' };
+let settingsLoaded = false;
+let queueSig = '';
+
+function mmss(ms) {
+  const s = Math.floor(ms / 1000);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+function show(el, text, isErr) {
+  const err = isErr ?? /^(error|timeout|nothing found)/i.test(text);
+  el.textContent = text.replace(/^error:\s*/i, '');
+  el.className = 'msg ' + (err ? 'err' : 'ok');
+}
+
+function busy(el, text) { el.className = 'msg'; el.textContent = text; }
+
+async function post(url, body) {
+  try {
+    const r = await fetch(url, { method: 'POST', body });
+    return (await r.text()).trim();
+  } catch (e) {
+    return 'error: нет связи с колонкой';
+  }
+}
+
+async function postJSON(body) {
+  const t = await post('/api/cmd', body);
+  try { return JSON.parse(t); } catch (e) { return { error: t.replace(/^error:\s*/i, '') }; }
+}
+
+function item(title, sub, right, onclick, cls) {
+  const li = document.createElement('li');
+  if (cls) li.className = cls;
+  const t = document.createElement('div');
+  t.className = 't';
+  t.textContent = title;
+  if (sub) {
+    const s = document.createElement('small');
+    s.textContent = sub;
+    t.appendChild(s);
+  }
+  const d = document.createElement('div');
+  d.className = 'd';
+  d.textContent = right || '';
+  li.append(t, d);
+  li.onclick = onclick;
+  return li;
+}
+
+function playlistItems(ul, lists, msgEl) {
+  ul.innerHTML = '';
+  lists.forEach(p => {
+    ul.appendChild(item(p.title || '(без названия)', p.user, p.count ? p.count + ' тр.' : '', async () => {
+      busy(msgEl, 'Загружаю «' + p.title + '»…');
+      show(msgEl, await post('/api/cmd', 'openpl ' + p.id + ' ' + (p.link || '')));
+      refresh();
+    }));
+  });
+}
+
+// ---- tabs ----
+document.querySelectorAll('nav button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.id === 'tab-' + b.dataset.tab));
+    try { localStorage.setItem('tab', b.dataset.tab); } catch (e) {}
+    if (b.dataset.tab === 'mine' && settings.token && !$('mylists').children.length) library();
+  };
+});
+try {
+  const saved = localStorage.getItem('tab');
+  const btn = saved && document.querySelector('nav button[data-tab="' + saved + '"]');
+  if (btn) setTimeout(() => btn.click(), 0);
+} catch (e) {}
+
+// ---- status ----
+async function refresh() {
+  let s;
+  try {
+    s = await (await fetch('/api/status')).json();
+  } catch (e) {
+    $('state').textContent = 'нет связи с колонкой';
+    return;
+  }
+  const names = { playing: 'играет', paused: 'пауза', stopped: 'остановлено' };
+  $('state').textContent = names[s.state] || s.state;
+  $('track').textContent = s.track || '—';
+  $('pos').textContent = mmss(s.position_ms);
+  $('dur').textContent = mmss(s.duration_ms);
+  $('progress').style.width = s.duration_ms ? Math.min(100, 100 * s.position_ms / s.duration_ms) + '%' : '0';
+  $('toggle').textContent = s.state === 'playing' ? '⏸' : '▶';
+
+  const sig = s.pos + '|' + s.state + '|' + s.queue.length + '|' + (s.queue[0] || '');
+  if (sig !== queueSig) {
+    queueSig = sig;
+    const q = $('queue');
+    q.innerHTML = '';
+    s.queue.forEach((name, i) => {
+      q.appendChild(item(name, '', String(i + 1), async () => { await post('/api/cmd', 'goto ' + i); refresh(); },
+        i === s.pos && s.state !== 'stopped' ? 'now' : ''));
+    });
+    $('qempty').style.display = s.queue.length ? 'none' : 'block';
+  }
+
+  settings = s.settings;
+  const logged = !!settings.token;
+  $('loggedout').style.display = logged ? 'none' : 'block';
+  $('loggedin').style.display = logged ? 'block' : 'none';
+  $('username').textContent = s.user || (logged ? 'токен сохранён, вход не подтверждён' : '');
+  if (!settingsLoaded) {
+    $('proxy').value = settings.proxy;
+    $('keyword').checked = settings.keyword_only;
+    settingsLoaded = true;
+  }
+}
+
+async function cmd(c) {
+  await post('/api/cmd', c);
+  refresh();
+}
+
+// ---- search ----
+async function search() {
+  const q = $('query').value.trim();
+  if (!q) return;
+  const box = $('results');
+  if (q.startsWith('https://')) {
+    busy($('searchmsg'), 'Открываю ссылку…');
+    show($('searchmsg'), await post('/api/cmd', 'play ' + q));
+    refresh();
+    return;
+  }
+  busy($('searchmsg'), 'Ищу…');
+  box.innerHTML = '';
+  const r = await postJSON('search ' + q);
+  if (r.error) { show($('searchmsg'), r.error, true); return; }
+  $('searchmsg').textContent = '';
+  if (!r.tracks.length && !r.playlists.length) { show($('searchmsg'), 'Ничего не нашлось', true); return; }
+  if (r.tracks.length) {
+    const h = document.createElement('h3'); h.textContent = 'Треки';
+    const ul = document.createElement('ul'); ul.className = 'list';
+    r.tracks.forEach((t, i) => ul.appendChild(item(t.name, '', mmss(t.duration_ms), async () => {
+      busy($('searchmsg'), 'Включаю…');
+      show($('searchmsg'), await post('/api/cmd', 'pick ' + i));
+      refresh();
+    })));
+    box.append(h, ul);
+  }
+  if (r.playlists.length) {
+    const h = document.createElement('h3'); h.textContent = 'Плейлисты';
+    const ul = document.createElement('ul'); ul.className = 'list';
+    playlistItems(ul, r.playlists, $('searchmsg'));
+    box.append(h, ul);
+  }
+}
+$('query').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+
+// ---- account ----
+function settingsBody(extra) {
+  return JSON.stringify(Object.assign({
+    proxy: $('proxy').value, keyword_only: $('keyword').checked, token: settings.token
+  }, extra));
+}
+
+async function login() {
+  const t = $('token').value.trim();
+  if (!t) return;
+  busy($('loginmsg'), 'Проверяю…');
+  show($('loginmsg'), await post('/api/settings', settingsBody({ token: t })));
+  $('token').value = '';
+  await refresh();
+  if (settings.token) library();
+}
+
+async function logout() {
+  show($('minemsg'), await post('/api/settings', settingsBody({ token: '' })));
+  $('mylists').innerHTML = '';
+  $('mylistsempty').style.display = 'block';
+  refresh();
+}
+
+async function likes() {
+  busy($('minemsg'), 'Загружаю лайки…');
+  show($('minemsg'), await post('/api/cmd', 'likes'));
+  refresh();
+}
+
+async function library() {
+  busy($('minemsg'), 'Загружаю плейлисты…');
+  const r = await postJSON('library');
+  if (r.error) { show($('minemsg'), r.error, true); return; }
+  $('minemsg').textContent = '';
+  playlistItems($('mylists'), r.playlists, $('minemsg'));
+  $('mylistsempty').style.display = r.playlists.length ? 'none' : 'block';
+  $('mylistsempty').textContent = r.playlists.length ? '' : 'Плейлистов нет';
+}
+
+// ---- settings ----
+async function testProxy() {
+  $('testbtn').disabled = true;
+  busy($('setmsg'), 'Проверяю…');
+  show($('setmsg'), await post('/api/test', JSON.stringify({ proxy: $('proxy').value })));
+  $('testbtn').disabled = false;
+}
+
+async function saveSettings() {
+  show($('setmsg'), await post('/api/settings', settingsBody({})));
+  settingsLoaded = false;
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
