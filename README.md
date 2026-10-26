@@ -318,4 +318,4 @@ soundya — неофициальный проект и никак не связ�
 
 [MIT](LICENSE)
 
-<p align="center"><img src="docs/logo.jpg" alt="soundya" width="120"></p>
+<p align="center"><img src="docs/logo.png" alt="soundya" width="160"></p>
