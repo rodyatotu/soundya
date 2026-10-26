@@ -1,4 +1,4 @@
-//! Orange ring while SoundCloud plays, pulsing while something loads
+//! Orange ring while SoundCloud plays, dim on pause, pulsing while something loads
 //! (Station Lite: three RGB zones in sysfs).
 //!
 //! Alice's own animations (listening, speaking, volume) write the same LEDs, so
@@ -25,6 +25,8 @@ const STUCK_MS: u64 = 1500;
 const BREATH_MS: f32 = 1600.0;
 /// Lowest brightness of a breath, as a share of full.
 const BREATH_MIN: f32 = 0.06;
+/// Brightness on pause, as a share of full.
+const PAUSED: f32 = 0.15;
 
 /// Orange at `level` (0..1) of full brightness.
 fn orange(level: f32) -> (u8, u8, u8) {
@@ -127,6 +129,9 @@ pub fn run(shared: Arc<Shared>) {
                 Some(orange(breath(clock)))
             } else if shared.playing.load(Ordering::Acquire) {
                 Some(ORANGE)
+            } else if track.as_ref().is_some_and(|f| f.paused.load(Ordering::Acquire)) {
+                // Paused: dim orange, so it is clear SoundCloud is still there.
+                Some(orange(PAUSED))
             } else {
                 None
             };
