@@ -81,19 +81,98 @@ soundya подключается к локальному интерфейсу А
 
 ### 1. Root и отключение обновлений
 
-Делается по гайдам сообщества — подробно и с картинками:
+> [!WARNING]
+> Сброс колонки стирает все её настройки, колонку придётся заново привязать к аккаунту. Ошибка в процессе может сломать колонку. Всё делаете на свой риск.
 
-1. **Root по сети (DNS-метод):** [hackalice.me — шаг 1](https://hackalice.me/start/root/). Удобнее всего со своим стендом [lite-kit](https://github.com/krevetkqqq/lite-kit) на компьютере.
-2. **Отключите обновления — обязательно**, иначе Яндекс пришлёт прошивку и root пропадёт: [hackalice.me — шаг 2](https://hackalice.me/start/ssh/). Коротко, из клона [yandex-station-extended](https://github.com/Marker284/yandex-station-extended):
-   ```sh
-   adb connect <IP-колонки>:5555
-   adb shell 'mkdir -p /data/quasar && touch /data/quasar/activate_adb_quasmodrom /data/quasar/activate_network_adb && chattr +i /data/quasar/activate_adb_quasmodrom /data/quasar/activate_network_adb'
-   adb shell mkdir -p /data/opt
-   adb push contrib/yandex-noupdate.sh /data/opt/yandex-noupdate.sh
-   adb shell sh /data/opt/yandex-noupdate.sh
-   adb shell reboot
-   ```
-   Проверка после перезагрузки: `adb shell sh /data/opt/yandex-noupdate.sh status` → `updatesd убран`, `заглушён`, `подменён`.
+> [!IMPORTANT]
+> DNS-метод работает **только на прошивках до обновления 20–21 октября 2026**. Проверено на Станции Лайт 1 с прошивкой `0.369.1.46` (сборка от 13 октября 2026). Если колонка уже обновилась дальше, этот способ не сработает. Актуальный статус смотрите на [hackalice.me](https://hackalice.me/start/root/).
+
+Гайд пересказывает [hackalice.me — шаг 1](https://hackalice.me/start/root/) и [шаг 2](https://hackalice.me/start/ssh/). Если что-то не сходится, верьте им: там гайд обновляют.
+
+**Что понадобится:**
+- роутер, в котором можно поменять DNS (Keenetic, ASUS, TP-Link, OpenWrt, MikroTik). Если нельзя, подойдёт второй Android-телефон в режиме точки доступа с приложением DNS Changer;
+- компьютер в той же сети с `adb`: на Mac `brew install android-platform-tools`, на Windows и Linux — [Platform Tools](https://developer.android.com/tools/releases/platform-tools);
+- телефон с приложением «Дом с Алисой».
+
+#### 1.1. Сбросьте колонку
+
+Выньте кабель питания. Зажмите кнопку выключения микрофона и, не отпуская её, вставьте кабель обратно. Держите 10–15 секунд, пока кольцо не замигает и Алиса не скажет про сброс.
+
+#### 1.2. Начните привязку и остановитесь на Wi-Fi
+
+На телефоне включите Bluetooth и геолокацию. В «Доме с Алисой»: «+» → «Устройство с Алисой» → дойдите до экрана с паролем от Wi-Fi.
+
+**Пока не нажимайте «Подключиться».** Если поменять DNS раньше этого экрана, привязка сломается.
+
+#### 1.3. Поменяйте DNS в роутере
+
+Поставьте первым DNS-сервером для домашней сети (DHCP) адрес `179.254.167.126`, второй оставьте пустым.
+
+- **Keenetic:** «Сетевые правила» → «Домашняя сеть» → «Параметры IP и DHCP» → DNS 1 → «Сохранить».
+- **ASUS:** «ЛВС» → «DHCP-сервер» → «DNS-сервер 1».
+- **TP-Link:** «Дополнительные настройки» → «Сеть» → «DHCP-сервер» → «Основной DNS».
+- **OpenWrt** (меняет DNS только для нужных доменов, остальная сеть не затронута — лучший вариант):
+  ```sh
+  uci add_list dhcp.@dnsmasq[0].server='/quasar.yandex.net/179.254.167.126'
+  uci add_list dhcp.@dnsmasq[0].server='/quasar.yandex.ru/179.254.167.126'
+  uci add_list dhcp.@dnsmasq[0].server='/scbh.yandex.net/179.254.167.126'
+  uci commit dhcp && /etc/init.d/dnsmasq reload
+  ```
+
+DNS нужно менять именно для **домашней сети (DHCP)**. Настройка DNS для интернет-подключения (WAN) не поможет.
+
+`179.254.167.126` — сервер сообщества, не ваш. Если не хотите от него зависеть, запустите такой же стенд у себя на Mac ([lite-kit](https://github.com/krevetkqqq/lite-kit), инструкция в его README) и укажите в роутере IP вашего компьютера.
+
+#### 1.4. Подключите колонку
+
+Вернитесь в приложение и нажмите «Подключиться». Колонка подключится к Wi-Fi, помигает и издаст звук готовности.
+
+#### 1.5. Зайдите по ADB
+
+Найдите IP колонки в списке устройств роутера и выполните на компьютере:
+```sh
+adb connect <IP-колонки>:5555
+adb shell id
+```
+Если в ответе есть `uid=0(root)`, root получен.
+
+#### 1.6. Отключите обновления — сразу, пока DNS не вернули
+
+Иначе Яндекс пришлёт новую прошивку, и root пропадёт. Скрипт берём из [yandex-station-extended](https://github.com/Marker284/yandex-station-extended):
+```sh
+git clone https://github.com/Marker284/yandex-station-extended && cd yandex-station-extended
+adb shell 'mkdir -p /data/quasar && touch /data/quasar/activate_adb_quasmodrom /data/quasar/activate_network_adb && chattr +i /data/quasar/activate_adb_quasmodrom /data/quasar/activate_network_adb'
+adb shell mkdir -p /data/opt
+adb push contrib/yandex-noupdate.sh /data/opt/yandex-noupdate.sh
+adb shell sh /data/opt/yandex-noupdate.sh
+```
+Первая команда `adb shell` оставляет ADB по сети включённым после перезагрузки. Скрипт `yandex-noupdate.sh` выключает обновления.
+
+#### 1.7. Верните DNS и перезагрузите колонку
+
+Уберите `179.254.167.126` из настроек роутера и верните как было. Для OpenWrt:
+```sh
+uci -q del_list dhcp.@dnsmasq[0].server='/quasar.yandex.net/179.254.167.126'
+uci -q del_list dhcp.@dnsmasq[0].server='/quasar.yandex.ru/179.254.167.126'
+uci -q del_list dhcp.@dnsmasq[0].server='/scbh.yandex.net/179.254.167.126'
+uci commit dhcp && /etc/init.d/dnsmasq reload
+```
+Затем:
+```sh
+adb shell reboot
+# подождите минуту
+adb connect <IP-колонки>:5555
+adb shell sh /data/opt/yandex-noupdate.sh status
+```
+В ответе должно быть: `updatesd убран`, `заглушён`, `подменён`. Root остаётся и с обычным DNS.
+
+<details>
+<summary><b>Если на каком-то шаге не получилось</b></summary>
+
+- **«Не удалось подключиться к Wi-Fi» в приложении** — DNS поменяли слишком рано. Уберите его, сбросьте колонку и начните с 1.1.
+- **`adb connect` пишет `refused` на порт 5555** — выключите в роутере фильтрацию DNS (Яндекс.DNS, AdGuard) и передёрните питание колонки.
+- **`unable to connect`** — компьютер и колонка должны быть в одной сети. Гостевая сеть с изоляцией клиентов не подойдёт.
+</details>
 
 ### 2. Закрепите IP колонки в роутере
 
