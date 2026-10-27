@@ -45,7 +45,7 @@ installed() {
     printf '%s' "$LOGTEXT" | grep -q "Installed"
 }
 
-echo "Загружаю на колонку $IP…"
+echo "Загружаю на колонку ${IP}…"
 retry upload || { echo "Не удалось загрузить: колонка недоступна по сети." >&2; exit 1; }
 echo "Устанавливаю…"
 retry start_install || { echo "Не удалось запустить установку." >&2; exit 1; }
