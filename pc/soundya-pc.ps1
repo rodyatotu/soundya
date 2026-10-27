@@ -103,8 +103,27 @@ function Works($item) {
     if ($item.Path -notlike '*.lnk') { return $true }
     try {
         $target = $Shell.CreateShortcut($item.Path).TargetPath
-        return (-not $target) -or (Test-Path -LiteralPath $target)
+        # Network paths can take many seconds to answer: trust them.
+        if (-not $target -or $target.StartsWith('\\')) { return $true }
+        return (Test-Path -LiteralPath $target)
     } catch { return $true }
+}
+
+# The first item that still works; checked one by one, only as far as needed.
+function First-Working($items) {
+    foreach ($i in @($items)) { if ($i -and (Works $i)) { return $i } }
+    $null
+}
+
+# Shortcuts are read once and kept for 5 minutes: walking the Start menu takes a while.
+$global:ShortcutCache = $null
+$global:ShortcutTime = [DateTime]::MinValue
+function Cached-Shortcuts {
+    if (-not $global:ShortcutCache -or ((Get-Date) - $global:ShortcutTime).TotalMinutes -gt 5) {
+        $global:ShortcutCache = @(Shortcuts)
+        $global:ShortcutTime = Get-Date
+    }
+    $global:ShortcutCache
 }
 
 # Games installed through Steam: @{ Name; Path = steam://rungameid/<id> }.
@@ -151,13 +170,13 @@ function Find-App([string]$spoken) {
             if ($exe -and (Test-Path -LiteralPath $exe)) { return [pscustomobject]@{ Name = 'Steam'; Path = $exe } }
         } catch {}
     }
-    $all = @(Shortcuts | Where-Object { Works $_ })
+    $all = @(Cached-Shortcuts)
     foreach ($w in $wanted) {
-        $exact = $all | Where-Object { $_.Name.ToLower() -eq $w } | Select-Object -First 1
+        $exact = First-Working ($all | Where-Object { $_.Name.ToLower() -eq $w })
         if ($exact) { return $exact }
-        $starts = $all | Where-Object { $_.Name.ToLower().StartsWith($w) } | Sort-Object { $_.Name.Length } | Select-Object -First 1
+        $starts = First-Working ($all | Where-Object { $_.Name.ToLower().StartsWith($w) } | Sort-Object { $_.Name.Length })
         if ($starts) { return $starts }
-        $has = $all | Where-Object { $_.Name.ToLower().Contains($w) } | Sort-Object { $_.Name.Length } | Select-Object -First 1
+        $has = First-Working ($all | Where-Object { $_.Name.ToLower().Contains($w) } | Sort-Object { $_.Name.Length })
         if ($has) { return $has }
     }
     # Steam games: «открой дедлок», «запусти доту».
@@ -179,13 +198,14 @@ function Find-App([string]$spoken) {
     foreach ($w in $wanted) {
         if ($w.Length -lt 4) { continue }
         # Longer names may be further off: «dedlok» is 3 edits from «deadlock».
-        $best = $null; $bestD = 3
-        if ($w.Length -ge 6) { $bestD = 4 }
-        foreach ($s in ($all + $games)) {
+        $limit = 3
+        if ($w.Length -ge 6) { $limit = 4 }
+        $close = foreach ($s in ($all + $games)) {
             $first = ($s.Name.ToLower() -split '\s+')[0]
             $dist = [Math]::Min((Distance $w $s.Name.ToLower()), (Distance $w $first))
-            if ($dist -lt $bestD) { $best = $s; $bestD = $dist }
+            if ($dist -lt $limit) { [pscustomobject]@{ Item = $s; Dist = $dist } }
         }
+        $best = First-Working (@($close) | Sort-Object Dist | ForEach-Object { $_.Item })
         if ($best) { return $best }
     }
     # Built-in programs: notepad, calc, explorer, ms-settings:, …
@@ -210,7 +230,9 @@ function Process-Names($app) {
 
 function Do-Open([string]$name) {
     if (-not $name) { return 'Скажите, что открыть' }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     $app = Find-App $name
+    Log ("find '{0}': {1:N1} s" -f $name, $clock.Elapsed.TotalSeconds)
     if (-not $app) { return "Не нашла на компьютере программу $name" }
     try {
         if ($app.Path -match '\.(lnk|url|exe)$' -or $app.Path -match '^(steam|shell):') {

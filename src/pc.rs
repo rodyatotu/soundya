@@ -34,7 +34,7 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
     // Straight to the PC: never through the SoundCloud proxy.
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(3))
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(30))
         .build();
     let mut request = agent
         .post(&url)
