@@ -35,9 +35,12 @@ upload() {
 }
 
 start_install() {
-    adb -s "$DEV" shell "cd /tmp && rm -rf soundya /tmp/soundya-install.done && tar -xf soundya-armv7.tar && \
-        (setsid sh -c 'sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done' \
-        </dev/null >/dev/null 2>&1 &)"
+    # Started the same way the init script starts soundya (nohup + setsid), so it
+    # keeps running when adb disconnects.
+    adb -s "$DEV" shell "cd /tmp && rm -rf soundya /tmp/soundya-install.done /tmp/soundya-install.log && \
+        tar -xf soundya-armv7.tar && \
+        nohup setsid sh -c 'sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done' \
+        </dev/null >/dev/null 2>&1 & sleep 1; [ -f /tmp/soundya-install.log ]"
 }
 
 installed() {
@@ -49,7 +52,7 @@ echo "Загружаю на колонку ${IP}…"
 retry upload || { echo "Не удалось загрузить: колонка недоступна по сети." >&2; exit 1; }
 echo "Устанавливаю…"
 retry start_install || { echo "Не удалось запустить установку." >&2; exit 1; }
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     sleep 2
     connect
     if installed; then
@@ -57,5 +60,6 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         exit 0
     fi
 done
-echo "Установка запущена, но её завершения дождаться не удалось. Проверьте: adb shell cat /tmp/soundya-install.log" >&2
+echo "Не дождался конца установки. Посмотрите: adb shell cat /tmp/soundya-install.log" >&2
+echo "Или установите вручную: adb shell sh /tmp/soundya/install.sh" >&2
 exit 1
