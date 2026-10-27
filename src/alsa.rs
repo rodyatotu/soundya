@@ -36,6 +36,71 @@ const EBUSY: c_int = 16;
 extern "C" {
     fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
+}
+
+/// SNDRV_PCM_IOCTL_START: `_IO('A', 0x42)`.
+const SNDRV_PCM_IOCTL_START: c_ulong = 0x4142;
+const CARD_STATUS: &str = "/proc/asound/card0/pcm0p/sub0/status";
+
+/// The speaker's sound card is open but was never started ("state: PREPARED").
+///
+/// Everything on the speaker plays through one shared mixer (dmix) that should
+/// start the card itself. Sometimes it does not, and then nothing can play —
+/// Alice included — until the card is started.
+pub fn card_stuck() -> bool {
+    crate::fsx::read_string(std::path::Path::new(CARD_STATUS))
+        .is_some_and(|s| s.lines().any(|l| l.trim() == "state: PREPARED"))
+}
+
+/// Starts the card through this process's own handle to it (the mixer hands
+/// every program that plays a handle to the real card).
+pub fn kick_card() -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc/self/fd") else { return false };
+    let mut started = false;
+    for entry in dir.flatten() {
+        let Ok(target) = std::fs::read_link(entry.path()) else { continue };
+        let target = target.to_string_lossy().into_owned();
+        // Playback devices: /dev/snd/pcmC0D0p.
+        if !(target.starts_with("/dev/snd/pcmC") && target.ends_with('p')) {
+            continue;
+        }
+        let Some(fd) = entry.file_name().to_str().and_then(|n| n.parse::<c_int>().ok()) else { continue };
+        let code = unsafe { ioctl(fd, SNDRV_PCM_IOCTL_START) };
+        eprintln!("alsa: started the stuck sound card {target} ({code})");
+        started |= code == 0;
+    }
+    started
+}
+
+/// Checks the card every few seconds; if it hangs in PREPARED while soundya is
+/// not playing (so Alice is the one stuck), opens the mixer briefly to start it.
+pub fn watch(device: String) {
+    std::thread::spawn(move || {
+        let mut seen = 0;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if !card_stuck() {
+                seen = 0;
+                continue;
+            }
+            seen += 1;
+            // Two checks in a row (5–10 s): not just a stream that is starting.
+            if seen < 2 {
+                continue;
+            }
+            seen = 0;
+            eprintln!("alsa: sound card stuck in PREPARED; starting it");
+            match Output::open(&device, 48_000, 2) {
+                Ok(_out) => {
+                    if !kick_card() {
+                        eprintln!("alsa: could not start the sound card");
+                    }
+                }
+                Err(e) => eprintln!("alsa: cannot open {device} to start the card: {e}"),
+            }
+        }
+    });
 }
 
 const SND_PCM_STREAM_PLAYBACK: c_int = 0;
@@ -140,6 +205,7 @@ impl Output {
     /// `ErrorKind::TimedOut` if the card accepts nothing for a few seconds.
     pub fn write(&mut self, mut samples: &[i16]) -> io::Result<()> {
         let mut progress = std::time::Instant::now();
+        let mut kicked = false;
         while samples.len() >= self.channels {
             let frames = samples.len() / self.channels;
             let n = unsafe { (self.lib.writei)(self.pcm, samples.as_ptr().cast(), frames as c_ulong) };
@@ -151,6 +217,12 @@ impl Output {
                     if unsafe { (self.lib.state)(self.pcm) } == SND_PCM_STATE_PREPARED {
                         let code = unsafe { (self.lib.start)(self.pcm) };
                         eprintln!("alsa: buffer full but not playing; started explicitly ({code})");
+                    }
+                    // Nothing taken for a second and the real card is not running:
+                    // start the card itself (the shared mixer failed to).
+                    if !kicked && progress.elapsed() > std::time::Duration::from_secs(1) && card_stuck() {
+                        kicked = true;
+                        kick_card();
                     }
                     // Buffer full: wait for room, but not forever.
                     if progress.elapsed() > STALL {

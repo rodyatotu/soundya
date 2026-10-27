@@ -1130,6 +1130,8 @@ fn daemon() {
     });
     let (tx, rx) = mpsc::channel();
     led::run(shared.clone());
+    // Starts the sound card if it hangs, so neither soundya nor Alice goes silent.
+    alsa::watch(device());
     // http://soundya.local:8765 — works whatever IP the router hands out.
     mdns::run(&std::env::var("SOUNDYA_NAME").unwrap_or_else(|_| "soundya".into()));
     if std::env::var("SOUNDYA_NO_VOICE").is_err() {
