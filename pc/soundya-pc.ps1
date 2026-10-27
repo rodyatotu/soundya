@@ -192,7 +192,14 @@ function Do-Open([string]$name) {
     $app = Find-App $name
     if (-not $app) { return "Не нашла на компьютере программу $name" }
     try {
-        Start-Process -FilePath $app.Path
+        if ($app.Path -match '\.(lnk|url)$' -or $app.Path -match '^(steam|shell):') {
+            # Through Explorer, exactly like a double click: works for programs that
+            # ask for administrator rights (the prompt shows on the screen) and keeps
+            # everything else running as the normal user.
+            Start-Process explorer.exe -ArgumentList "`"$($app.Path)`""
+        } else {
+            Start-Process -FilePath $app.Path
+        }
         Log "open '$name' -> $($app.Path)"
         "Открываю $($app.Name)"
     } catch {
