@@ -98,7 +98,17 @@ fn pc(text: &str) -> Option<PcAction> {
         found = words.len() < before;
     }
     if !found {
-        return None;
+        // «открой стим», «закрой хром» without «на компьютере»: the PC too, as Alice
+        // cannot open programs anyway. Her skills and sites stay hers.
+        let plain = match words.as_slice() {
+            [verb, first, ..] if matches!(*verb, "открой" | "закрой") => {
+                !["навык", "сайт", "страниц", "приложение яндекс", "ссылку"].iter().any(|p| first.starts_with(p))
+            }
+            _ => false,
+        };
+        if !plain {
+            return None;
+        }
     }
     words.retain(|w| !matches!(*w, "мой" | "моего" | "мне" | "пожалуйста"));
     let (&verb, object) = words.split_first()?;
@@ -947,6 +957,13 @@ mod tests {
         assert_eq!(pc("включи компромат"), Some(Intent::Play("компромат".into())));
         assert_ne!(pc("включи свет"), Some(Intent::Pc(PcAction::Wake)));
         assert_eq!(super::pc("какая погода на компьютере"), None);
+        // Without «на компьютере»: «открой»/«закрой» still go to the PC.
+        assert_eq!(pc("Открой steam"), Some(Intent::Pc(PcAction::Open("steam".into()))));
+        assert_eq!(pc("открой телеграм"), Some(Intent::Pc(PcAction::Open("телеграм".into()))));
+        assert_eq!(pc("закрой хром"), Some(Intent::Pc(PcAction::Close("хром".into()))));
+        assert_eq!(super::pc("открой навык угадай мелодию"), None);
+        assert_eq!(super::pc("открой сайт кинопоиска"), None);
+        assert_eq!(super::pc("открой"), None);
     }
 
     #[test]
