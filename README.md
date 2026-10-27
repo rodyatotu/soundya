@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/Станция_Лайт-проверено-2f9e5b" alt="Станция Лайт: проверено">
   <img src="https://img.shields.io/badge/Rust-armv7-dea584?logo=rust&logoColor=white" alt="Rust, armv7">
   <img src="https://img.shields.io/badge/лицензия-MIT-blue" alt="MIT">
-  <img src="https://img.shields.io/badge/версия-0.2.0-ff5500" alt="Версия 0.2.0">
+  <img src="https://img.shields.io/badge/версия-0.3.0-ff5500" alt="Версия 0.3.0">
 </p>
 
 ---
@@ -206,7 +206,9 @@ sh scripts/build-mac.sh                  # → dist/soundya-armv7.tar
 
 ### 4. Установите на колонку
 
-Из папки проекта:
+**С Windows:** скачайте проект (зелёная кнопка **Code** → **Download ZIP**), распакуйте и дважды щёлкните **`install-windows.cmd`**. Он сам скачает adb, найдёт колонку в сети, возьмёт готовую сборку из [Releases](../../releases), установит её и откроет веб-панель.
+
+**С Mac или Linux**, из папки проекта:
 ```sh
 sh scripts/deploy.sh <IP-колонки>
 ```
