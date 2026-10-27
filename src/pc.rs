@@ -46,6 +46,9 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
         Err(ureq::Error::Status(_, r)) => Err(r.into_string().unwrap_or_else(|_| "Компьютер не понял команду".into())),
         Err(e) => {
             eprintln!("pc: {url}: {e}");
+            if matches!(&e, ureq::Error::Transport(t) if t.kind() == ureq::ErrorKind::BadHeader) {
+                return Err("Ключ компьютера вписан с ошибкой. Вставьте его заново в настройках soundya".into());
+            }
             Err("Компьютер не отвечает. Он включён?".into())
         }
     }

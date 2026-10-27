@@ -407,6 +407,9 @@ impl Controller {
         new.pc_host = new.pc_host.trim().to_owned();
         new.pc_token = new.pc_token.trim().to_owned();
         new.pc_mac = new.pc_mac.trim().to_owned();
+        if new.pc_token.chars().any(|c| c.is_whitespace() || !c.is_ascii()) {
+            return "error: ключ компьютера — одно слово из латинских букв и цифр, как его показал установщик".into();
+        }
         if !new.pc_mac.is_empty() && pc::parse_mac(&new.pc_mac).is_none() {
             return "error: MAC-адрес вида AA:BB:CC:DD:EE:FF".into();
         }
