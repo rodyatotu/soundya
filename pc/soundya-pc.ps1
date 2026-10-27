@@ -251,6 +251,8 @@ function Do-Open([string]$name) {
         "Открываю $($app.Name)"
     } catch {
         Log "open '$name' failed: $_"
+        # The last guess (a built-in command such as notepad) did not exist either.
+        if ($app.Path -eq $app.Name) { return "Не нашла на компьютере программу $name" }
         "Не получилось открыть $($app.Name)"
     }
 }
