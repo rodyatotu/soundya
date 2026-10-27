@@ -3,6 +3,7 @@
 mod alice;
 mod alsa;
 mod buffer;
+mod buttons;
 mod dns;
 mod fsx;
 mod led;
@@ -1133,6 +1134,7 @@ fn daemon() {
     mdns::run(&std::env::var("SOUNDYA_NAME").unwrap_or_else(|_| "soundya".into()));
     if std::env::var("SOUNDYA_NO_VOICE").is_err() {
         alice::watch(tx.clone(), shared.clone());
+        buttons::run(tx.clone(), shared.clone());
     }
     let port = std::env::var("SOUNDYA_WEB_PORT")
         .ok()

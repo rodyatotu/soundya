@@ -460,6 +460,27 @@ fn alice_state(data: &[u8]) -> Option<u64> {
 /// Set while soundya itself is talking through Alice, so it is not cut off.
 static OWN_SPEECH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Until when (ms since the Unix epoch) Alice's own answers are cut off; set by `quiet_for`.
+static QUIET_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Cuts off whatever Alice starts saying in the next `time` (e.g. her answer to
+/// the ▶‖ button, which soundya handles itself).
+pub fn quiet_for(time: Duration) {
+    QUIET_UNTIL.store(now_ms() + time.as_millis() as u64, std::sync::atomic::Ordering::Release);
+    cancel_alice();
+}
+
+fn quiet() -> bool {
+    QUIET_UNTIL.load(std::sync::atomic::Ordering::Acquire) > now_ms()
+}
+
 fn alice_busy(data: &[u8]) -> Option<bool> {
     if number(data, 253) != Some(3) {
         return None;
@@ -661,7 +682,7 @@ fn read_frames(
             shared.duck.set_busy(busy);
         }
         if alice_state(&data) == Some(2)
-            && suppress_until.is_some_and(|t| std::time::Instant::now() < t)
+            && (suppress_until.is_some_and(|t| std::time::Instant::now() < t) || quiet())
             && !OWN_SPEECH.load(std::sync::atomic::Ordering::Acquire)
             && last_cancel.elapsed() > Duration::from_millis(400)
         {
