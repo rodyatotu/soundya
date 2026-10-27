@@ -93,6 +93,16 @@ function Shortcuts {
     }
 }
 
+# Does this shortcut still lead somewhere? (Old ones keep pointing at a moved program.)
+$Shell = New-Object -ComObject WScript.Shell
+function Works($item) {
+    if ($item.Path -notlike '*.lnk') { return $true }
+    try {
+        $target = $Shell.CreateShortcut($item.Path).TargetPath
+        return (-not $target) -or (Test-Path -LiteralPath $target)
+    } catch { return $true }
+}
+
 # Games installed through Steam: @{ Name; Path = steam://rungameid/<id> }.
 function SteamGames {
     $root = $null
@@ -130,7 +140,14 @@ function Find-App([string]$spoken) {
     }
     $wanted = @($target.ToLower())
     if ($target -match '[а-я]') { $wanted += (To-Latin $target.ToLower()) }
-    $all = @(Shortcuts)
+    # Steam itself: where it really is now, from the registry.
+    if ($target -eq 'steam') {
+        try {
+            $exe = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction Stop).SteamExe -replace '/', '\'
+            if ($exe -and (Test-Path -LiteralPath $exe)) { return [pscustomobject]@{ Name = 'Steam'; Path = $exe } }
+        } catch {}
+    }
+    $all = @(Shortcuts | Where-Object { Works $_ })
     foreach ($w in $wanted) {
         $exact = $all | Where-Object { $_.Name.ToLower() -eq $w } | Select-Object -First 1
         if ($exact) { return $exact }
@@ -192,7 +209,7 @@ function Do-Open([string]$name) {
     $app = Find-App $name
     if (-not $app) { return "Не нашла на компьютере программу $name" }
     try {
-        if ($app.Path -match '\.(lnk|url)$' -or $app.Path -match '^(steam|shell):') {
+        if ($app.Path -match '\.(lnk|url|exe)$' -or $app.Path -match '^(steam|shell):') {
             # Through Explorer, exactly like a double click: works for programs that
             # ask for administrator rights (the prompt shows on the screen) and keeps
             # everything else running as the normal user.
