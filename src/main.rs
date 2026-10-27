@@ -8,6 +8,7 @@ mod dns;
 mod fsx;
 mod led;
 mod mdns;
+mod pc;
 mod player;
 mod sc;
 mod settings;
@@ -77,6 +78,8 @@ pub struct Shared {
     /// The current track's controls, so the ring can tell when sound is stuck loading.
     pub track: Mutex<Option<Arc<Flags>>>,
     keyword_only: AtomicBool,
+    /// A Windows PC is set up for voice commands.
+    pc: AtomicBool,
     active: AtomicBool,
     queue: AtomicBool,
     status: Mutex<String>,
@@ -93,6 +96,9 @@ impl Shared {
     }
     pub fn keyword_only(&self) -> bool {
         self.keyword_only.load(Ordering::Acquire)
+    }
+    pub fn pc_configured(&self) -> bool {
+        self.pc.load(Ordering::Acquire)
     }
 }
 
@@ -274,6 +280,10 @@ impl Controller {
                 "keyword_only": self.settings.keyword_only,
                 "ring": self.settings.ring,
                 "token": self.settings.masked_token(),
+                "pc_host": self.settings.pc_host,
+                "pc_token": self.settings.masked_pc_token(),
+                "pc_mac": self.settings.pc_mac,
+                "pc_contacts": self.settings.pc_contacts,
             },
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
@@ -392,6 +402,37 @@ impl Controller {
             new.token = self.settings.token.clone();
         }
         new.token = new.token.trim().to_owned();
+        if new.pc_token.contains('•') && new.pc_token == self.settings.masked_pc_token() {
+            new.pc_token = self.settings.pc_token.clone();
+        }
+        new.pc_host = new.pc_host.trim().to_owned();
+        new.pc_token = new.pc_token.trim().to_owned();
+        new.pc_mac = new.pc_mac.trim().to_owned();
+        if new.pc_token.chars().any(|c| c.is_whitespace() || !c.is_ascii()) {
+            return "error: ключ компьютера — одно слово из латинских букв и цифр, как его показал установщик".into();
+        }
+        if !new.pc_mac.is_empty() && pc::parse_mac(&new.pc_mac).is_none() {
+            return "error: MAC-адрес вида AA:BB:CC:DD:EE:FF".into();
+        }
+        // «мама, маме, маму» -> "мама|маме|маму"; rows without a name or a target are dropped.
+        new.pc_contacts = new
+            .pc_contacts
+            .iter()
+            .map(|c| settings::Contact {
+                names: c
+                    .names
+                    .to_lowercase()
+                    .replace('ё', "е")
+                    .split([',', '|', ';'])
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("|"),
+                target: c.target.trim().to_owned(),
+            })
+            .filter(|c| !c.names.is_empty() && !c.target.is_empty())
+            .collect();
+        self.shared.pc.store(new.pc_configured(), Ordering::Release);
         let token_changed = new.token != self.settings.token;
         new.proxy = self.real_proxy(&new.proxy);
         if new.proxy != self.settings.proxy {
@@ -800,6 +841,14 @@ impl Controller {
                 Some(id) => self.fetch("похожие".into(), reply, move |c| c.related(id)),
                 None => respond(reply, "error: сейчас ничего не играет", None),
             },
+            Intent::Pc(action) => {
+                // The PC may take a while (or be off): never hold up the music.
+                let settings = self.settings.clone();
+                thread::spawn(move || match pc::run(&settings, &action) {
+                    Ok(text) => respond(reply, &format!("OK: {text}"), Some(text)),
+                    Err(text) => respond(reply, &format!("error: {text}"), Some(text)),
+                });
+            }
             Intent::Like | Intent::Unlike | Intent::AddToPlaylist(_) if !WRITES => respond(
                 reply,
                 &format!("error: {WRITES_OFF}"),
@@ -921,6 +970,27 @@ impl Controller {
                     Some(Ok(ms)) => send_to(&reply, format!("OK {}", fmt_ms(ms))),
                     Some(Err(e)) => send_to(&reply, format!("error: {e}")),
                     None => send_to(&reply, "usage: seek 95 | seek 1:35 | seek +30 | seek -10".into()),
+                }
+            }
+            "pc" => {
+                let (what, name) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                let name = name.trim().to_owned();
+                let action = match what {
+                    "ping" => Some(alice::PcAction::Ping),
+                    "wake" | "on" => Some(alice::PcAction::Wake),
+                    "sleep" => Some(alice::PcAction::Sleep),
+                    "shutdown" | "off" => Some(alice::PcAction::Shutdown),
+                    "restart" => Some(alice::PcAction::Restart),
+                    "lock" => Some(alice::PcAction::Lock),
+                    "open" if !name.is_empty() => Some(alice::PcAction::Open(name)),
+                    "close" if !name.is_empty() => Some(alice::PcAction::Close(name)),
+                    // pc do открой ютуб в профиле работа — as if said to Alice
+                    "do" | "say" if !name.is_empty() => Some(alice::PcAction::Command(name)),
+                    _ => None,
+                };
+                match action {
+                    Some(a) => self.intent(Intent::Pc(a), Some(reply)),
+                    None => send_to(&reply, "usage: pc ping|wake|sleep|shutdown|restart|lock|open <программа>|close <программа>|do <фраза>".into()),
                 }
             }
             "stop" => {
@@ -1173,6 +1243,7 @@ fn daemon() {
         fetching: AtomicBool::new(false),
         track: Mutex::new(None),
         keyword_only: AtomicBool::new(settings.keyword_only),
+        pc: AtomicBool::new(settings.pc_configured()),
         active: AtomicBool::new(false),
         queue: AtomicBool::new(false),
         status: Mutex::new("stopped".into()),
@@ -1329,7 +1400,7 @@ fn main() {
             }
         }
         "play" | "playlist" | "likes" | "pause" | "resume" | "toggle" | "next" | "prev" | "stop"
-        | "status" | "queue" | "shuffle" | "repeat" | "like" | "unlike" | "similar" | "recs" | "seek" => send(&format!("{cmd} {rest}")),
+        | "status" | "queue" | "shuffle" | "repeat" | "like" | "unlike" | "similar" | "recs" | "seek" | "pc" => send(&format!("{cmd} {rest}")),
         _ => {
             println!(
                 "soundya {}\n\
@@ -1341,12 +1412,14 @@ fn main() {
                  \n  soundya shuffle on|off | repeat on|off | like | similar\
                  \n  soundya status | queue\
                  \n  soundya seek 1:35 | seek +30 | seek -10\
+                 \n  soundya pc ping|wake|sleep|shutdown|restart|lock|open <app>|close <app>\
                  \n  soundya search <query>      list results (no daemon needed)\
                  \n  soundya once <query>        play first result directly (test)\
                  \n\nVoice: «Алиса, включи <исполнитель/трек>», «включи плейлист <…>»,\
                  \n«включи мои лайки», «включи мой плейлист <…>»,\
                  \n«пауза», «продолжи», «следующий трек», «назад», «перемешай»,\
-                 \n«поставь на повтор», «включи похожее», «лайкни», «что играет», «включи рекомендации».",
+                 \n«поставь на повтор», «включи похожее», «лайкни», «что играет», «включи рекомендации»,\
+                 \n«включи/выключи/усыпи компьютер», «открой <программу> на компьютере».",
                 env!("CARGO_PKG_VERSION")
             );
             0
