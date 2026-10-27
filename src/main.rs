@@ -80,6 +80,8 @@ pub struct Shared {
     keyword_only: AtomicBool,
     /// A Windows PC is set up for voice commands.
     pc: AtomicBool,
+    /// Telegram contact names as said («лиза», «лизе», «кошка»), for «напиши лизе …».
+    contacts: Mutex<Vec<String>>,
     active: AtomicBool,
     queue: AtomicBool,
     status: Mutex<String>,
@@ -99,6 +101,9 @@ impl Shared {
     }
     pub fn pc_configured(&self) -> bool {
         self.pc.load(Ordering::Acquire)
+    }
+    pub fn contact_names(&self) -> Vec<String> {
+        self.contacts.lock().unwrap().clone()
     }
 }
 
@@ -433,6 +438,7 @@ impl Controller {
             .filter(|c| !c.names.is_empty() && !c.target.is_empty())
             .collect();
         self.shared.pc.store(new.pc_configured(), Ordering::Release);
+        *self.shared.contacts.lock().unwrap() = contact_names(&new);
         let token_changed = new.token != self.settings.token;
         new.proxy = self.real_proxy(&new.proxy);
         if new.proxy != self.settings.proxy {
@@ -1224,6 +1230,16 @@ fn client() -> Client {
     client_with(&Settings::load(&state_dir()))
 }
 
+/// Every name of every Telegram contact: "мама|маме" -> ["мама", "маме"].
+fn contact_names(settings: &Settings) -> Vec<String> {
+    settings
+        .pc_contacts
+        .iter()
+        .flat_map(|c| c.names.split('|').map(|n| n.trim().to_lowercase()))
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
 fn device() -> String {
     std::env::var("SOUNDYA_DEVICE").unwrap_or_else(|_| "default".into())
 }
@@ -1244,6 +1260,7 @@ fn daemon() {
         track: Mutex::new(None),
         keyword_only: AtomicBool::new(settings.keyword_only),
         pc: AtomicBool::new(settings.pc_configured()),
+        contacts: Mutex::new(contact_names(&settings)),
         active: AtomicBool::new(false),
         queue: AtomicBool::new(false),
         status: Mutex::new("stopped".into()),

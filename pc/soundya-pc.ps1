@@ -445,16 +445,22 @@ function Do-Telegram([string]$t) {
         }
     }
     if ($contacts.Count -eq 0) {
+        if (-not $explicit) { return $null }
         return 'Сначала добавьте контакты телеграма: страница soundya, Настройки, Компьютер'
     }
-    $rest = ' ' + ($t -replace '^(?:напиши|отправь|скинь|пошли)\s+', '') + ' '
+    $explicit = $t -match '(?:телег|телеграм|сообщени|контакт)'
+    $rest = ' ' + ($t -replace '^(?:напиши|написать|отправь|скинь|пошли|передай)\s+', '') + ' '
     $rest = $rest -replace '\s(?:сообщение|сообщения|в\s+телеграм[а-я]*|в\s+телег[а-я]*|телеграм[а-я]*|контакту|пользователю|мне)(?=\s)', ' '
     $who = $null
     foreach ($n in ($contacts.Keys | Sort-Object Length -Descending)) {
         $i = $rest.IndexOf(' ' + $n + ' ')
         if ($i -ge 0) { $who = $n; $rest = $rest.Remove($i, $n.Length + 1); break }
     }
-    if (-not $who) { return 'Не знаю такого контакта. Добавьте его на странице soundya, в настройках компьютера' }
+    if (-not $who) {
+        # «напиши в блокнот …» and the like: not a message at all.
+        if (-not $explicit) { return $null }
+        return 'Не знаю такого контакта. Добавьте его на странице soundya, в настройках компьютера'
+    }
     $text = (($rest -replace '^\s*(?:что|текст|с\s+текстом)\s+', ' ') -replace '\s+', ' ').Trim()
     $target = $contacts[$who]
     if (($target -replace '[\s\-()]', '') -match '^\+?\d{6,}$') { $link = 'tg://resolve?phone=' + ($target -replace '\D', '') }
@@ -534,7 +540,11 @@ function Do-Command([string]$t) {
     # «допиши в блокнот …»
     if ($t -match '^(?:допиши|добавь)\s+(.+)$') { return Do-Append $Matches[1] }
     # «напиши маме в телеграм …», «отправь саше сообщение …»
-    if ($t -match '^(?:напиши|отправь|скинь|пошли)\b' -and $t -match '(?:телег|телеграм|сообщени)') { return Do-Telegram $t }
+    # (or just «напиши лизе …» when Лиза is one of the contacts)
+    if ($t -match '^(?:напиши|написать|отправь|скинь|пошли|передай)\b') {
+        $r = Do-Telegram $t
+        if ($null -ne $r) { return $r }
+    }
     # «подключи впн», «отключи впн»
     if ($t -match '\b(?:впн|vpn)\b') { return Do-Vpn $t }
 

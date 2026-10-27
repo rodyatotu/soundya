@@ -417,6 +417,32 @@ fn seek_command(text: &str) -> Option<i64> {
     Some(if back { -ms } else { ms })
 }
 
+/// «напиши лизе я скоро буду», «отправь контакту кошка привет»: a message to one of
+/// the Telegram contacts from the settings page, even without «в телеграм».
+pub fn message_to_contact(text: &str, contacts: &[String]) -> Option<Intent> {
+    if contacts.is_empty() {
+        return None;
+    }
+    let norm = normalize(text);
+    let words: Vec<&str> = norm.split_whitespace().collect();
+    let (&verb, rest) = words.split_first()?;
+    if !matches!(verb, "напиши" | "отправь" | "скинь" | "пошли" | "передай" | "написать") {
+        return None;
+    }
+    // The first word that is not «сообщение», «в телеграм», «контакту» must be a contact.
+    let skip = |w: &&str| {
+        matches!(*w, "сообщение" | "сообщения" | "в" | "во" | "контакту" | "пользователю" | "мне")
+            || w.starts_with("телег")
+            || w.starts_with("телеграм")
+    };
+    let first = rest.iter().copied().find(|w| !skip(w))?;
+    let first = first.trim_matches(|c: char| !c.is_alphanumeric());
+    contacts
+        .iter()
+        .any(|c| c == first || (c.contains(' ') && rest.join(" ").contains(c.as_str())))
+        .then(|| Intent::Pc(PcAction::Command(norm.clone())))
+}
+
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
     if let Some(ms) = seek_command(&normalize(text)) {
         return Some(Intent::Seek(ms));
@@ -874,7 +900,9 @@ fn read_frames(
             if seen.len() > 64 {
                 seen.pop_front();
             }
-            let Some(intent) = intent(&text, shared.keyword_only()) else {
+            let intent = message_to_contact(&text, &shared.contact_names())
+                .or_else(|| intent(&text, shared.keyword_only()));
+            let Some(intent) = intent else {
                 eprintln!("voice: {text:?} left to Alice");
                 continue;
             };
@@ -946,6 +974,19 @@ mod tests {
         assert_eq!(s("перемотай на полторы минуты"), Some(Intent::Seek(90_000)));
         assert_eq!(s("перемотай вперед"), Some(Intent::Seek(30_000)));
         assert_eq!(s("перемотай на 45"), Some(Intent::Seek(45_000)));
+    }
+
+    #[test]
+    fn messages_to_contacts() {
+        let names: Vec<String> = ["лиза", "лизе", "кошка", "мама", "маме"].iter().map(|s| s.to_string()).collect();
+        let to = |t: &str| message_to_contact(t, &names);
+        let cmd = |t: &str| Some(Intent::Pc(PcAction::Command(t.into())));
+        assert_eq!(to("Алиса, напиши Лизе я скоро буду"), cmd("напиши лизе я скоро буду"));
+        assert_eq!(to("напиши контакту кошка привет как дела"), cmd("напиши контакту кошка привет как дела"));
+        assert_eq!(to("отправь сообщение маме в телеграм я дома"), cmd("отправь сообщение маме в телеграм я дома"));
+        assert_eq!(to("напиши пете привет"), None);
+        assert_eq!(to("напиши стих про осень"), None);
+        assert_eq!(message_to_contact("напиши лизе привет", &[]), None);
     }
 
     #[test]
