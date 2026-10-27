@@ -59,27 +59,27 @@ function To-Latin([string]$s) {
     -join ($s.ToCharArray() | ForEach-Object { $c = [string]$_; if ($Translit.ContainsKey($c)) { $Translit[$c] } else { $c } })
 }
 
-function Distance([string]$a, [string]$b) {
-    # Levenshtein distance on one flat array (row i, column j at i * $w + j).
-    $w = $b.Length + 1
-    $d = New-Object 'int[]' (($a.Length + 1) * $w)
-    for ($i = 0; $i -le $a.Length; $i++) { $d[$i * $w] = $i }
-    for ($j = 0; $j -le $b.Length; $j++) { $d[$j] = $j }
-    for ($i = 1; $i -le $a.Length; $i++) {
-        for ($j = 1; $j -le $b.Length; $j++) {
-            $cost = 1
-            if ($a[$i - 1] -eq $b[$j - 1]) { $cost = 0 }
-            $up = $d[($i - 1) * $w + $j] + 1
-            $left = $d[$i * $w + $j - 1] + 1
-            $diag = $d[($i - 1) * $w + $j - 1] + $cost
-            $best = $up
-            if ($left -lt $best) { $best = $left }
-            if ($diag -lt $best) { $best = $diag }
-            $d[$i * $w + $j] = $best
+# Levenshtein distance, compiled once: in plain PowerShell comparing a word with
+# hundreds of shortcut names took tens of seconds.
+Add-Type -Language CSharp -TypeDefinition @'
+public static class SoundyaText {
+    public static int Distance(string a, string b) {
+        var prev = new int[b.Length + 1];
+        var cur = new int[b.Length + 1];
+        for (int j = 0; j <= b.Length; j++) prev[j] = j;
+        for (int i = 1; i <= a.Length; i++) {
+            cur[0] = i;
+            for (int j = 1; j <= b.Length; j++) {
+                int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                cur[j] = System.Math.Min(System.Math.Min(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + cost);
+            }
+            var t = prev; prev = cur; cur = t;
         }
+        return prev[b.Length];
     }
-    $d[$a.Length * $w + $b.Length]
 }
+'@
+function Distance([string]$a, [string]$b) { [SoundyaText]::Distance($a, $b) }
 
 # Start-menu and desktop shortcuts: @{ Name; Path }.
 function Shortcuts {
