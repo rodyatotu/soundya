@@ -27,6 +27,19 @@ pub struct Settings {
     /// The PC's wired network card, for switching it on (wake-on-LAN).
     #[serde(default)]
     pub pc_mac: String,
+    /// Telegram contacts for «напиши маме в телеграм …».
+    #[serde(default)]
+    pub pc_contacts: Vec<Contact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct Contact {
+    /// How it is said: "мама|маме|маму".
+    #[serde(default)]
+    pub names: String,
+    /// "@username" or a phone number.
+    #[serde(default)]
+    pub target: String,
 }
 
 fn yes() -> bool {
@@ -43,6 +56,7 @@ impl Default for Settings {
             pc_host: String::new(),
             pc_token: String::new(),
             pc_mac: String::new(),
+            pc_contacts: Vec::new(),
         }
     }
 }

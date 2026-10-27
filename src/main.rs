@@ -283,6 +283,7 @@ impl Controller {
                 "pc_host": self.settings.pc_host,
                 "pc_token": self.settings.masked_pc_token(),
                 "pc_mac": self.settings.pc_mac,
+                "pc_contacts": self.settings.pc_contacts,
             },
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
@@ -413,6 +414,24 @@ impl Controller {
         if !new.pc_mac.is_empty() && pc::parse_mac(&new.pc_mac).is_none() {
             return "error: MAC-адрес вида AA:BB:CC:DD:EE:FF".into();
         }
+        // «мама, маме, маму» -> "мама|маме|маму"; rows without a name or a target are dropped.
+        new.pc_contacts = new
+            .pc_contacts
+            .iter()
+            .map(|c| settings::Contact {
+                names: c
+                    .names
+                    .to_lowercase()
+                    .replace('ё', "е")
+                    .split([',', '|', ';'])
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("|"),
+                target: c.target.trim().to_owned(),
+            })
+            .filter(|c| !c.names.is_empty() && !c.target.is_empty())
+            .collect();
         self.shared.pc.store(new.pc_configured(), Ordering::Release);
         let token_changed = new.token != self.settings.token;
         new.proxy = self.real_proxy(&new.proxy);

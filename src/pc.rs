@@ -36,11 +36,21 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
         .timeout_connect(Duration::from_secs(3))
         .timeout(Duration::from_secs(20))
         .build();
-    let result = agent
+    let mut request = agent
         .post(&url)
         .set("X-Soundya-Key", key)
-        .set("Content-Type", "text/plain; charset=utf-8")
-        .send_string(body);
+        .set("Content-Type", "text/plain; charset=utf-8");
+    // Telegram contacts from the settings page, for «напиши маме в телеграм …».
+    if matches!(action, PcAction::Command(_)) && !settings.pc_contacts.is_empty() {
+        let map: serde_json::Map<String, serde_json::Value> = settings
+            .pc_contacts
+            .iter()
+            .map(|c| (c.names.clone(), serde_json::Value::String(c.target.clone())))
+            .collect();
+        let json = serde_json::Value::Object(map).to_string();
+        request = request.set("X-Soundya-Contacts", &base64(json.as_bytes()));
+    }
+    let result = request.send_string(body);
     match result {
         Ok(r) => r.into_string().map_err(|e| format!("Компьютер ответил непонятно: {e}")),
         Err(ureq::Error::Status(403, _)) => Err("Компьютер не принял ключ. Проверьте ключ в настройках soundya".into()),
@@ -53,6 +63,24 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
             Err("Компьютер не отвечает. Он включён?".into())
         }
     }
+}
+
+/// Standard base64, for sending UTF-8 text in an HTTP header.
+fn base64(data: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// "AA:BB:CC:DD:EE:FF", "aa-bb-cc-dd-ee-ff" or "aabbccddeeff".
@@ -110,6 +138,15 @@ mod tests {
         assert_eq!(parse_mac("zz:bb:cc:01:02:03"), None);
         assert_eq!(parse_mac(""), None);
         assert_eq!(fmt_mac(want), "AA:BB:CC:01:02:03");
+    }
+
+    #[test]
+    fn base64_matches_the_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64("мама".as_bytes()), "0LzQsNC80LA=");
     }
 
     #[test]

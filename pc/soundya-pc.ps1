@@ -431,13 +431,21 @@ function Do-Append([string]$body) {
 # ("telegram_send": false: paste only, press Enter yourself).
 function Do-Telegram([string]$t) {
     $contacts = @{}
-    if ($Config.contacts) {
-        foreach ($p in $Config.contacts.PSObject.Properties) {
+    $sources = @()
+    if ($Config.contacts) { $sources += $Config.contacts }
+    if ($global:SpeakerContacts) {
+        try {
+            $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($global:SpeakerContacts))
+            $sources += ($json | ConvertFrom-Json)
+        } catch { Log "bad contacts from the speaker: $_" }
+    }
+    foreach ($src in $sources) {
+        foreach ($p in $src.PSObject.Properties) {
             foreach ($n in ($p.Name.ToLower() -split '\|')) { if ($n.Trim()) { $contacts[$n.Trim()] = [string]$p.Value } }
         }
     }
     if ($contacts.Count -eq 0) {
-        return 'Сначала добавьте контакты телеграма в файл настроек программы на компьютере'
+        return 'Сначала добавьте контакты телеграма: страница soundya, Настройки, Компьютер'
     }
     $rest = ' ' + ($t -replace '^(?:напиши|отправь|скинь|пошли)\s+', '') + ' '
     $rest = $rest -replace '\s(?:сообщение|сообщения|в\s+телеграм[а-я]*|в\s+телег[а-я]*|телеграм[а-я]*|контакту|пользователю|мне)(?=\s)', ' '
@@ -446,7 +454,7 @@ function Do-Telegram([string]$t) {
         $i = $rest.IndexOf(' ' + $n + ' ')
         if ($i -ge 0) { $who = $n; $rest = $rest.Remove($i, $n.Length + 1); break }
     }
-    if (-not $who) { return 'Не знаю такого контакта. Добавьте его в настройки программы на компьютере' }
+    if (-not $who) { return 'Не знаю такого контакта. Добавьте его на странице soundya, в настройках компьютера' }
     $text = (($rest -replace '^\s*(?:что|текст|с\s+текстом)\s+', ' ') -replace '\s+', ' ').Trim()
     $target = $contacts[$who]
     if (($target -replace '[\s\-()]', '') -match '^\+?\d{6,}$') { $link = 'tg://resolve?phone=' + ($target -replace '\D', '') }
@@ -643,6 +651,8 @@ while ($true) {
             continue
         }
         $action = $req.Path.Trim('/').ToLower()
+        # Telegram contacts set on the speaker's settings page (base64 JSON).
+        $global:SpeakerContacts = $req.Headers['x-soundya-contacts']
         $answer = Handle $action $req.Body.Trim()
         if ($null -eq $answer) { Send-Answer $stream 404 "Неизвестная команда $action" }
         else { Send-Answer $stream 200 ([string]$answer) }
