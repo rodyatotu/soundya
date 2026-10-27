@@ -7,7 +7,9 @@
 #
 # Settings: %LOCALAPPDATA%\soundya-pc\config.json (created by install.ps1):
 #   { "port": 8766, "key": "...", "apps": { "моя игра": "C:\\Games\\game.exe" },
-#     "sites": { "работа": "https://jira.example.com" } }
+#     "sites": { "работа": "https://jira.example.com" },
+#     "contacts": { "мама|маме|маму": "@username", "саша|саше": "+79991234567" },
+#     "telegram_send": true, "vpn": "AmneziaVPN" }
 # "apps" adds your own names: spoken name -> program name, shortcut or .exe path.
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +43,7 @@ $Aliases = @{
     'диспетчер задач' = 'taskmgr'; 'параметры' = 'ms-settings:'; 'настройки' = 'ms-settings:'
     'командная строка' = 'cmd'; 'терминал' = 'wt'; 'вк' = 'VK Messenger'; 'кс' = 'Counter-Strike 2'
     'контра' = 'Counter-Strike 2'; 'дота' = 'Dota 2'; 'майнкрафт' = 'Minecraft'
+    'впн' = 'AmneziaVPN'; 'амнезия' = 'AmneziaVPN'; 'амнезию' = 'AmneziaVPN'
     'дедлок' = 'Deadlock'; 'варфрейм' = 'Warframe'; 'раст' = 'Rust'; 'валорант' = 'VALORANT'
 }
 if ($Config.apps) {
@@ -410,6 +413,72 @@ function Do-Note([string]$body) {
     if ($body) { "Записала: $body" } else { 'Создала пустую заметку' }
 }
 
+# «допиши …»: adds a line to the latest note (or starts one) and opens it.
+function Do-Append([string]$body) {
+    $body = ($body -replace '^(?:в|во)\s+(?:блокнот|блокноте|заметку|заметки|последнюю\s+заметку|файл)\s+', '').Trim()
+    if (-not $body) { return 'Скажите, что дописать' }
+    $dir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Заметки'
+    $last = Get-ChildItem -LiteralPath $dir -Filter *.txt -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $last) { return Do-Note $body }
+    [IO.File]::AppendAllText($last.FullName, (Capitalize $body) + "`r`n", (New-Object Text.UTF8Encoding $false))
+    Start-Process explorer.exe -ArgumentList "`"$($last.FullName)`""
+    Log "append: $($last.FullName)"
+    "Дописала: $body"
+}
+
+# Telegram: opens the chat, pastes the text and sends it.
+# Contacts in config.json: "contacts": { "мама|маме|маму": "@username", "саша|саше": "+79991234567" }
+# ("telegram_send": false: paste only, press Enter yourself).
+function Do-Telegram([string]$t) {
+    $contacts = @{}
+    if ($Config.contacts) {
+        foreach ($p in $Config.contacts.PSObject.Properties) {
+            foreach ($n in ($p.Name.ToLower() -split '\|')) { if ($n.Trim()) { $contacts[$n.Trim()] = [string]$p.Value } }
+        }
+    }
+    if ($contacts.Count -eq 0) {
+        return 'Сначала добавьте контакты телеграма в файл настроек программы на компьютере'
+    }
+    $rest = ' ' + ($t -replace '^(?:напиши|отправь|скинь|пошли)\s+', '') + ' '
+    $rest = $rest -replace '\s(?:сообщение|сообщения|в\s+телеграм[а-я]*|в\s+телег[а-я]*|телеграм[а-я]*|контакту|пользователю|мне)(?=\s)', ' '
+    $who = $null
+    foreach ($n in ($contacts.Keys | Sort-Object Length -Descending)) {
+        $i = $rest.IndexOf(' ' + $n + ' ')
+        if ($i -ge 0) { $who = $n; $rest = $rest.Remove($i, $n.Length + 1); break }
+    }
+    if (-not $who) { return 'Не знаю такого контакта. Добавьте его в настройки программы на компьютере' }
+    $text = (($rest -replace '^\s*(?:что|текст|с\s+текстом)\s+', ' ') -replace '\s+', ' ').Trim()
+    $target = $contacts[$who]
+    if (($target -replace '[\s\-()]', '') -match '^\+?\d{6,}$') { $link = 'tg://resolve?phone=' + ($target -replace '\D', '') }
+    else { $link = 'tg://resolve?domain=' + ($target -replace '^@', '') }
+    Start-Process explorer.exe -ArgumentList "`"$link`""
+    if (-not $text) { return "Открыла чат: ${who}" }
+    Start-Sleep -Milliseconds 2000
+    $saved = $null
+    try { $saved = Get-Clipboard -Raw } catch {}
+    Set-Clipboard -Value (Capitalize $text)
+    $keys = New-Object -ComObject WScript.Shell
+    $keys.SendKeys('^v')
+    $send = $true
+    if ($null -ne $Config.telegram_send) { $send = [bool]$Config.telegram_send }
+    if ($send) {
+        Start-Sleep -Milliseconds 400
+        $keys.SendKeys('{ENTER}')
+    }
+    Start-Sleep -Milliseconds 500
+    if ($saved) { try { Set-Clipboard -Value $saved } catch {} }
+    Log "telegram: $who <- $text (sent: $send)"
+    if ($send) { "Отправила ${who}: $text" } else { "Написала ${who}: $text. Нажмите Enter, чтобы отправить" }
+}
+
+# VPN: the VPN app (AmneziaVPN unless "vpn" in config.json names another).
+function Do-Vpn([string]$t) {
+    $app = 'AmneziaVPN'
+    if ($Config.vpn) { $app = [string]$Config.vpn }
+    if ($t -match '^(?:отключи|выключи|разорви|закрой)') { return Do-Close $app }
+    Do-Open $app
+}
+
 # A Word document with the text (a .txt note when Word is not installed).
 function Do-Document([string]$title, [string]$body) {
     try {
@@ -453,6 +522,13 @@ function Do-Command([string]$t) {
     # Search: «найди в гугле …», «загугли …», «найди на ютубе …», «открой на ютубе …»
     if ($t -match '^(?:найди|поищи|загугли|погугли)\b') { return Do-Browser $t }
     if ($t -match '^(?:открой|включи)\s+(?:мне\s+)?(?:на|в)\s+(?:ютубе|youtube|ютюбе|ютьюбе)\s+') { return Do-Browser $t }
+
+    # «допиши в блокнот …»
+    if ($t -match '^(?:допиши|добавь)\s+(.+)$') { return Do-Append $Matches[1] }
+    # «напиши маме в телеграм …», «отправь саше сообщение …»
+    if ($t -match '^(?:напиши|отправь|скинь|пошли)\b' -and $t -match '(?:телег|телеграм|сообщени)') { return Do-Telegram $t }
+    # «подключи впн», «отключи впн»
+    if ($t -match '\b(?:впн|vpn)\b') { return Do-Vpn $t }
 
     # «… и запиши X», «запиши X», «создай документ с текстом X»
     $head = $t
