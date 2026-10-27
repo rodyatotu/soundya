@@ -65,11 +65,24 @@ pub enum PcAction {
     Lock,
     Open(String),
     Close(String),
+    /// Any other phrase for the PC, as said («открой ютуб в профиле работа»,
+    /// «создай документ и напиши …»): the PC program works out what to do.
+    Command(String),
     /// Connection check from the settings page.
     Ping,
 }
 
-/// «включи компьютер», «открой телеграм на компьютере», «усыпи комп», …
+/// Verbs of a command for the PC; the PC itself works out what exactly to do.
+const PC_VERBS: [&str; 17] = [
+    "открой", "закрой", "запусти", "включи", "выключи", "выруби", "найди", "поищи", "загугли",
+    "погугли", "запиши", "напиши", "создай", "сделай", "открыть", "запустить", "закрыть",
+];
+
+/// Words that make «запиши…», «создай…» a job for the PC.
+const PC_THINGS: [&str; 9] = ["заметк", "документ", "ворд", "блокнот", "файл", "папк", "текст", "браузер", "гугл"];
+
+/// «включи компьютер», «открой телеграм на компьютере», «усыпи комп»,
+/// «открой ютуб в профиле работа», «запиши в заметки купить молоко», …
 fn pc(text: &str) -> Option<PcAction> {
     const PLACES: [&str; 8] = [
         " на компьютере ",
@@ -97,49 +110,37 @@ fn pc(text: &str) -> Option<PcAction> {
         words.retain(|w| !NOUNS.contains(w));
         found = words.len() < before;
     }
+    words.retain(|w| !matches!(*w, "мой" | "моего" | "пожалуйста"));
+    let (&verb, object) = words.split_first()?;
+    let all = words.join(" ");
     if !found {
-        // «открой стим», «закрой хром» without «на компьютере»: the PC too, as Alice
-        // cannot open programs anyway. Her skills and sites stay hers.
-        let plain = match words.as_slice() {
-            [verb, first, ..] if matches!(*verb, "открой" | "закрой") => {
-                !["навык", "сайт", "страниц", "приложение яндекс", "ссылку"].iter().any(|p| first.starts_with(p))
-            }
+        // Without «на компьютере»: things Alice cannot do on this speaker anyway.
+        let has = |stems: &[&str]| words.iter().skip(1).any(|w| stems.iter().any(|s| w.starts_with(s)));
+        let plain = match verb {
+            // «открой стим», «закрой хром», «открой ютуб в профиле работа»; her skills stay hers.
+            "открой" | "закрой" => !object.is_empty() && !has(&["навык"]),
+            "загугли" | "погугли" => !object.is_empty(),
+            // «найди в гугле …», «поищи в браузере …»
+            "найди" | "поищи" => has(&["гугл", "браузер", "интернет"]),
+            // «запиши в заметки …», «создай документ …», «создай папку …»
+            "запиши" | "напиши" | "создай" | "сделай" => has(&PC_THINGS) || verb == "запиши",
             _ => false,
         };
-        if !plain {
-            return None;
-        }
+        return plain.then(|| PcAction::Command(all));
     }
-    words.retain(|w| !matches!(*w, "мой" | "моего" | "мне" | "пожалуйста"));
-    let (&verb, object) = words.split_first()?;
-    let mut object = object.join(" ");
-    for filler in ["программу ", "приложение ", "игру "] {
-        if let Some(o) = object.strip_prefix(filler) {
-            object = o.to_owned();
-        }
-    }
-    let all = words.join(" ");
     if all.contains("спящ") || all.contains(" сон") || verb == "усыпи" {
         return Some(PcAction::Sleep);
     }
-    let open = matches!(verb, "открой" | "запусти" | "включи" | "открыть" | "запустить" | "включить");
-    let close = matches!(verb, "закрой" | "выключи" | "закрыть" | "выключить" | "отключи" | "выруби");
-    if !object.is_empty() {
-        return if open {
-            Some(PcAction::Open(object))
-        } else if close {
-            Some(PcAction::Close(object))
-        } else {
-            None
+    if object.is_empty() {
+        return match verb {
+            "включи" | "включить" | "запусти" | "разбуди" => Some(PcAction::Wake),
+            "выключи" | "выключить" | "отключи" | "выруби" => Some(PcAction::Shutdown),
+            "перезагрузи" | "перезапусти" | "перезагрузить" => Some(PcAction::Restart),
+            "заблокируй" | "заблокировать" | "блокируй" => Some(PcAction::Lock),
+            _ => None,
         };
     }
-    match verb {
-        "включи" | "включить" | "запусти" | "разбуди" => Some(PcAction::Wake),
-        "выключи" | "выключить" | "отключи" | "выруби" => Some(PcAction::Shutdown),
-        "перезагрузи" | "перезапусти" | "перезагрузить" => Some(PcAction::Restart),
-        "заблокируй" | "заблокировать" | "блокируй" => Some(PcAction::Lock),
-        _ => None,
-    }
+    PC_VERBS.contains(&verb).then(|| PcAction::Command(all))
 }
 
 fn normalize(text: &str) -> String {
@@ -941,6 +942,7 @@ mod tests {
     #[test]
     fn pc_commands() {
         let pc = |t: &str| intent(t, false);
+        let cmd = |t: &str| Some(Intent::Pc(PcAction::Command(t.into())));
         assert_eq!(pc("Алиса, включи компьютер"), Some(Intent::Pc(PcAction::Wake)));
         assert_eq!(pc("включи мой комп"), Some(Intent::Pc(PcAction::Wake)));
         assert_eq!(pc("Выключи компьютер."), Some(Intent::Pc(PcAction::Shutdown)));
@@ -948,21 +950,27 @@ mod tests {
         assert_eq!(pc("переведи компьютер в спящий режим"), Some(Intent::Pc(PcAction::Sleep)));
         assert_eq!(pc("перезагрузи пк"), Some(Intent::Pc(PcAction::Restart)));
         assert_eq!(pc("заблокируй компьютер"), Some(Intent::Pc(PcAction::Lock)));
-        assert_eq!(pc("открой телеграм на компьютере"), Some(Intent::Pc(PcAction::Open("телеграм".into()))));
-        assert_eq!(pc("запусти на компе стим"), Some(Intent::Pc(PcAction::Open("стим".into()))));
-        assert_eq!(pc("включи на компьютере игру дота"), Some(Intent::Pc(PcAction::Open("дота".into()))));
-        assert_eq!(pc("закрой хром на компе"), Some(Intent::Pc(PcAction::Close("хром".into()))));
-        assert_eq!(pc("выключи дискорд на компьютере"), Some(Intent::Pc(PcAction::Close("дискорд".into()))));
+        assert_eq!(pc("открой телеграм на компьютере"), cmd("открой телеграм"));
+        assert_eq!(pc("запусти на компе стим"), cmd("запусти стим"));
+        assert_eq!(pc("закрой хром на компе"), cmd("закрой хром"));
+        assert_eq!(pc("выключи дискорд на компьютере"), cmd("выключи дискорд"));
+        // Without «на компьютере».
+        assert_eq!(pc("Открой steam"), cmd("открой steam"));
+        assert_eq!(pc("открой мне в браузере профиль работа"), cmd("открой мне в браузере профиль работа"));
+        assert_eq!(pc("открой ютуб в профиле работа"), cmd("открой ютуб в профиле работа"));
+        assert_eq!(pc("найди в гугле как приготовить плов"), cmd("найди в гугле как приготовить плов"));
+        assert_eq!(pc("загугли курс доллара"), cmd("загугли курс доллара"));
+        assert_eq!(pc("открой блокнот и запиши купить молоко"), cmd("открой блокнот и запиши купить молоко"));
+        assert_eq!(pc("запиши в заметки позвонить маме"), cmd("запиши в заметки позвонить маме"));
+        assert_eq!(pc("создай документ и напиши привет"), cmd("создай документ и напиши привет"));
+        assert_eq!(pc("создай папку проекты на рабочем столе"), cmd("создай папку проекты на рабочем столе"));
         // Not about the PC: music and Alice's own commands stay as before.
         assert_eq!(pc("включи компромат"), Some(Intent::Play("компромат".into())));
         assert_ne!(pc("включи свет"), Some(Intent::Pc(PcAction::Wake)));
         assert_eq!(super::pc("какая погода на компьютере"), None);
-        // Without «на компьютере»: «открой»/«закрой» still go to the PC.
-        assert_eq!(pc("Открой steam"), Some(Intent::Pc(PcAction::Open("steam".into()))));
-        assert_eq!(pc("открой телеграм"), Some(Intent::Pc(PcAction::Open("телеграм".into()))));
-        assert_eq!(pc("закрой хром"), Some(Intent::Pc(PcAction::Close("хром".into()))));
+        assert_eq!(super::pc("найди рецепт плова"), None);
+        assert_eq!(super::pc("сделай громче"), None);
         assert_eq!(super::pc("открой навык угадай мелодию"), None);
-        assert_eq!(super::pc("открой сайт кинопоиска"), None);
         assert_eq!(super::pc("открой"), None);
     }
 

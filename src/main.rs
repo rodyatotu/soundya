@@ -965,11 +965,13 @@ impl Controller {
                     "lock" => Some(alice::PcAction::Lock),
                     "open" if !name.is_empty() => Some(alice::PcAction::Open(name)),
                     "close" if !name.is_empty() => Some(alice::PcAction::Close(name)),
+                    // pc do открой ютуб в профиле работа — as if said to Alice
+                    "do" | "say" if !name.is_empty() => Some(alice::PcAction::Command(name)),
                     _ => None,
                 };
                 match action {
                     Some(a) => self.intent(Intent::Pc(a), Some(reply)),
-                    None => send_to(&reply, "usage: pc ping|wake|sleep|shutdown|restart|lock|open <программа>|close <программа>".into()),
+                    None => send_to(&reply, "usage: pc ping|wake|sleep|shutdown|restart|lock|open <программа>|close <программа>|do <фраза>".into()),
                 }
             }
             "stop" => {

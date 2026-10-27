@@ -2,11 +2,12 @@
 # to sleep, shut it down, restart and lock it. Runs in the background after logon.
 #
 # Protocol: POST http://<pc>:8766/<action> with header "X-Soundya-Key: <key>",
-# body = program name (UTF-8) for open/close. Actions: ping, open, close, sleep,
-# shutdown, restart, lock. The answer is a short Russian sentence that Alice says.
+# body = program name (UTF-8) for open/close, the whole phrase for do. Actions:
+# ping, open, close, do, sleep, shutdown, restart, lock. The answer is a short Russian sentence that Alice says.
 #
 # Settings: %LOCALAPPDATA%\soundya-pc\config.json (created by install.ps1):
-#   { "port": 8766, "key": "...", "apps": { "моя игра": "C:\\Games\\game.exe" } }
+#   { "port": 8766, "key": "...", "apps": { "моя игра": "C:\\Games\\game.exe" },
+#     "sites": { "работа": "https://jira.example.com" } }
 # "apps" adds your own names: spoken name -> program name, shortcut or .exe path.
 
 $ErrorActionPreference = 'Stop'
@@ -242,6 +243,230 @@ function Do-Close([string]$name) {
     "Закрыла $title"
 }
 
+# ---- Free phrases: «открой ютуб в профиле работа», «создай документ и напиши …» ----
+
+# Spoken site names -> addresses. Add your own in config.json: "sites": { "работа": "https://…" }.
+$Sites = @{
+    'ютуб' = 'https://www.youtube.com'; 'youtube' = 'https://www.youtube.com'; 'ютьюб' = 'https://www.youtube.com'
+    'вк' = 'https://vk.com'; 'вконтакте' = 'https://vk.com'; 'гугл' = 'https://www.google.com'
+    'почта' = 'https://mail.google.com'; 'почту' = 'https://mail.google.com'; 'гмейл' = 'https://mail.google.com'
+    'яндекс' = 'https://ya.ru'; 'яндекс почта' = 'https://mail.yandex.ru'; 'яндекс почту' = 'https://mail.yandex.ru'
+    'твич' = 'https://www.twitch.tv'; 'гитхаб' = 'https://github.com'; 'кинопоиск' = 'https://www.kinopoisk.ru'
+    'саундклауд' = 'https://soundcloud.com'; 'авито' = 'https://www.avito.ru'; 'озон' = 'https://www.ozon.ru'
+    'вайлдберриз' = 'https://www.wildberries.ru'; 'вб' = 'https://www.wildberries.ru'; 'карты' = 'https://yandex.ru/maps'
+    'переводчик' = 'https://translate.google.com'; 'реддит' = 'https://www.reddit.com'; 'твиттер' = 'https://x.com'
+    'инстаграм' = 'https://www.instagram.com'; 'чат гпт' = 'https://chatgpt.com'; 'чатгпт' = 'https://chatgpt.com'
+    'клод' = 'https://claude.ai'; 'телеграм веб' = 'https://web.telegram.org'; 'вотсап веб' = 'https://web.whatsapp.com'
+    'ютуб музыку' = 'https://music.youtube.com'; 'спотифай веб' = 'https://open.spotify.com'
+}
+if ($Config.sites) {
+    foreach ($p in $Config.sites.PSObject.Properties) { $Sites[$p.Name.ToLower()] = [string]$p.Value }
+}
+
+function Chrome-Exe {
+    foreach ($k in 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe',
+                   'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe') {
+        try {
+            $p = (Get-ItemProperty $k -ErrorAction Stop).'(default)'
+            if ($p -and (Test-Path -LiteralPath $p)) { return $p }
+        } catch {}
+    }
+    foreach ($p in "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+                   "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+                   "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") {
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    $null
+}
+
+# Chrome profiles: @{ Dir = 'Profile 1'; Name = 'Работа' }.
+function Chrome-Profiles {
+    $file = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data\Local State'
+    if (-not (Test-Path -LiteralPath $file)) { return }
+    try { $state = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return }
+    foreach ($p in $state.profile.info_cache.PSObject.Properties) {
+        [pscustomobject]@{ Dir = $p.Name; Name = [string]$p.Value.name }
+    }
+}
+
+# The profile a spoken name means, or $null.
+function Find-Profile([string]$spoken) {
+    $want = $spoken.Trim().ToLower()
+    if (-not $want) { return $null }
+    $lat = To-Latin $want
+    $best = $null
+    $bestD = 3
+    foreach ($p in @(Chrome-Profiles)) {
+        $n = $p.Name.ToLower()
+        if ($n -eq $want -or $n -eq $lat) { return $p }
+        $d = 9
+        if ($n.Contains($want) -or $want.Contains($n) -or $n.Contains($lat)) { $d = 1 }
+        else { $d = [Math]::Min((Distance $want $n), (Distance $lat $n)) }
+        if ($d -lt $bestD) { $best = $p; $bestD = $d }
+    }
+    $best
+}
+
+function Capitalize([string]$s) {
+    $s = $s.Trim()
+    if ($s.Length -eq 0) { return $s }
+    $s.Substring(0, 1).ToUpper() + $s.Substring(1)
+}
+
+function Clean-Name([string]$s) {
+    $s = ($s -replace '[\\/:*?"<>|]', '').Trim()
+    if ($s.Length -gt 60) { $s = $s.Substring(0, 60).Trim() }
+    $s
+}
+
+# Opens Chrome (with a profile, a site or a search); falls back to the default browser.
+function Do-Browser([string]$t) {
+    $prof = $null
+    # «в профиле работа», «профиль работа»: try the longest name that matches a profile.
+    $m = [regex]::Match($t, '(?:\bв\s+)?\bпрофил[а-я]*\s+(.+)$')
+    if ($m.Success) {
+        $after = @($m.Groups[1].Value -split '\s+' | Where-Object { $_ })
+        for ($k = $after.Count; $k -ge 1; $k--) {
+            $prof = Find-Profile (($after | Select-Object -First $k) -join ' ')
+            if ($prof) {
+                $t = ($t.Substring(0, $m.Index) + ' ' + (($after | Select-Object -Skip $k) -join ' ')).Trim()
+                break
+            }
+        }
+        if (-not $prof) {
+            return "Не нашла в хроме профиль $($m.Groups[1].Value)"
+        }
+    }
+    $url = $null
+    $what = 'браузер'
+    $s = [regex]::Match($t, '\b(?:найди|поищи|загугли|погугли|поиск)\b\s*(?:в\s+(?:браузере|гугле|интернете|хроме)\s*)?(.*)$')
+    if ($s.Success -and $s.Groups[1].Value.Trim()) {
+        $q = $s.Groups[1].Value.Trim()
+        $url = 'https://www.google.com/search?q=' + [Uri]::EscapeDataString($q)
+        $what = "поиск: $q"
+    } else {
+        $name = ' ' + $t + ' '
+        foreach ($w in 'открой', 'запусти', 'включи', 'мне', 'в браузере', 'браузер', 'в хроме', 'хром', 'сайт', 'страницу', 'вкладку', 'новую', 'новой', 'в', 'на') {
+            $name = $name -replace (' ' + [regex]::Escape($w) + ' '), ' '
+        }
+        $name = $name.Trim()
+        if ($name) {
+            if ($Sites.ContainsKey($name)) { $url = $Sites[$name]; $what = $name }
+            elseif ($name -match '^[a-z0-9-]+(\.[a-z0-9-]+)+(/.*)?$') { $url = 'https://' + $name; $what = $name }
+            else {
+                $url = 'https://www.google.com/search?q=' + [Uri]::EscapeDataString($name)
+                $what = "поиск: $name"
+            }
+        }
+    }
+    $chrome = Chrome-Exe
+    $chromeArgs = @()
+    if ($prof) { $chromeArgs += "--profile-directory=`"$($prof.Dir)`"" }
+    if ($url) { $chromeArgs += $url }
+    if ($chrome) {
+        if ($chromeArgs.Count -gt 0) { Start-Process -FilePath $chrome -ArgumentList $chromeArgs } else { Start-Process -FilePath $chrome }
+    } elseif ($url) {
+        Start-Process explorer.exe -ArgumentList "`"$url`""
+    } else {
+        return 'Не нашла браузер Chrome'
+    }
+    $logProfile = ''
+    if ($prof) { $logProfile = " (profile $($prof.Name))" }
+    Log "browser: $what$logProfile"
+    $answer = if ($what -like 'поиск:*') { 'Ищу в гугле ' + $what.Substring(7) } elseif ($what -eq 'браузер') { 'Открываю браузер' } else { "Открываю $what" }
+    if ($prof) { $answer += " в профиле $($prof.Name)" }
+    $answer
+}
+
+# A note: its own .txt file in Documents\Заметки, opened in the text editor.
+function Do-Note([string]$body) {
+    $body = ($body -replace '^(?:в|во)\s+(?:заметки|заметку|блокнот|блокноте|файл|текстовый файл)\s+', '').Trim()
+    $dir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Заметки'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $title = (($body -split '\s+' | Select-Object -First 6) -join ' ')
+    if (-not $title) { $title = 'заметка' }
+    $path = Join-Path $dir ("{0:yyyy-MM-dd HH-mm} {1}.txt" -f (Get-Date), (Clean-Name $title))
+    [IO.File]::WriteAllText($path, (Capitalize $body) + "`r`n", (New-Object Text.UTF8Encoding $true))
+    Start-Process explorer.exe -ArgumentList "`"$path`""
+    Log "note: $path"
+    if ($body) { "Записала: $body" } else { 'Создала пустую заметку' }
+}
+
+# A Word document with the text (a .txt note when Word is not installed).
+function Do-Document([string]$title, [string]$body) {
+    try {
+        $word = New-Object -ComObject Word.Application
+    } catch {
+        return Do-Note $body
+    }
+    $word.Visible = $true
+    $doc = $word.Documents.Add()
+    if ($body) { $doc.Content.Text = Capitalize $body }
+    $answer = 'Создала документ'
+    if ($title) {
+        $path = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ((Clean-Name (Capitalize $title)) + '.docx')
+        try { $doc.SaveAs2($path); $answer = "Создала документ $title в Документах" } catch {}
+    }
+    try { $word.Activate() } catch {}
+    Log "document: $title"
+    $answer
+}
+
+function Do-Folder([string]$rest) {
+    $base = [Environment]::GetFolderPath('Desktop')
+    $where = 'на рабочем столе'
+    if ($rest -match '\b(?:в\s+документах)\b') { $base = [Environment]::GetFolderPath('MyDocuments'); $where = 'в документах' }
+    $name = ($rest -replace '\b(?:на\s+рабочем\s+столе|в\s+документах|с\s+названием|под\s+названием|новую)\b', '').Trim()
+    if (-not $name) { $name = 'Новая папка' }
+    $path = Join-Path $base (Clean-Name (Capitalize $name))
+    New-Item -ItemType Directory -Force -Path $path | Out-Null
+    Start-Process explorer.exe -ArgumentList "`"$path`""
+    Log "folder: $path"
+    "Создала папку $name $where"
+}
+
+# Works out what a phrase means and does it. The answer is said by Alice.
+function Do-Command([string]$t) {
+    # Dots stay inside site names («github.com»), go at the end of the phrase.
+    $t = ($t.ToLower() -replace 'ё', 'е' -replace '[,!?]', ' ' -replace '\.(\s|$)', ' ' -replace '\s+', ' ').Trim()
+    $t = (' ' + $t + ' ') -replace ' (?:пожалуйста|плиз) ', ' '
+    $t = $t.Trim()
+
+    # Search: «найди в гугле …», «загугли …»
+    if ($t -match '^(?:найди|поищи|загугли|погугли)\b') { return Do-Browser $t }
+
+    # «… и запиши X», «запиши X», «создай документ с текстом X»
+    $head = $t
+    $body = ''
+    $m = [regex]::Match($t, '^(.*?)\s*(?:\bи\s+)?\b(?:запиши|напиши|впиши|с\s+текстом)\b\s*(.*)$')
+    if ($m.Success) { $head = $m.Groups[1].Value.Trim(); $body = $m.Groups[2].Value.Trim() }
+
+    if ($head -match '\b(?:документ|ворд|word)\b' -and $head -match '^(?:создай|сделай|открой|новый)') {
+        $title = ($head -replace '^(?:создай|сделай|открой)\s+', '' -replace '\b(?:новый|документ|ворд|word|в|с\s+названием|под\s+названием)\b', '').Trim()
+        return Do-Document $title $body
+    }
+    if ($head -match '^(?:создай|сделай)\s+(?:новую\s+)?папку\b(.*)$') { return Do-Folder $Matches[1] }
+    if ($m.Success -and ($head -eq '' -or $head -match '\b(?:блокнот|заметк|текстов|файл)')) { return Do-Note $body }
+    if ($head -match '^(?:создай|сделай)\s+(?:новую\s+)?(?:заметку|текстовый\s+файл)') { return Do-Note '' }
+
+    # Browser: profiles, sites, «открой в браузере …»
+    $obj = ($head -replace '^(?:открой|запусти|включи)\s+', '').Trim()
+    if ($head -match '\b(?:браузер|браузере|профил|сайт|вкладк)' -or $Sites.ContainsKey($obj) -or $obj -match '^[a-z0-9-]+(\.[a-z0-9-]+)+$') {
+        return Do-Browser $head
+    }
+
+    # Programs and games
+    if ($head -match '^(?:открой|запусти|включи|открыть|запустить)\s+(.+)$') {
+        $name = $Matches[1] -replace '^(?:программу|приложение|игру)\s+', ''
+        return Do-Open $name
+    }
+    if ($head -match '^(?:закрой|выключи|выруби|закрыть)\s+(.+)$') {
+        $name = $Matches[1] -replace '^(?:программу|приложение|игру)\s+', ''
+        return Do-Close $name
+    }
+    "Не поняла, что сделать на компьютере: $t"
+}
+
 # Power actions run a moment later, so the answer reaches the speaker first.
 function Later([scriptblock]$action) {
     Start-Job -ScriptBlock $action | Out-Null
@@ -252,6 +477,7 @@ function Handle([string]$action, [string]$body) {
         'ping' { "Компьютер $env:COMPUTERNAME на связи" }
         'open' { Do-Open $body }
         'close' { Do-Close $body }
+        'do' { Do-Command $body }
         'lock' { Start-Process rundll32.exe 'user32.dll,LockWorkStation'; 'Заблокировала компьютер' }
         'sleep' {
             Later { Start-Sleep -Seconds 2; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false) | Out-Null }

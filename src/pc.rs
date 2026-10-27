@@ -26,6 +26,7 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
         PcAction::Lock => ("lock", ""),
         PcAction::Open(name) => ("open", name.as_str()),
         PcAction::Close(name) => ("close", name.as_str()),
+        PcAction::Command(text) => ("do", text.as_str()),
         PcAction::Wake => unreachable!(),
     };
     let address = if host.contains(':') { host.to_owned() } else { format!("{host}:{PORT}") };
