@@ -83,18 +83,22 @@ function Distance([string]$a, [string]$b) { [SoundyaText]::Distance($a, $b) }
 
 # Start-menu and desktop shortcuts: @{ Name; Path }.
 function Shortcuts {
-    $dirs = @(
+    # Start menu: with its folders. Desktops: only what lies on them — a desktop can
+    # hold project or game folders with tens of thousands of files.
+    $menus = @(
         (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
-        (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'),
-        [Environment]::GetFolderPath('Desktop'),
-        (Join-Path $env:PUBLIC 'Desktop')
+        (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
     )
-    foreach ($d in $dirs) {
-        if (-not (Test-Path $d)) { continue }
-        Get-ChildItem -Path $d -Recurse -Include *.lnk, *.url -ErrorAction SilentlyContinue |
-            Where-Object { $_.BaseName -notmatch 'uninstall|удал|readme|help|справк' } |
-            ForEach-Object { [pscustomobject]@{ Name = $_.BaseName; Path = $_.FullName } }
+    $desktops = @([Environment]::GetFolderPath('Desktop'), (Join-Path $env:PUBLIC 'Desktop'))
+    $files = @()
+    foreach ($d in $menus) {
+        if (Test-Path $d) { $files += Get-ChildItem -Path $d -Recurse -Include *.lnk, *.url -ErrorAction SilentlyContinue }
     }
+    foreach ($d in $desktops) {
+        if (Test-Path $d) { $files += Get-ChildItem -Path (Join-Path $d '*') -Include *.lnk, *.url -File -ErrorAction SilentlyContinue }
+    }
+    $files | Where-Object { $_.BaseName -notmatch 'uninstall|удал|readme|help|справк' } |
+        ForEach-Object { [pscustomobject]@{ Name = $_.BaseName; Path = $_.FullName } }
 }
 
 # Does this shortcut still lead somewhere? (Old ones keep pointing at a moved program.)
