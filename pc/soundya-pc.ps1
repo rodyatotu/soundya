@@ -40,6 +40,7 @@ $Aliases = @{
     'диспетчер задач' = 'taskmgr'; 'параметры' = 'ms-settings:'; 'настройки' = 'ms-settings:'
     'командная строка' = 'cmd'; 'терминал' = 'wt'; 'вк' = 'VK Messenger'; 'кс' = 'Counter-Strike 2'
     'контра' = 'Counter-Strike 2'; 'дота' = 'Dota 2'; 'майнкрафт' = 'Minecraft'
+    'дедлок' = 'Deadlock'; 'варфрейм' = 'Warframe'; 'раст' = 'Rust'; 'валорант' = 'VALORANT'
 }
 if ($Config.apps) {
     foreach ($p in $Config.apps.PSObject.Properties) { $Aliases[$p.Name.ToLower()] = [string]$p.Value }
@@ -92,6 +93,34 @@ function Shortcuts {
     }
 }
 
+# Games installed through Steam: @{ Name; Path = steam://rungameid/<id> }.
+function SteamGames {
+    $root = $null
+    try { $root = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction Stop).SteamPath } catch {}
+    if (-not $root) {
+        foreach ($p in "${env:ProgramFiles(x86)}\Steam", "$env:ProgramFiles\Steam") { if (Test-Path $p) { $root = $p; break } }
+    }
+    if (-not $root) { return }
+    $root = $root -replace '/', '\'
+    $libs = @($root)
+    $vdf = Join-Path $root 'steamapps\libraryfolders.vdf'
+    if (Test-Path $vdf) {
+        foreach ($m in [regex]::Matches((Get-Content $vdf -Raw), '"path"\s+"([^"]+)"')) {
+            $libs += ($m.Groups[1].Value -replace '\\\\', '\')
+        }
+    }
+    foreach ($lib in ($libs | Select-Object -Unique)) {
+        Get-ChildItem (Join-Path $lib 'steamapps') -Filter 'appmanifest_*.acf' -ErrorAction SilentlyContinue | ForEach-Object {
+            $text = Get-Content $_.FullName -Raw
+            $id = [regex]::Match($text, '"appid"\s+"(\d+)"').Groups[1].Value
+            $name = [regex]::Match($text, '"name"\s+"([^"]+)"').Groups[1].Value
+            if ($id -and $name -and $name -notmatch 'Steamworks|Redistributable|Proton|Runtime') {
+                [pscustomobject]@{ Name = $name; Path = "steam://rungameid/$id" }
+            }
+        }
+    }
+}
+
 # Finds what to start for a spoken name. Returns @{ Name; Path } or $null.
 function Find-App([string]$spoken) {
     $spoken = $spoken.Trim().ToLower()
@@ -110,6 +139,13 @@ function Find-App([string]$spoken) {
         $has = $all | Where-Object { $_.Name.ToLower().Contains($w) } | Sort-Object { $_.Name.Length } | Select-Object -First 1
         if ($has) { return $has }
     }
+    # Steam games: «открой дедлок», «запусти доту».
+    $games = @(SteamGames)
+    foreach ($w in $wanted) {
+        $game = $games | Where-Object { $_.Name.ToLower() -eq $w -or $_.Name.ToLower().StartsWith($w) -or $_.Name.ToLower().Contains($w) } |
+            Sort-Object { $_.Name.Length } | Select-Object -First 1
+        if ($game) { return $game }
+    }
     # Store apps (Windows 10/11).
     try {
         $apps = @(Get-StartApps)
@@ -121,8 +157,10 @@ function Find-App([string]$spoken) {
     # Close spelling: «дискорд» -> «diskord» ~ «Discord».
     foreach ($w in $wanted) {
         if ($w.Length -lt 4) { continue }
+        # Longer names may be further off: «dedlok» is 3 edits from «deadlock».
         $best = $null; $bestD = 3
-        foreach ($s in $all) {
+        if ($w.Length -ge 6) { $bestD = 4 }
+        foreach ($s in ($all + $games)) {
             $first = ($s.Name.ToLower() -split '\s+')[0]
             $dist = [Math]::Min((Distance $w $s.Name.ToLower()), (Distance $w $first))
             if ($dist -lt $bestD) { $best = $s; $bestD = $dist }
