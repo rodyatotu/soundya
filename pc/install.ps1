@@ -43,28 +43,34 @@ New-NetFirewallRule -DisplayName $Task -Direction Inbound -Protocol TCP -LocalPo
     -Action Allow -Profile Any -RemoteAddress LocalSubnet | Out-Null
 Write-Host "[ok] брандмауэр: порт $($Config.port) открыт для домашней сети"
 
-# 3. Start in the background at every logon (programs open on your desktop).
+# 3. Start in the background at every logon, as the normal user (not as
+# administrator: Steam and others refuse to be started by an elevated program).
+# Uses the Startup folder; the Task Scheduler refused to register a task on some PCs.
 $script = Join-Path $Dir 'soundya-pc.ps1'
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
-$principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
+$startup = Join-Path (Split-Path $AppData) 'Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+New-Item -ItemType Directory -Force -Path $startup | Out-Null
+$vbs = Join-Path $startup 'soundya-pc.vbs'
+# Hidden window; started again a few seconds after it stops for any reason.
+@(
+    'Set sh = CreateObject("WScript.Shell")',
+    'Do',
+    ('    sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""' + $script + '""", 0, True'),
+    '    WScript.Sleep 5000',
+    'Loop'
+) | Set-Content -Path $vbs -Encoding Unicode
+
+# Remove the old scheduled task, if an earlier version made one.
 Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue
-# A half-removed task (its file left in System32\Tasks) makes Register fail with "already exists".
 cmd.exe /c "schtasks /Delete /TN $Task /F >nul 2>&1"
-Remove-Item (Join-Path $env:WINDIR "System32\Tasks\$Task") -Force -Recurse -ErrorAction SilentlyContinue
-Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\$Task" -Force -Recurse -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
-Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | ForEach-Object {
-    try {
-        $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine
-        if ($cmd -like '*soundya-pc.ps1*') { Stop-Process -Id $_.Id -Force }
-    } catch {}
-}
-Start-ScheduledTask -TaskName $Task
-Write-Host '[ok] автозапуск при входе в Windows, уже запущен'
+
+# Stop running copies (also ones started by hand as administrator), then start
+# it through Explorer, which runs it as the normal user.
+Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe' OR Name = 'wscript.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ProcessId -ne $PID -and ($_.CommandLine -like '*soundya-pc.ps1*' -or $_.CommandLine -like '*soundya-pc.vbs*') } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 1
+Start-Process explorer.exe -ArgumentList "`"$vbs`""
+Write-Host "[ok] автозапуск при входе в Windows (папка «Автозагрузка»), уже запущен"
 
 # 4. Wake-on-LAN: wired adapter wakes on a magic packet; fast startup off
 # (with it on, most PCs ignore wake-on-LAN after "Shut down").
