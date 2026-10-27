@@ -469,8 +469,17 @@ function Do-Telegram([string]$t) {
     if (-not $text) { return "Открыла чат: ${who}" }
     Start-Sleep -Milliseconds 2000
     $saved = $null
-    try { $saved = Get-Clipboard -Raw } catch {}
-    Set-Clipboard -Value (Capitalize $text)
+    try { $saved = Get-Clipboard -Raw -ErrorAction Stop } catch {}
+    # The clipboard may be busy for a moment (another program holds it): try a few times.
+    $copied = $false
+    for ($i = 0; $i -lt 10 -and -not $copied; $i++) {
+        try { Set-Clipboard -Value (Capitalize $text) -ErrorAction Stop; $copied = $true }
+        catch { Start-Sleep -Milliseconds 200 }
+    }
+    if (-not $copied) {
+        Log "telegram: clipboard busy"
+        return "Открыла чат: ${who}, но не смогла вставить текст. Буфер обмена занят"
+    }
     $keys = New-Object -ComObject WScript.Shell
     $keys.SendKeys('^v')
     $send = $true
@@ -480,7 +489,7 @@ function Do-Telegram([string]$t) {
         $keys.SendKeys('{ENTER}')
     }
     Start-Sleep -Milliseconds 500
-    if ($saved) { try { Set-Clipboard -Value $saved } catch {} }
+    if ($saved) { try { Set-Clipboard -Value $saved -ErrorAction Stop } catch {} }
     Log "telegram: $who <- $text (sent: $send)"
     if ($send) { "Отправила ${who}: $text" } else { "Написала ${who}: $text. Нажмите Enter, чтобы отправить" }
 }
@@ -663,7 +672,14 @@ while ($true) {
         $action = $req.Path.Trim('/').ToLower()
         # Telegram contacts set on the speaker's settings page (base64 JSON).
         $global:SpeakerContacts = $req.Headers['x-soundya-contacts']
-        $answer = Handle $action $req.Body.Trim()
+        $answer = $null
+        try {
+            $answer = Handle $action $req.Body.Trim()
+        } catch {
+            # Say what went wrong instead of dropping the connection («компьютер не отвечает»).
+            Log "error in '$action': $_"
+            $answer = "Не получилось: $($_.Exception.Message)"
+        }
         if ($null -eq $answer) { Send-Answer $stream 404 "Неизвестная команда $action" }
         else { Send-Answer $stream 200 ([string]$answer) }
     } catch {
