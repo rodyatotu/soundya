@@ -50,6 +50,8 @@ pub enum Intent {
     Unlike,
     /// Add the current track to one of the account's playlists.
     AddToPlaylist(String),
+    /// Jump within the track by this many ms (negative: back).
+    Seek(i64),
 }
 
 fn normalize(text: &str) -> String {
@@ -247,7 +249,80 @@ fn extras(text: &str) -> Option<Intent> {
 }
 
 /// `keyword_only`: intercept music requests only when SoundCloud is named.
+/// «перемотай на 30 секунд», «перемотай вперед на минуту», «отмотай назад на полминуты»,
+/// «промотай на 2 минуты 30 секунд». Returns the jump in ms (negative: back).
+fn seek_command(text: &str) -> Option<i64> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let verb = *words.first()?;
+    let back_verb = verb.starts_with("отмота") || verb.starts_with("отмотк");
+    if !(back_verb
+        || verb.starts_with("перемота")
+        || verb.starts_with("перемотк")
+        || verb.starts_with("промота")
+        || verb.starts_with("прокрути")
+        || verb.starts_with("мотни"))
+    {
+        return None;
+    }
+    let back = back_verb || words.iter().any(|w| *w == "назад");
+    fn number(word: &str) -> Option<f64> {
+        if let Ok(n) = word.replace(',', ".").parse::<f64>() {
+            return Some(n);
+        }
+        Some(match word {
+            "одну" | "одна" | "один" => 1.0,
+            "полторы" | "полтора" => 1.5,
+            "две" | "два" => 2.0,
+            "три" => 3.0,
+            "четыре" => 4.0,
+            "пять" => 5.0,
+            "десять" => 10.0,
+            "пятнадцать" => 15.0,
+            "двадцать" => 20.0,
+            "тридцать" => 30.0,
+            "сорок" => 40.0,
+            "пятьдесят" => 50.0,
+            _ => return None,
+        })
+    }
+    let at = |i: Option<usize>| i.map(|j| words[j]).and_then(number);
+    let mut ms = 0f64;
+    let mut found = false;
+    for (i, w) in words.iter().enumerate().skip(1) {
+        let unit = if w.starts_with("полминут") {
+            ms += 30_000.0;
+            found = true;
+            continue;
+        } else if w.starts_with("секунд") || *w == "сек" {
+            1_000.0
+        } else if w.starts_with("минут") || *w == "мин" {
+            60_000.0
+        } else {
+            continue;
+        };
+        // «минуту» alone is one minute; «2 минуты», «двадцать секунд» take the number before.
+        let mut n = at(i.checked_sub(1)).unwrap_or(1.0);
+        // «двадцать пять секунд»
+        if let (Some(a), Some(b)) = (at(i.checked_sub(2)), at(i.checked_sub(1))) {
+            if a >= 20.0 && b < 10.0 {
+                n = a + b;
+            }
+        }
+        ms += n * unit;
+        found = true;
+    }
+    if !found {
+        // «перемотай на 30»: seconds; «перемотай вперед»: 30 seconds.
+        ms = words.iter().skip(1).find_map(|w| number(w)).unwrap_or(30.0) * 1_000.0;
+    }
+    let ms = ms.round() as i64;
+    Some(if back { -ms } else { ms })
+}
+
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
+    if let Some(ms) = seek_command(&normalize(text)) {
+        return Some(Intent::Seek(ms));
+    }
     let (norm, named) = strip_service(&normalize(text));
     if named
         && matches!(
@@ -754,6 +829,21 @@ pub fn watch(tx: Sender<Cmd>, shared: std::sync::Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seek_commands() {
+        let s = |t: &str| intent(t, false);
+        assert_eq!(s("Алиса, перемотай на 30 секунд"), Some(Intent::Seek(30_000)));
+        assert_eq!(s("перемотай на минуту"), Some(Intent::Seek(60_000)));
+        assert_eq!(s("перемотай вперед на 2 минуты"), Some(Intent::Seek(120_000)));
+        assert_eq!(s("перемотай назад на 10 секунд"), Some(Intent::Seek(-10_000)));
+        assert_eq!(s("отмотай на полминуты"), Some(Intent::Seek(-30_000)));
+        assert_eq!(s("промотай на минуту 30 секунд"), Some(Intent::Seek(90_000)));
+        assert_eq!(s("перемотай на двадцать пять секунд"), Some(Intent::Seek(25_000)));
+        assert_eq!(s("перемотай на полторы минуты"), Some(Intent::Seek(90_000)));
+        assert_eq!(s("перемотай вперед"), Some(Intent::Seek(30_000)));
+        assert_eq!(s("перемотай на 45"), Some(Intent::Seek(45_000)));
+    }
 
     #[test]
     fn music_and_home_commands() {

@@ -49,6 +49,12 @@
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
   h3 { font-size: 13px; color: var(--muted); margin: 16px 0 6px; font-weight: 600; }
   .track { font-size: 17px; font-weight: 600; min-height: 1.45em; word-break: break-word; }
+  .seek { position: relative; padding: 9px 0 5px; margin: 3px 0 1px; cursor: pointer; touch-action: none; }
+  .seek .bar { margin: 0; transition: height .15s; }
+  .seek:hover .bar, .seek.drag .bar { height: 6px; }
+  .seek-dot { position: absolute; top: 50%; width: 14px; height: 14px; margin: -5px 0 0 -7px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,.3); opacity: 0; transition: opacity .15s; pointer-events: none; }
+  .seek:hover .seek-dot, .seek.drag .seek-dot { opacity: 1; }
   .bar { height: 4px; background: var(--line); border-radius: 2px; margin: 12px 0 6px; overflow: hidden; }
   .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .5s linear; }
   .times { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -170,7 +176,7 @@
 
   <section>
     <div class="track" id="track">—</div>
-    <div class="bar"><i id="progress"></i></div>
+    <div class="seek" id="seek" title="Перемотать"><div class="bar"><i id="progress"></i></div><b class="seek-dot" id="seekdot"></b></div>
     <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
     <div class="controls">
       <button class="icon" onclick="cmd('prev')" title="Назад" aria-label="Назад"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 5h2.4v14H6zM19 5.6v12.8a.6.6 0 0 1-.92.5L9.2 12.5a.6.6 0 0 1 0-1L18.08 5.1a.6.6 0 0 1 .92.5z"/></svg></button>
@@ -650,6 +656,35 @@ try {
   if (btn) setTimeout(() => btn.click(), 0);
 } catch (e) {}
 
+// ---- seek: click or drag the progress bar ----
+let seekState = { duration: 0, playing: false };
+let seeking = false;
+function seekAt(e) {
+  const r = $('seek').getBoundingClientRect();
+  const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  $('progress').style.width = f * 100 + '%';
+  $('seekdot').style.left = f * 100 + '%';
+  $('pos').textContent = mmss(f * seekState.duration);
+  return f;
+}
+$('seek').addEventListener('pointerdown', e => {
+  if (!seekState.playing || !seekState.duration) return;
+  seeking = true;
+  $('seek').classList.add('drag');
+  $('seek').setPointerCapture(e.pointerId);
+  seekAt(e);
+});
+$('seek').addEventListener('pointermove', e => { if (seeking) seekAt(e); });
+$('seek').addEventListener('pointerup', async e => {
+  if (!seeking) return;
+  const f = seekAt(e);
+  $('seek').classList.remove('drag');
+  await post('/api/cmd', 'seek ' + Math.round(f * seekState.duration / 1000));
+  seeking = false;
+  refresh();
+});
+$('seek').addEventListener('pointercancel', () => { seeking = false; $('seek').classList.remove('drag'); });
+
 // ---- status ----
 let stall = { pos: -1, id: null, since: 0 };
 async function refresh() {
@@ -678,9 +713,14 @@ async function refresh() {
   } else st.textContent = names[s.state] || s.state;
   document.querySelector('.bar').classList.toggle('busy', !!busyText);
   $('track').textContent = s.track || (s.loading ? 'Загружаю: ' + s.loading : '—');
-  $('pos').textContent = mmss(s.position_ms);
+  if (!seeking) $('pos').textContent = mmss(s.position_ms);
   $('dur').textContent = mmss(s.duration_ms);
-  $('progress').style.width = s.duration_ms ? Math.min(100, 100 * s.position_ms / s.duration_ms) + '%' : '0';
+  seekState = { duration: s.duration_ms || 0, playing: s.state !== 'stopped' };
+  if (!seeking) {
+    const pct = s.duration_ms ? Math.min(100, 100 * s.position_ms / s.duration_ms) : 0;
+    $('progress').style.width = pct + '%';
+    $('seekdot').style.left = pct + '%';
+  }
   const want = s.state === 'playing' ? 'pause' : 'play';
   if ($('toggle').dataset.icon !== want) {
     $('toggle').dataset.icon = want;

@@ -53,12 +53,25 @@ pub struct Flags {
     pub stop: AtomicBool,
     pub paused: AtomicBool,
     pub position_ms: AtomicU64,
+    /// Requested jump: target position + 1 (0 = none). See `Flags::seek`.
+    seek: AtomicU64,
+}
+
+impl Flags {
+    /// Jumps to `ms`. Forward jumps continue the same download (the audio in
+    /// between is decoded silently); a jump back ends the track with
+    /// `Outcome::Seek`, so it is opened again from the start.
+    pub fn seek(&self, ms: u64) {
+        self.seek.store(ms + 1, Ordering::Release);
+    }
 }
 
 pub enum Outcome {
     Finished,
     Stopped,
     Failed(String),
+    /// Jump back to this position: open the track again and skip to it.
+    Seek(u64),
 }
 
 struct Gain(f32);
@@ -136,6 +149,9 @@ fn run(
     let mut frames_played: u64 = 0;
     let mut decode_errors = 0;
     let mut reopened = 0;
+    // Decoded silently up to here: resuming after a broken download, or a jump forward.
+    let mut skip_until = skip_ms;
+    let mut rate: u64 = 0;
 
     loop {
         if flags.stop.load(Ordering::Acquire) {
@@ -143,6 +159,23 @@ fn run(
                 o.stop_now();
             }
             return Ok(Outcome::Stopped);
+        }
+        let seek = flags.seek.swap(0, Ordering::AcqRel);
+        if seek > 0 {
+            let target = seek - 1;
+            let now = if rate > 0 { frames_played * 1000 / rate } else { 0 };
+            if target < now {
+                if let Some(o) = out.as_mut() {
+                    o.stop_now();
+                }
+                return Ok(Outcome::Seek(target));
+            }
+            eprintln!("player: jump to {}:{:02}", target / 60_000, target / 1000 % 60);
+            skip_until = target;
+            // Drop what is queued in the card, so the jump is heard at once.
+            if let Some(mut o) = out.take() {
+                o.stop_now();
+            }
         }
         if flags.paused.load(Ordering::Acquire) {
             // Release the sound card while paused, so Alice can use the speaker
@@ -188,7 +221,8 @@ fn run(
         };
         let spec = *decoded.spec();
         let channels = spec.channels.count();
-        if skip_ms > 0 && (frames_played * 1000 / u64::from(spec.rate.max(1))) < skip_ms {
+        rate = u64::from(spec.rate.max(1));
+        if skip_until > 0 && (frames_played * 1000 / rate) < skip_until {
             // Catching up to where the track broke off: decode without sound.
             frames_played += decoded.frames() as u64;
             flags

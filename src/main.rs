@@ -565,6 +565,24 @@ impl Controller {
         self.publish();
     }
 
+    /// Jumps within the current track: to `to_ms`, or by `by_ms` from where it is.
+    fn seek(&mut self, to_ms: Option<u64>, by_ms: i64) -> Result<u64, String> {
+        let Some(flags) = self.flags.clone() else {
+            return Err("сейчас ничего не играет".into());
+        };
+        let now = flags.position_ms.load(Ordering::Acquire);
+        let duration = self.current().and_then(|t| t.duration).unwrap_or(0);
+        let mut target = to_ms.unwrap_or_else(|| now.saturating_add_signed(by_ms));
+        if duration > 0 {
+            target = target.min(duration.saturating_sub(2_000));
+        }
+        flags.seek(target);
+        // Shown right away; the player catches up in a moment.
+        flags.position_ms.store(target, Ordering::Release);
+        self.publish();
+        Ok(target)
+    }
+
     fn next(&mut self) {
         if self.pos + 1 < self.queue.len() {
             let p = self.pos + 1;
@@ -760,6 +778,10 @@ impl Controller {
                 self.previous();
                 respond(reply, "OK", None);
             }
+            Intent::Seek(by) => match self.seek(None, by) {
+                Ok(_) => respond(reply, "OK", None),
+                Err(e) => respond(reply, &format!("error: {e}"), None),
+            },
             Intent::Restart => {
                 let p = self.pos;
                 self.start(p);
@@ -880,6 +902,27 @@ impl Controller {
             "similar" => self.intent(Intent::Similar, Some(reply)),
             "likes" => self.intent(Intent::Likes, Some(reply)),
             "recs" => self.intent(Intent::Recommend, Some(reply)),
+            // seek 95 | seek 1:35 (to that point) | seek +30 | seek -10 (by seconds)
+            "seek" => {
+                let secs = |t: &str| -> Option<f64> {
+                    match t.split_once(':') {
+                        Some((m, s)) => Some(m.trim().parse::<f64>().ok()? * 60.0 + s.trim().parse::<f64>().ok()?),
+                        None => t.trim().parse::<f64>().ok(),
+                    }
+                };
+                let result = if let Some(rest) = arg.strip_prefix('+') {
+                    secs(rest).map(|v| self.seek(None, (v * 1000.0) as i64))
+                } else if let Some(rest) = arg.strip_prefix('-') {
+                    secs(rest).map(|v| self.seek(None, -(v * 1000.0) as i64))
+                } else {
+                    secs(&arg).filter(|v| *v >= 0.0).map(|v| self.seek(Some((v * 1000.0) as u64), 0))
+                };
+                match result {
+                    Some(Ok(ms)) => send_to(&reply, format!("OK {}", fmt_ms(ms))),
+                    Some(Err(e)) => send_to(&reply, format!("error: {e}")),
+                    None => send_to(&reply, "usage: seek 95 | seek 1:35 | seek +30 | seek -10".into()),
+                }
+            }
             "stop" => {
                 self.halt();
                 self.publish();
@@ -1017,6 +1060,13 @@ impl Controller {
                             }
                         }
                         Outcome::Stopped => self.publish(),
+                        Outcome::Seek(target) => {
+                            // A jump back: the same track again, silently up to the target.
+                            let p = self.pos;
+                            let retries = self.retries;
+                            self.start_at(p, target, 0);
+                            self.retries = retries;
+                        }
                         Outcome::Failed(e) if self.retries < 3 => {
                             // Same track again, from where it stopped, instead of skipping it.
                             self.retries += 1;
@@ -1279,7 +1329,7 @@ fn main() {
             }
         }
         "play" | "playlist" | "likes" | "pause" | "resume" | "toggle" | "next" | "prev" | "stop"
-        | "status" | "queue" | "shuffle" | "repeat" | "like" | "unlike" | "similar" | "recs" => send(&format!("{cmd} {rest}")),
+        | "status" | "queue" | "shuffle" | "repeat" | "like" | "unlike" | "similar" | "recs" | "seek" => send(&format!("{cmd} {rest}")),
         _ => {
             println!(
                 "soundya {}\n\
@@ -1290,6 +1340,7 @@ fn main() {
                  \n  soundya pause|resume|toggle|next|prev|stop\
                  \n  soundya shuffle on|off | repeat on|off | like | similar\
                  \n  soundya status | queue\
+                 \n  soundya seek 1:35 | seek +30 | seek -10\
                  \n  soundya search <query>      list results (no daemon needed)\
                  \n  soundya once <query>        play first result directly (test)\
                  \n\nVoice: «Алиса, включи <исполнитель/трек>», «включи плейлист <…>»,\
