@@ -285,7 +285,14 @@ function Chrome-Profiles {
     if (-not (Test-Path -LiteralPath $file)) { return }
     try { $state = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return }
     foreach ($p in $state.profile.info_cache.PSObject.Properties) {
-        [pscustomobject]@{ Dir = $p.Name; Name = [string]$p.Value.name }
+        $v = $p.Value
+        # The name shown in Chrome: the one you typed, or the Google account's name.
+        $names = @(@($v.name, $v.shortcut_name, $v.gaia_given_name, $v.gaia_name, $v.user_name) |
+            Where-Object { $_ } | ForEach-Object { [string]$_ } | Select-Object -Unique)
+        if ($names.Count -eq 0) { $names = @($p.Name) }
+        # «Person 1» / «Пользователь 1» is Chrome's placeholder: show a real name if there is one.
+        $shown = @($names | Where-Object { $_ -notmatch '^(Person|Пользователь)\s*\d*$' }) + $names
+        [pscustomobject]@{ Dir = $p.Name; Name = [string]$shown[0]; Names = $names }
     }
 }
 
@@ -297,12 +304,16 @@ function Find-Profile([string]$spoken) {
     $best = $null
     $bestD = 3
     foreach ($p in @(Chrome-Profiles)) {
-        $n = $p.Name.ToLower()
-        if ($n -eq $want -or $n -eq $lat) { return $p }
-        $d = 9
-        if ($n.Contains($want) -or $want.Contains($n) -or $n.Contains($lat)) { $d = 1 }
-        else { $d = [Math]::Min((Distance $want $n), (Distance $lat $n)) }
-        if ($d -lt $bestD) { $best = $p; $bestD = $d }
+        $all = @($p.Name)
+        if ($p.Names) { $all = @($p.Names) }
+        foreach ($name in $all) {
+            $n = $name.ToLower()
+            if ($n -eq $want -or $n -eq $lat) { return $p }
+            $d = 9
+            if ($n.Contains($want) -or $want.Contains($n) -or $n.Contains($lat)) { $d = 1 }
+            else { $d = [Math]::Min((Distance $want $n), (Distance $lat $n)) }
+            if ($d -lt $bestD) { $best = $p; $bestD = $d }
+        }
     }
     $best
 }
@@ -334,19 +345,26 @@ function Do-Browser([string]$t) {
             }
         }
         if (-not $prof) {
-            return "Не нашла в хроме профиль $($m.Groups[1].Value)"
+            $known = (@(Chrome-Profiles) | ForEach-Object { $_.Name }) -join ', '
+            Log "no profile '$($m.Groups[1].Value)'; profiles: $known"
+            return "Не нашла в хроме профиль $($m.Groups[1].Value). Есть: $known"
         }
     }
     $url = $null
     $what = 'браузер'
+    $yt = [regex]::Match($t, '\b(?:найди|поищи|открой|включи|поиск)\b\s*(?:мне\s+)?(?:на|в)\s+(?:ютубе|youtube|ютюбе|ютьюбе)\s+(.+)$')
     $s = [regex]::Match($t, '\b(?:найди|поищи|загугли|погугли|поиск)\b\s*(?:в\s+(?:браузере|гугле|интернете|хроме)\s*)?(.*)$')
-    if ($s.Success -and $s.Groups[1].Value.Trim()) {
+    if ($yt.Success) {
+        $q = $yt.Groups[1].Value.Trim()
+        $url = 'https://www.youtube.com/results?search_query=' + [Uri]::EscapeDataString($q)
+        $what = "ютуб: $q"
+    } elseif ($s.Success -and $s.Groups[1].Value.Trim()) {
         $q = $s.Groups[1].Value.Trim()
         $url = 'https://www.google.com/search?q=' + [Uri]::EscapeDataString($q)
         $what = "поиск: $q"
     } else {
         $name = ' ' + $t + ' '
-        foreach ($w in 'открой', 'запусти', 'включи', 'мне', 'в браузере', 'браузер', 'в хроме', 'хром', 'сайт', 'страницу', 'вкладку', 'новую', 'новой', 'в', 'на') {
+        foreach ($w in 'открой', 'запусти', 'включи', 'мне', 'в браузере', 'браузер', 'в хроме', 'хром', 'сайт', 'страницу', 'вкладку', 'новую', 'новой', 'в', 'на', 'и', 'а', 'там', 'с') {
             $name = $name -replace (' ' + [regex]::Escape($w) + ' '), ' '
         }
         $name = $name.Trim()
@@ -373,7 +391,7 @@ function Do-Browser([string]$t) {
     $logProfile = ''
     if ($prof) { $logProfile = " (profile $($prof.Name))" }
     Log "browser: $what$logProfile"
-    $answer = if ($what -like 'поиск:*') { 'Ищу в гугле ' + $what.Substring(7) } elseif ($what -eq 'браузер') { 'Открываю браузер' } else { "Открываю $what" }
+    $answer = if ($what -like 'поиск:*') { 'Ищу в гугле ' + $what.Substring(7) } elseif ($what -like 'ютуб:*') { 'Ищу на ютубе ' + $what.Substring(6) } elseif ($what -eq 'браузер') { 'Открываю браузер' } else { "Открываю $what" }
     if ($prof) { $answer += " в профиле $($prof.Name)" }
     $answer
 }
@@ -432,8 +450,9 @@ function Do-Command([string]$t) {
     $t = (' ' + $t + ' ') -replace ' (?:пожалуйста|плиз) ', ' '
     $t = $t.Trim()
 
-    # Search: «найди в гугле …», «загугли …»
+    # Search: «найди в гугле …», «загугли …», «найди на ютубе …», «открой на ютубе …»
     if ($t -match '^(?:найди|поищи|загугли|погугли)\b') { return Do-Browser $t }
+    if ($t -match '^(?:открой|включи)\s+(?:мне\s+)?(?:на|в)\s+(?:ютубе|youtube|ютюбе|ютьюбе)\s+') { return Do-Browser $t }
 
     # «… и запиши X», «запиши X», «создай документ с текстом X»
     $head = $t
