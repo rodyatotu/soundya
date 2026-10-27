@@ -426,7 +426,35 @@ function Do-Append([string]$body) {
     "Дописала: $body"
 }
 
-# Telegram: opens the chat, pastes the text and sends it.
+# Types text into the window in front, like a keyboard, in any language and
+# whatever the keyboard layout (SendInput with Unicode characters). No clipboard:
+# a background program often cannot use it.
+$TyperCode = @'
+using System;
+using System.Runtime.InteropServices;
+public static class SoundyaTyper {
+    [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Explicit)] struct InputUnion { [FieldOffset(0)] public KEYBDINPUT ki; [FieldOffset(0)] public MOUSEINPUT mi; }
+    [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public InputUnion u; }
+    [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
+    public static uint Type(string text) {
+        var inputs = new INPUT[text.Length * 2];
+        int i = 0;
+        foreach (char c in text) {
+            inputs[i].type = 1; inputs[i].u.ki.wScan = c; inputs[i].u.ki.dwFlags = 4; i++;
+            inputs[i].type = 1; inputs[i].u.ki.wScan = c; inputs[i].u.ki.dwFlags = 4 | 2; i++;
+        }
+        return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+    }
+}
+'@
+function Type-Text([string]$text) {
+    if (-not ('SoundyaTyper' -as [type])) { Add-Type -TypeDefinition $TyperCode -Language CSharp }
+    [SoundyaTyper]::Type($text) -gt 0
+}
+
+# Telegram: opens the chat, types the text and sends it.
 # Contacts in config.json: "contacts": { "мама|маме|маму": "@username", "саша|саше": "+79991234567" }
 # ("telegram_send": false: paste only, press Enter yourself).
 function Do-Telegram([string]$t) {
@@ -468,28 +496,17 @@ function Do-Telegram([string]$t) {
     Start-Process explorer.exe -ArgumentList "`"$link`""
     if (-not $text) { return "Открыла чат: ${who}" }
     Start-Sleep -Milliseconds 2000
-    $saved = $null
-    try { $saved = Get-Clipboard -Raw -ErrorAction Stop } catch {}
-    # The clipboard may be busy for a moment (another program holds it): try a few times.
-    $copied = $false
-    for ($i = 0; $i -lt 10 -and -not $copied; $i++) {
-        try { Set-Clipboard -Value (Capitalize $text) -ErrorAction Stop; $copied = $true }
-        catch { Start-Sleep -Milliseconds 200 }
-    }
-    if (-not $copied) {
-        Log "telegram: clipboard busy"
-        return "Открыла чат: ${who}, но не смогла вставить текст. Буфер обмена занят"
+    if (-not (Type-Text (Capitalize $text))) {
+        Log "telegram: typing failed"
+        return "Открыла чат: ${who}, но не смогла напечатать текст"
     }
     $keys = New-Object -ComObject WScript.Shell
-    $keys.SendKeys('^v')
     $send = $true
     if ($null -ne $Config.telegram_send) { $send = [bool]$Config.telegram_send }
     if ($send) {
         Start-Sleep -Milliseconds 400
         $keys.SendKeys('{ENTER}')
     }
-    Start-Sleep -Milliseconds 500
-    if ($saved) { try { Set-Clipboard -Value $saved -ErrorAction Stop } catch {} }
     Log "telegram: $who <- $text (sent: $send)"
     if ($send) { "Отправила ${who}: $text" } else { "Написала ${who}: $text. Нажмите Enter, чтобы отправить" }
 }
