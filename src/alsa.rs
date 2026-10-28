@@ -112,45 +112,91 @@ const STALL: std::time::Duration = std::time::Duration::from_secs(3);
 const SND_PCM_FORMAT_S16_LE: c_int = 2;
 const SND_PCM_ACCESS_RW_INTERLEAVED: c_int = 3;
 
+/// Alice's own copy of libasound. On models without /etc/asound.conf (Station
+/// Mini 1) only this one knows Alice's shared mixer: the system copy goes to the
+/// bare sound card, which answers "Operation not supported" (error 95).
+const VENDOR_ALSA: &str = "/system/vendor/quasar/libs/libasound.so.2";
+
+/// Which libasound to load, best first.
+fn alsa_candidates(has_asound_conf: bool, has_vendor: bool) -> Vec<&'static str> {
+    let mut list = Vec::new();
+    if !has_asound_conf && has_vendor {
+        list.push(VENDOR_ALSA);
+    }
+    list.extend(["libasound.so.2", "libasound.so"]);
+    if has_vendor && !list.contains(&VENDOR_ALSA) {
+        list.push(VENDOR_ALSA);
+    }
+    list
+}
+
 fn lib() -> io::Result<&'static Lib> {
     static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
-    LIB.get_or_init(|| unsafe {
-        let mut handle = std::ptr::null_mut();
-        for name in [c"libasound.so.2", c"libasound.so"] {
-            handle = dlopen(name.as_ptr(), RTLD_NOW | RTLD_GLOBAL);
-            if !handle.is_null() {
-                break;
+    LIB.get_or_init(|| {
+        let names = alsa_candidates(
+            crate::fsx::exists(std::path::Path::new("/etc/asound.conf")),
+            crate::fsx::exists(std::path::Path::new(VENDOR_ALSA)),
+        );
+        let mut last = "cannot dlopen libasound.so.2".to_owned();
+        for name in names {
+            match unsafe { load(name) } {
+                Ok(lib) => {
+                    eprintln!("alsa: using {name}");
+                    return Ok(lib);
+                }
+                Err(e) => last = e,
             }
         }
-        if handle.is_null() {
-            return Err("cannot dlopen libasound.so.2".to_owned());
-        }
-        macro_rules! sym {
-            ($name:literal) => {{
-                let p = dlsym(handle, concat!($name, "\0").as_ptr().cast());
-                if p.is_null() {
-                    return Err(format!("libasound has no {}", $name));
-                }
-                std::mem::transmute::<*mut c_void, _>(p)
-            }};
-        }
-        Ok(Lib {
-            open: sym!("snd_pcm_open"),
-            set_params: sym!("snd_pcm_set_params"),
-            writei: sym!("snd_pcm_writei"),
-            recover: sym!("snd_pcm_recover"),
-            drop: sym!("snd_pcm_drop"),
-            wait: sym!("snd_pcm_wait"),
-            state: sym!("snd_pcm_state"),
-            start: sym!("snd_pcm_start"),
-            avail_update: sym!("snd_pcm_avail_update"),
-            get_params: sym!("snd_pcm_get_params"),
-            close: sym!("snd_pcm_close"),
-            strerror: sym!("snd_strerror"),
-        })
+        Err(last)
     })
     .as_ref()
     .map_err(|e| io::Error::other(e.clone()))
+}
+
+unsafe fn load(name: &str) -> Result<Lib, String> {
+    let c = CString::new(name).map_err(|e| e.to_string())?;
+    let handle = dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL);
+    if handle.is_null() {
+        return Err(format!("cannot dlopen {name}"));
+    }
+    macro_rules! sym {
+        ($name:literal) => {{
+            let p = dlsym(handle, concat!($name, "\0").as_ptr().cast());
+            if p.is_null() {
+                return Err(format!("{name} has no {}", $name));
+            }
+            std::mem::transmute::<*mut c_void, _>(p)
+        }};
+    }
+    Ok(Lib {
+        open: sym!("snd_pcm_open"),
+        set_params: sym!("snd_pcm_set_params"),
+        writei: sym!("snd_pcm_writei"),
+        recover: sym!("snd_pcm_recover"),
+        drop: sym!("snd_pcm_drop"),
+        wait: sym!("snd_pcm_wait"),
+        state: sym!("snd_pcm_state"),
+        start: sym!("snd_pcm_start"),
+        avail_update: sym!("snd_pcm_avail_update"),
+        get_params: sym!("snd_pcm_get_params"),
+        close: sym!("snd_pcm_close"),
+        strerror: sym!("snd_strerror"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picks_alices_libasound_only_without_asound_conf() {
+        // Station Lite: no vendor copy — the system one, as before.
+        assert_eq!(alsa_candidates(false, false), vec!["libasound.so.2", "libasound.so"]);
+        // A model with /etc/asound.conf: system first, vendor as a fallback.
+        assert_eq!(alsa_candidates(true, true), vec!["libasound.so.2", "libasound.so", VENDOR_ALSA]);
+        // Mini 1: no asound.conf, vendor copy present — Alice's first.
+        assert_eq!(alsa_candidates(false, true)[0], VENDOR_ALSA);
+    }
 }
 
 fn check(lib: &Lib, what: &str, code: c_int) -> io::Result<()> {
