@@ -36,14 +36,12 @@ const PUBLISHER: &str = "avahi-publish-service";
 /// No sound for this long: the sender paused or disconnected.
 const IDLE: Duration = Duration::from_millis(1500);
 /// Sound kept queued in the card. shairport-sync sends in real time and cannot
-/// see the card, so soundya keeps the queue level itself: the iPhone's clock and
-/// the speaker's never run at exactly the same speed. A full card would block
-/// shairport-sync, which then drops late sound (audible stutter).
+/// see the card, so soundya keeps the queue level itself by resampling a little:
+/// the speaker's sound card does not run at exactly 44.1 kHz of the iPhone's
+/// clock (measured: about 0.3 % fast), so without this it runs dry and stutters.
 const TARGET_MS: usize = 250;
-/// Within ±this, nothing is corrected.
-const BAND_MS: usize = 60;
-/// While correcting, one frame in this many is dropped or doubled (0.25 %, inaudible).
-const CORRECT_EVERY: u64 = 400;
+/// Most the speed may be adjusted: ±2 %, a pitch change nobody hears.
+const MAX_CORRECTION: f64 = 0.02;
 const FRAME_BYTES: usize = CHANNELS * 2;
 pub const DEFAULT_NAME: &str = "Яндекс Станция";
 
@@ -323,7 +321,7 @@ fn session(
     let mut last_sound: Option<Instant> = None;
     // Bytes of an incomplete frame, kept for the next block.
     let mut carry: Vec<u8> = Vec::new();
-    let mut drift = Drift::default();
+    let mut rate = Resampler::default();
     let mut stats_at = Instant::now();
     let mut gain = crate::player::Gain::default();
     let mut announced = false;
@@ -380,7 +378,7 @@ fn session(
                 gain.apply(&mut samples, CHANNELS, RATE, shared.duck.active());
                 if let Some(o) = output.as_mut() {
                     let queued = o.queued();
-                    let corrected = drift.correct(&samples, queued);
+                    let corrected = rate.process(&samples, queued);
                     if let Err(e) = o.write(corrected) {
                         eprintln!("airplay: sound card: {e}; reopening");
                         output = None;
@@ -389,13 +387,14 @@ fn session(
                     }
                 }
                 if stats_at.elapsed() > Duration::from_secs(30) {
+                    let secs = stats_at.elapsed().as_secs_f64();
                     stats_at = Instant::now();
                     let q = output.as_ref().and_then(|o| o.queued()).map(|f| f * 1000 / RATE as usize);
                     eprintln!(
-                        "airplay: queue {} ms, frames dropped {}, doubled {}",
+                        "airplay: queue {} ms, in {:.0} frames/s, speed {:+.0} ppm",
                         q.map_or("?".into(), |q| q.to_string()),
-                        drift.dropped,
-                        drift.doubled
+                        rate.take_frames_in() as f64 / secs,
+                        (1.0 / rate.ratio - 1.0) * 1e6
                     );
                 }
             }
@@ -411,8 +410,7 @@ fn session(
             if let Some(mut o) = output.take() {
                 o.finish();
             }
-            eprintln!("airplay: frames dropped {}, doubled {}", drift.dropped, drift.doubled);
-            drift = Drift::default();
+            rate.reset();
             air.active.store(false, Ordering::Release);
             let _ = tx.send(Cmd::AirPlay(false));
         }
@@ -427,39 +425,80 @@ fn ms_to_frames(ms: usize) -> usize {
     RATE as usize * ms / 1000
 }
 
-/// Keeps the card's queue near [`TARGET_MS`] by dropping or doubling single frames.
-#[derive(Default)]
-struct Drift {
-    frame: u64,
-    dropped: u64,
-    doubled: u64,
+/// Plays the incoming sound a little faster or slower (linear interpolation),
+/// steered so the card's queue stays near [`TARGET_MS`].
+struct Resampler {
+    /// Input frames consumed per output frame (> 1: play faster, queue shrinks).
+    ratio: f64,
+    /// Integral of the queue error (seconds × seconds): finds the steady speed.
+    integral: f64,
+    /// Position in the current block; -1.0..0.0 means between `prev` and the first frame.
+    pos: f64,
+    prev: [i16; CHANNELS],
     out: Vec<i16>,
+    frames_in: u64,
 }
 
-impl Drift {
-    /// `samples`: whole interleaved frames. `queued`: frames waiting in the card.
-    fn correct<'a>(&'a mut self, samples: &'a [i16], queued: Option<usize>) -> &'a [i16] {
-        let Some(q) = queued else { return samples };
-        let (target, band) = (ms_to_frames(TARGET_MS), ms_to_frames(BAND_MS));
-        let drop = q > target + band;
-        let double = q + band < target && q > 0; // q == 0: not started yet, just filling
-        if !drop && !double {
-            self.frame += (samples.len() / CHANNELS) as u64;
+impl Default for Resampler {
+    fn default() -> Self {
+        Self { ratio: 1.0, integral: 0.0, pos: 0.0, prev: [0; CHANNELS], out: Vec::new(), frames_in: 0 }
+    }
+}
+
+impl Resampler {
+    /// Forget the speed: a new session (another device) may need a different one.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn take_frames_in(&mut self) -> u64 {
+        std::mem::take(&mut self.frames_in)
+    }
+
+    /// `queued`: frames waiting in the card; 0 or None before playback starts.
+    fn steer(&mut self, queued: Option<usize>, block_frames: usize) {
+        let Some(q) = queued.filter(|&q| q > 0) else { return };
+        let error = (q as f64 - ms_to_frames(TARGET_MS) as f64) / RATE as f64; // seconds
+        let dt = block_frames as f64 / RATE as f64;
+        self.integral = (self.integral + error * dt).clamp(-MAX_CORRECTION / 0.02, MAX_CORRECTION / 0.02);
+        let correction = 0.05 * error + 0.02 * self.integral;
+        self.ratio = 1.0 + correction.clamp(-MAX_CORRECTION, MAX_CORRECTION);
+    }
+
+    /// `samples`: whole interleaved frames.
+    fn process<'a>(&'a mut self, samples: &'a [i16], queued: Option<usize>) -> &'a [i16] {
+        let n = samples.len() / CHANNELS;
+        if n == 0 {
             return samples;
         }
+        self.frames_in += n as u64;
+        self.steer(queued, n);
         self.out.clear();
-        for f in samples.chunks_exact(CHANNELS) {
-            self.frame += 1;
-            if self.frame % CORRECT_EVERY == 0 {
-                if drop {
-                    self.dropped += 1;
-                    continue;
-                }
-                self.out.extend_from_slice(f);
-                self.doubled += 1;
+        let prev = self.prev;
+        let frame = |i: isize| -> &[i16] {
+            if i < 0 {
+                &prev
+            } else {
+                &samples[i as usize * CHANNELS..(i as usize + 1) * CHANNELS]
             }
-            self.out.extend_from_slice(f);
+        };
+        let mut out = std::mem::take(&mut self.out);
+        // Output frames lie between input frame floor(pos) and the next; pos < n - 1
+        // keeps the next one inside this block, the rest waits for the next block.
+        let mut pos = self.pos;
+        while pos < (n - 1) as f64 {
+            let i = pos.floor();
+            let f = pos - i;
+            let (a, b) = (frame(i as isize), frame(i as isize + 1));
+            for c in 0..CHANNELS {
+                out.push((a[c] as f64 * (1.0 - f) + b[c] as f64 * f).round() as i16);
+            }
+            pos += self.ratio;
         }
+        self.pos = pos - n as f64;
+        let last = frame(n as isize - 1).to_vec();
+        self.prev.copy_from_slice(&last);
+        self.out = out;
         &self.out
     }
 }
@@ -488,22 +527,35 @@ mod tests {
     }
 
     #[test]
-    fn drift_correction() {
-        let block: Vec<i16> = (0..800).collect(); // 400 stereo frames
-        let mut d = Drift::default();
-        // Near the target: untouched.
-        assert_eq!(d.correct(&block, Some(ms_to_frames(TARGET_MS))).len(), 800);
-        // Too full: one frame of 400 dropped.
-        assert_eq!(d.correct(&block, Some(ms_to_frames(400))).len(), 798);
-        // Too empty (but playing): one frame doubled.
-        assert_eq!(d.correct(&block, Some(ms_to_frames(100))).len(), 802);
-        // Not started (empty): just fill.
-        assert_eq!(d.correct(&block, Some(0)).len(), 800);
-        assert_eq!(d.correct(&block, None).len(), 800);
-        assert_eq!((d.dropped, d.doubled), (1, 1));
-        // Frames stay whole: L/R pairs are never split.
-        let out = d.correct(&block, Some(ms_to_frames(400))).to_vec();
-        assert!(out.chunks_exact(2).all(|f| f[1] == f[0] + 1 && f[0] % 2 == 0));
+    fn resampler_passes_through_at_normal_speed() {
+        let mut r = Resampler::default();
+        let block: Vec<i16> = (0..800).map(|i| i as i16).collect(); // 400 stereo frames
+        let mut all = Vec::new();
+        for _ in 0..3 {
+            all.extend_from_slice(r.process(&block, None));
+        }
+        // Samples unchanged and in order; one frame stays behind for the next block.
+        let expected: Vec<i16> = block.iter().cycle().take(3 * 800 - 2).copied().collect();
+        assert_eq!(all, expected);
+    }
+
+    #[test]
+    fn resampler_keeps_the_queue_with_a_fast_card() {
+        // The card plays 0.3 % faster than the sound arrives (as measured on the
+        // Station Lite): the queue must settle at the target and stay there.
+        let mut r = Resampler::default();
+        let block = vec![1000i16; 352 * 2];
+        let mut queue = ms_to_frames(TARGET_MS) as f64;
+        for step in 0..20_000 {
+            let out = r.process(&block, Some(queue as usize)).len() / 2;
+            queue += out as f64 - 352.0 * 1.003;
+            assert!(queue > 0.0, "ran dry at step {step}");
+            if step > 5_000 {
+                let ms = queue * 1000.0 / RATE as f64;
+                assert!((ms - TARGET_MS as f64).abs() < 25.0, "queue {ms} ms at step {step}");
+            }
+        }
+        assert!((1.0 / r.ratio - 1.003).abs() < 0.0005, "ratio {}", r.ratio);
     }
 
     #[test]
