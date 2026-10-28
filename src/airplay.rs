@@ -448,6 +448,7 @@ fn session(
     result
 }
 
+#[cfg(test)]
 fn ms_to_frames(ms: usize) -> usize {
     RATE as usize * ms / 1000
 }

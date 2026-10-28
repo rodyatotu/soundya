@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/Станция_Лайт-проверено-2f9e5b" alt="Станция Лайт: проверено">
   <img src="https://img.shields.io/badge/Rust-armv7-dea584?logo=rust&logoColor=white" alt="Rust, armv7">
   <img src="https://img.shields.io/badge/лицензия-MIT-blue" alt="MIT">
-  <img src="https://img.shields.io/badge/версия-0.3.0-ff5500" alt="Версия 0.3.0">
+  <img src="https://img.shields.io/badge/версия-0.4.0-ff5500" alt="Версия 0.4.0">
 </p>
 
 ---
