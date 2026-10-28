@@ -1,5 +1,5 @@
 [package]
-name = "soundya"
+name = "soundya/app"
 version = "0.4.1"
 edition = "2021"
 license = "MIT"
