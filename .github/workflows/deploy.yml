@@ -1,0 +1,35 @@
+name: Publish to YAM Registry
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-gnueabihf
+
+      - name: Install Yam CLI
+        run: |
+          curl -fsSL https://yse.wtf | sh
+          echo "$HOME/.yam/bin" >> $GITHUB_PATH
+
+      - name: Build Binary
+        run: cargo build --release --target armv7-unknown-linux-gnueabihf
+
+      - name: Setup Private Key
+        run: |
+          echo "${{ secrets.YAM_PRIVATE_KEY }}" > private.key
+          chmod 600 private.key
+
+      - name: Publish Package
+        run: |
+          yam login --token ${{ secrets.YAM_TOKEN }}
+          yam publish --key private.key --target armv7-unknown-linux-gnueabihf
