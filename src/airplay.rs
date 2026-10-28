@@ -37,11 +37,18 @@ const PUBLISHER: &str = "avahi-publish-service";
 const IDLE: Duration = Duration::from_millis(1500);
 /// Sound kept queued in the card. shairport-sync sends in real time and cannot
 /// see the card, so soundya keeps the queue level itself by resampling a little:
-/// the speaker's sound card does not run at exactly 44.1 kHz of the iPhone's
-/// clock (measured: about 0.3 % fast), so without this it runs dry and stutters.
+/// the speaker's sound card and the iPhone never run at exactly the same speed.
 const TARGET_MS: usize = 250;
-/// Most the speed may be adjusted: ±2 %, a pitch change nobody hears.
-const MAX_CORRECTION: f64 = 0.02;
+/// Most the speed may be adjusted: ±0.5 %, a pitch change nobody hears.
+const MAX_CORRECTION: f64 = 0.005;
+/// Speed found from the queue error: proportional and integral gains.
+const KP: f64 = 0.02;
+const KI: f64 = 0.01;
+/// A pause between blocks longer than this is a break in the sound (a new
+/// TikTok video, a skipped track), not a slow clock: it is not corrected.
+const GAP: Duration = Duration::from_millis(120);
+/// After a break, the queue refills before the speed is steered again.
+const SETTLE: Duration = Duration::from_secs(2);
 const FRAME_BYTES: usize = CHANNELS * 2;
 pub const DEFAULT_NAME: &str = "Яндекс Станция";
 
@@ -378,7 +385,7 @@ fn session(
                 gain.apply(&mut samples, CHANNELS, RATE, shared.duck.active());
                 if let Some(o) = output.as_mut() {
                     let queued = o.queued();
-                    let corrected = rate.process(&samples, queued);
+                    let corrected = rate.process(&samples, queued, Instant::now());
                     if let Err(e) = o.write(corrected) {
                         eprintln!("airplay: sound card: {e}; reopening");
                         output = None;
@@ -391,10 +398,12 @@ fn session(
                     stats_at = Instant::now();
                     let q = output.as_ref().and_then(|o| o.queued()).map(|f| f * 1000 / RATE as usize);
                     eprintln!(
-                        "airplay: queue {} ms, in {:.0} frames/s, speed {:+.0} ppm",
+                        "airplay: queue {} ms, in {:.0} frames/s, speed {:+.0} ppm, breaks {}, underruns {}",
                         q.map_or("?".into(), |q| q.to_string()),
                         rate.take_frames_in() as f64 / secs,
-                        (1.0 / rate.ratio - 1.0) * 1e6
+                        (1.0 / rate.ratio - 1.0) * 1e6,
+                        std::mem::take(&mut rate.gaps),
+                        output.as_mut().map_or(0, |o| std::mem::take(&mut o.xruns)),
                     );
                 }
             }
@@ -410,7 +419,7 @@ fn session(
             if let Some(mut o) = output.take() {
                 o.finish();
             }
-            rate.reset();
+            rate.end_session();
             air.active.store(false, Ordering::Release);
             let _ = tx.send(Cmd::AirPlay(false));
         }
@@ -437,18 +446,34 @@ struct Resampler {
     prev: [i16; CHANNELS],
     out: Vec<i16>,
     frames_in: u64,
+    last_block: Option<Instant>,
+    /// Steering resumes at this time (after the start or a break).
+    steady_from: Option<Instant>,
+    /// Breaks in the sound since the last report.
+    gaps: u32,
 }
 
 impl Default for Resampler {
     fn default() -> Self {
-        Self { ratio: 1.0, integral: 0.0, pos: 0.0, prev: [0; CHANNELS], out: Vec::new(), frames_in: 0 }
+        Self {
+            ratio: 1.0,
+            integral: 0.0,
+            pos: 0.0,
+            prev: [0; CHANNELS],
+            out: Vec::new(),
+            frames_in: 0,
+            last_block: None,
+            steady_from: None,
+            gaps: 0,
+        }
     }
 }
 
 impl Resampler {
-    /// Forget the speed: a new session (another device) may need a different one.
-    fn reset(&mut self) {
-        *self = Self::default();
+    /// The sender stopped. The learned speed is kept: it is mostly the speaker's own clock.
+    fn end_session(&mut self) {
+        let integral = self.integral;
+        *self = Self { integral, ratio: 1.0 + (KI * integral).clamp(-MAX_CORRECTION, MAX_CORRECTION), ..Self::default() };
     }
 
     fn take_frames_in(&mut self) -> u64 {
@@ -456,23 +481,35 @@ impl Resampler {
     }
 
     /// `queued`: frames waiting in the card; 0 or None before playback starts.
-    fn steer(&mut self, queued: Option<usize>, block_frames: usize) {
-        let Some(q) = queued.filter(|&q| q > 0) else { return };
-        let error = (q as f64 - ms_to_frames(TARGET_MS) as f64) / RATE as f64; // seconds
-        let dt = block_frames as f64 / RATE as f64;
-        self.integral = (self.integral + error * dt).clamp(-MAX_CORRECTION / 0.02, MAX_CORRECTION / 0.02);
-        let correction = 0.05 * error + 0.02 * self.integral;
+    fn steer(&mut self, queued: Option<usize>, block_frames: usize, now: Instant) {
+        if self.last_block.map_or(true, |t| now.duration_since(t) > GAP) {
+            if self.last_block.is_some() {
+                self.gaps += 1;
+            }
+            self.steady_from = Some(now + SETTLE);
+        }
+        self.last_block = Some(now);
+        let steady = self.steady_from.map_or(true, |t| now >= t);
+        let mut correction = KI * self.integral;
+        if let Some(q) = queued.filter(|&q| q > 0) {
+            if steady {
+                let error = (q as f64 - ms_to_frames(TARGET_MS) as f64) / RATE as f64; // seconds
+                let dt = block_frames as f64 / RATE as f64;
+                self.integral = (self.integral + error * dt).clamp(-MAX_CORRECTION / KI, MAX_CORRECTION / KI);
+                correction = KP * error + KI * self.integral;
+            }
+        }
         self.ratio = 1.0 + correction.clamp(-MAX_CORRECTION, MAX_CORRECTION);
     }
 
     /// `samples`: whole interleaved frames.
-    fn process<'a>(&'a mut self, samples: &'a [i16], queued: Option<usize>) -> &'a [i16] {
+    fn process<'a>(&'a mut self, samples: &'a [i16], queued: Option<usize>, now: Instant) -> &'a [i16] {
         let n = samples.len() / CHANNELS;
         if n == 0 {
             return samples;
         }
         self.frames_in += n as u64;
-        self.steer(queued, n);
+        self.steer(queued, n, now);
         self.out.clear();
         let prev = self.prev;
         let frame = |i: isize| -> &[i16] {
@@ -530,32 +567,77 @@ mod tests {
     fn resampler_passes_through_at_normal_speed() {
         let mut r = Resampler::default();
         let block: Vec<i16> = (0..800).map(|i| i as i16).collect(); // 400 stereo frames
+        let now = Instant::now();
         let mut all = Vec::new();
-        for _ in 0..3 {
-            all.extend_from_slice(r.process(&block, None));
+        for k in 0..3 {
+            all.extend_from_slice(r.process(&block, None, now + Duration::from_millis(9 * k)));
         }
         // Samples unchanged and in order; one frame stays behind for the next block.
         let expected: Vec<i16> = block.iter().cycle().take(3 * 800 - 2).copied().collect();
         assert_eq!(all, expected);
     }
 
-    #[test]
-    fn resampler_keeps_the_queue_with_a_fast_card() {
-        // The card plays 0.3 % faster than the sound arrives (as measured on the
-        // Station Lite): the queue must settle at the target and stay there.
+    /// Simulates the card: it plays `speed` × real time; the sender sends 352
+    /// frames every 8 ms, with `pause` of silence every `every` blocks.
+    fn simulate(speed: f64, pause_every: usize, pause_ms: u64, blocks: usize) -> (Resampler, Vec<f64>) {
         let mut r = Resampler::default();
         let block = vec![1000i16; 352 * 2];
-        let mut queue = ms_to_frames(TARGET_MS) as f64;
-        for step in 0..20_000 {
-            let out = r.process(&block, Some(queue as usize)).len() / 2;
-            queue += out as f64 - 352.0 * 1.003;
-            assert!(queue > 0.0, "ran dry at step {step}");
-            if step > 5_000 {
-                let ms = queue * 1000.0 / RATE as f64;
-                assert!((ms - TARGET_MS as f64).abs() < 25.0, "queue {ms} ms at step {step}");
+        let start = Instant::now();
+        let mut t = 0f64; // seconds
+        let mut queue = 0f64;
+        let mut levels = Vec::new();
+        let mut playing = false;
+        for k in 0..blocks {
+            if pause_every > 0 && k > 0 && k % pause_every == 0 {
+                let dt = pause_ms as f64 / 1000.0;
+                if playing {
+                    queue -= dt * RATE as f64 * speed;
+                }
+                t += dt;
+                if queue <= 0.0 {
+                    queue = 0.0; // ran dry: refills before playing again
+                    playing = false;
+                }
             }
+            let now = start + Duration::from_secs_f64(t);
+            let out = r.process(&block, Some(if playing { queue as usize } else { 0 }), now).len() / 2;
+            queue += out as f64;
+            let dt = 352.0 / RATE as f64;
+            t += dt;
+            if !playing && queue >= ms_to_frames(TARGET_MS) as f64 {
+                playing = true;
+            }
+            if playing {
+                queue -= dt * RATE as f64 * speed;
+                if queue <= 0.0 {
+                    queue = 0.0;
+                    playing = false;
+                }
+            }
+            levels.push(queue * 1000.0 / RATE as f64);
         }
-        assert!((1.0 / r.ratio - 1.003).abs() < 0.0005, "ratio {}", r.ratio);
+        (r, levels)
+    }
+
+    #[test]
+    fn resampler_keeps_the_queue_with_a_fast_card() {
+        let (r, levels) = simulate(1.003, 0, 0, 20_000);
+        for (k, ms) in levels.iter().enumerate().skip(5_000) {
+            assert!((ms - TARGET_MS as f64).abs() < 25.0, "queue {ms} ms at block {k}");
+        }
+        assert!((1.0 / r.ratio - 1.003).abs() < 0.001, "ratio {}", r.ratio);
+    }
+
+    #[test]
+    fn breaks_in_the_sound_do_not_change_the_speed() {
+        // A correct clock, but the sound stops for 0.6 s every 3 s (swiping videos):
+        // the speed must stay put, not run to the limit.
+        let (r, _) = simulate(1.0, 375, 600, 20_000);
+        assert!((r.ratio - 1.0).abs() < 0.001, "ratio {}", r.ratio);
+        assert!(r.gaps > 40);
+        // And with a fast card plus breaks it still finds roughly the right speed.
+        let (r, _) = simulate(1.003, 375, 600, 40_000);
+        assert!((1.0 / r.ratio - 1.003).abs() < 0.0015, "ratio {}", r.ratio);
     }
 
     #[test]

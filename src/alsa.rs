@@ -165,6 +165,8 @@ pub struct Output {
     lib: &'static Lib,
     pcm: Pcm,
     channels: usize,
+    /// Underruns so far: sound arrived too late and the card ran dry.
+    pub xruns: u32,
 }
 
 unsafe impl Send for Output {}
@@ -186,7 +188,7 @@ impl Output {
             check(lib, "snd_pcm_open", code)?;
             break;
         }
-        let out = Self { lib, pcm, channels };
+        let out = Self { lib, pcm, channels, xruns: 0 };
         check(lib, "snd_pcm_set_params", unsafe {
             (lib.set_params)(
                 pcm,
@@ -233,6 +235,7 @@ impl Output {
                 }
                 // -32 (EPIPE) is an underrun: audio arrived too late. Logged to diagnose stutter.
                 eprintln!("alsa: recovering from error {err}");
+                self.xruns += 1;
                 check(self.lib, "snd_pcm_recover", unsafe { (self.lib.recover)(self.pcm, err, 1) })?;
                 continue;
             }
