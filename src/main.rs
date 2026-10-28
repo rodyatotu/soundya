@@ -122,6 +122,8 @@ struct Controller {
     generation: u64,
     flags: Option<Arc<Flags>>,
     failures: u32,
+    /// The sound card refused sound this many times in a row.
+    audio_failures: u32,
     settings: Settings,
     dir: PathBuf,
     results: Vec<Track>,
@@ -549,6 +551,40 @@ impl Controller {
                 respond(reply, &format!("error: {e}"), Some(speech));
             }
         }
+    }
+
+    /// The sound card refused the sound. Not the network, so retrying the track
+    /// does not help; a fresh start of soundya does (seen on a Station Mini 1
+    /// right after install: «Operation not supported», error 95).
+    fn audio_failed(&mut self, e: &str, position: u64) {
+        self.audio_failures += 1;
+        eprintln!("audio output failed ({} in a row): {e}", self.audio_failures);
+        note_audio_error(&self.dir, &self.device, e);
+        if self.audio_failures == 1 {
+            // Once more, in case the card was just busy.
+            let p = self.pos;
+            self.start_at(p, position.saturating_sub(2_000), 1_500);
+            return;
+        }
+        // run.sh starts soundya again 3 s after it exits; at most once in 10 minutes.
+        let marker = std::path::Path::new("/tmp/soundya-audio-restart");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let last = fsx::read_string(marker).and_then(|t| t.trim().parse::<u64>().ok()).unwrap_or(0);
+        if now.saturating_sub(last) > 600 {
+            let _ = std::fs::write(marker, now.to_string());
+            eprintln!("audio output keeps failing; restarting soundya");
+            alice::say("Звук не выводится, перезапускаю саундя. Включите музыку ещё раз через несколько секунд".into());
+            thread::sleep(Duration::from_secs(6));
+            std::process::exit(75);
+        }
+        eprintln!("audio output keeps failing after a restart; stopping");
+        alice::say("Колонка не выводит звук. Перезагрузите её и попробуйте ещё раз".into());
+        self.audio_failures = 0;
+        self.halt();
+        self.publish();
     }
 
     fn halt(&mut self) {
@@ -1142,6 +1178,7 @@ impl Controller {
                     match outcome {
                         Outcome::Finished => {
                             self.failures = 0;
+                            self.audio_failures = 0;
                             if self.repeat {
                                 let p = self.pos;
                                 self.start(p);
@@ -1157,6 +1194,7 @@ impl Controller {
                             self.start_at(p, target, 0);
                             self.retries = retries;
                         }
+                        Outcome::Failed(e) if e.starts_with("alsa") => self.audio_failed(&e, position),
                         Outcome::Failed(e) if self.retries < 3 => {
                             // Same track again, from where it stopped, instead of skipping it.
                             self.retries += 1;
@@ -1266,6 +1304,35 @@ fn contact_names(settings: &Settings) -> Vec<String> {
         .collect()
 }
 
+/// Keeps sound-card errors on flash (`audio-errors.log`), with the ALSA setup,
+/// so they can be diagnosed later even after a reboot.
+fn note_audio_error(dir: &std::path::Path, device: &str, e: &str) {
+    use std::io::Write;
+    let path = dir.join("audio-errors.log");
+    let old = fsx::read_string(&path).unwrap_or_default();
+    // At most ~16 KB: keep the end.
+    let mut text = if old.len() > 16_000 {
+        let cut = (old.len() - 8_000..old.len()).find(|&i| old.is_char_boundary(i)).unwrap_or(old.len());
+        old[cut..].to_owned()
+    } else {
+        old
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    text.push_str(&format!("{now} soundya {} device {device:?}: {e}\n", env!("CARGO_PKG_VERSION")));
+    if !text.contains("--- /etc/asound.conf") {
+        let conf = fsx::read_string(std::path::Path::new("/etc/asound.conf")).unwrap_or_else(|| "(none)".into());
+        let cards = fsx::read_string(std::path::Path::new("/proc/asound/cards")).unwrap_or_default();
+        let ld = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+        text.push_str(&format!("--- /etc/asound.conf\n{conf}\n--- /proc/asound/cards\n{cards}\n--- LD_LIBRARY_PATH={ld}\n"));
+    }
+    if let Ok(mut f) = std::fs::File::create(&path) {
+        let _ = f.write_all(text.as_bytes());
+    }
+}
+
 fn device() -> String {
     std::env::var("SOUNDYA_DEVICE").unwrap_or_else(|_| "default".into())
 }
@@ -1338,6 +1405,7 @@ fn daemon() {
         generation: 0,
         flags: None,
         failures: 0,
+        audio_failures: 0,
         settings,
         dir,
         results: Vec::new(),
