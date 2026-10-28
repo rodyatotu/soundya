@@ -1,5 +1,6 @@
 //! soundya: SoundCloud for Yandex Station Mini, controlled by Alice's voice.
 
+mod airplay;
 mod alice;
 mod alsa;
 mod buffer;
@@ -44,6 +45,8 @@ const CONTROL: &str = "127.0.0.1:47895";
 
 pub enum Cmd {
     Voice(Intent),
+    /// AirPlay sound started (true) or stopped (false).
+    AirPlay(bool),
     Control(String, Sender<String>),
     Ended(u64, Outcome),
     Settings(Settings, Sender<String>),
@@ -87,6 +90,7 @@ pub struct Shared {
     status: Mutex<String>,
     /// Latest JSON for the web page, so it never waits for a busy controller.
     pub status_json: Mutex<String>,
+    pub airplay: airplay::AirPlay,
 }
 
 impl Shared {
@@ -289,9 +293,12 @@ impl Controller {
                 "pc_token": self.settings.masked_pc_token(),
                 "pc_mac": self.settings.pc_mac,
                 "pc_contacts": self.settings.pc_contacts,
+                "airplay": self.settings.airplay,
+                "airplay_name": self.settings.airplay_name,
             },
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
+            "airplay": self.shared.airplay.json(),
         })
         .to_string()
     }
@@ -450,6 +457,8 @@ impl Controller {
         }
         self.shared.keyword_only.store(new.keyword_only, Ordering::Release);
         self.shared.ring.store(new.ring, Ordering::Release);
+        new.airplay_name = new.airplay_name.trim().to_owned();
+        self.shared.airplay.configure(new.airplay, &new.airplay_name);
         let proxy_changed = new.proxy != self.settings.proxy;
         self.settings = new;
         let mut msg = match self.settings.save(&self.dir) {
@@ -561,6 +570,8 @@ impl Controller {
             return;
         }
         self.pos = pos;
+        // SoundCloud asked for by voice or the page wins over AirPlay.
+        self.shared.airplay.interrupt();
         let flags = player::new_flags();
         self.flags = Some(flags.clone());
         let generation = self.generation;
@@ -690,6 +701,7 @@ impl Controller {
             Some(f) => {
                 if !paused {
                     alice::pause_native();
+                    self.shared.airplay.interrupt();
                 }
                 f.paused.store(paused, Ordering::Release);
                 self.publish();
@@ -1193,6 +1205,18 @@ impl Controller {
                     }
                 }
                 Cmd::User(user) => self.user = user,
+                Cmd::AirPlay(true) => {
+                    // AirPlay took over: pause SoundCloud and Alice's own music.
+                    alice::pause_native();
+                    if self.flags.as_ref().is_some_and(|f| !f.paused.load(Ordering::Acquire)) {
+                        eprintln!("airplay: pausing SoundCloud");
+                        if let Some(f) = &self.flags {
+                            f.paused.store(true, Ordering::Release);
+                        }
+                    }
+                    self.publish();
+                }
+                Cmd::AirPlay(false) => self.publish(),
                 Cmd::TestProxy(proxy, reply) => {
                     let proxy = self.real_proxy(&proxy);
                     thread::spawn(move || {
@@ -1265,6 +1289,7 @@ fn daemon() {
         queue: AtomicBool::new(false),
         status: Mutex::new("stopped".into()),
         status_json: Mutex::new(String::new()),
+        airplay: airplay::AirPlay::new(settings.airplay, &settings.airplay_name),
     });
     let (tx, rx) = mpsc::channel();
     led::run(shared.clone());
@@ -1272,6 +1297,8 @@ fn daemon() {
     alsa::watch(device());
     // http://soundya.local:8765 — works whatever IP the router hands out.
     mdns::run(&std::env::var("SOUNDYA_NAME").unwrap_or_else(|_| "soundya".into()));
+    // The speaker in the AirPlay list of iPhones and Macs.
+    airplay::run(dir.clone(), device(), tx.clone(), shared.clone());
     if std::env::var("SOUNDYA_NO_VOICE").is_err() {
         alice::watch(tx.clone(), shared.clone());
         buttons::run(tx.clone(), shared.clone());
@@ -1368,6 +1395,11 @@ fn send(line: &str) -> i32 {
 }
 
 fn main() {
+    // Started by shairport-sync as `avahi-publish-service` (see airplay.rs).
+    let all: Vec<String> = std::env::args().collect();
+    if all.first().is_some_and(|a| a.rsplit('/').next() == Some("avahi-publish-service")) {
+        std::process::exit(airplay::publisher_main(&all[1..]));
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (cmd, rest) = match args.split_first() {
         Some((c, r)) => (c.as_str(), r.join(" ")),

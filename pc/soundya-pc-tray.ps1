@@ -112,6 +112,7 @@ function Refresh {
                     $j = $p.Result.Content.ReadAsStringAsync().Result | ConvertFrom-Json
                     $State.Playing = [string]$j.state
                     $State.Track = [string]$j.track
+                    if ($j.airplay -and $j.airplay.active) { $State.Playing = 'airplay'; $State.Track = 'AirPlay (звук с iPhone или Mac)' }
                 } catch {}
             } else {
                 $State.PingMs = -1; $State.Track = ''; $State.Playing = ''

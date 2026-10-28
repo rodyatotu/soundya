@@ -127,7 +127,7 @@ pub fn run(shared: Arc<Shared>) {
             } else if loading {
                 // Breathing orange: the speaker is working on it.
                 Some(orange(breath(clock)))
-            } else if shared.playing.load(Ordering::Acquire) {
+            } else if shared.playing.load(Ordering::Acquire) || shared.airplay.is_active() {
                 Some(ORANGE)
             } else if track.as_ref().is_some_and(|f| f.paused.load(Ordering::Acquire)) {
                 // Paused: dim orange, so it is clear SoundCloud is still there.

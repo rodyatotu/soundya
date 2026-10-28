@@ -307,6 +307,23 @@
     </div>
     <div class="msg" id="setmsg"></div>
 
+    <h2 class="section">AirPlay</h2>
+    <p class="hint">Колонка видна в списке AirPlay на iPhone, iPad и Mac: Пункт управления → значок AirPlay
+      (треугольник с кругами) или кнопка AirPlay в музыкальном приложении. Пока играет AirPlay, SoundCloud стоит
+      на паузе; «Алиса, включи …» забирает колонку обратно.</p>
+    <label class="check">
+      <input type="checkbox" id="airplay">
+      <span>Приёмник AirPlay включён</span>
+    </label>
+    <label class="field">Название в списке AirPlay
+      <input type="text" id="airplayname" placeholder="Яндекс Станция" maxlength="50" autocomplete="off">
+    </label>
+    <p class="hint" id="airplaystate"></p>
+    <div class="row">
+      <button class="primary" onclick="saveSettings('airplaymsg')">Сохранить</button>
+    </div>
+    <div class="msg" id="airplaymsg"></div>
+
     <h2 class="section">Компьютер</h2>
     <p class="hint">«Алиса, включи компьютер», «открой телеграм на компьютере», «закрой хром на компе»,
       «усыпи компьютер», «выключи компьютер». На компьютере с Windows нужна программа <b>soundya-pc</b>
@@ -744,7 +761,10 @@ async function refresh() {
   if (busyText) {
     st.innerHTML = '<i class="spin" aria-hidden="true"></i>';
     st.append(busyText);
+  } else if (s.airplay && s.airplay.active) {
+    st.textContent = s.state === 'paused' ? 'играет AirPlay · SoundCloud на паузе' : 'играет AirPlay';
   } else st.textContent = names[s.state] || s.state;
+  renderAirplay(s.airplay);
   document.querySelector('.bar').classList.toggle('busy', !!busyText);
   $('track').textContent = s.track || (s.loading ? 'Загружаю: ' + s.loading : '—');
   if (!seeking) $('pos').textContent = mmss(s.position_ms);
@@ -800,6 +820,8 @@ async function refresh() {
     $('pctoken').value = settings.pc_token || '';
     $('pcmac').value = settings.pc_mac || '';
     renderContacts(settings.pc_contacts || []);
+    $('airplay').checked = settings.airplay !== false;
+    $('airplayname').value = settings.airplay_name || '';
     settingsLoaded = true;
   }
 }
@@ -899,7 +921,8 @@ function settingsBody(extra) {
   return JSON.stringify(Object.assign({
     proxy: $('proxy').value, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
     pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value,
-    pc_contacts: readContacts()
+    pc_contacts: readContacts(),
+    airplay: $('airplay').checked, airplay_name: $('airplayname').value
   }, extra));
 }
 
@@ -950,8 +973,18 @@ async function testProxy() {
   $('testbtn').disabled = false;
 }
 
-async function saveSettings() {
-  show($('setmsg'), await post('/api/settings', settingsBody({})));
+function renderAirplay(a) {
+  const el = $('airplaystate');
+  if (!a) { el.textContent = ''; return; }
+  el.textContent = !a.enabled ? 'Выключен.'
+    : a.active ? 'Сейчас играет музыка по AirPlay.'
+    : a.ready ? `Работает: колонка видна в списке AirPlay как «${a.name}».`
+    : a.error ? 'Не запустился: ' + a.error + '.'
+    : 'Запускается…';
+}
+
+async function saveSettings(msg) {
+  show($(msg || 'setmsg'), await post('/api/settings', settingsBody({})));
   settingsLoaded = false;
   refresh();
 }

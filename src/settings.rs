@@ -30,6 +30,12 @@ pub struct Settings {
     /// Telegram contacts for «напиши маме в телеграм …».
     #[serde(default)]
     pub pc_contacts: Vec<Contact>,
+    /// AirPlay receiver on.
+    #[serde(default = "yes")]
+    pub airplay: bool,
+    /// Name in the AirPlay list on the iPhone; "" = «Яндекс Станция».
+    #[serde(default)]
+    pub airplay_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -57,6 +63,8 @@ impl Default for Settings {
             pc_token: String::new(),
             pc_mac: String::new(),
             pc_contacts: Vec::new(),
+            airplay: true,
+            airplay_name: String::new(),
         }
     }
 }

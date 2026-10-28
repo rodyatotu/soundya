@@ -74,10 +74,17 @@ pub enum Outcome {
     Seek(u64),
 }
 
-struct Gain(f32);
+/// Volume ramp for ducking under Alice's voice.
+pub struct Gain(f32);
+
+impl Default for Gain {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
 
 impl Gain {
-    fn apply(&mut self, samples: &mut [i16], channels: usize, rate: u32, ducked: bool) {
+    pub fn apply(&mut self, samples: &mut [i16], channels: usize, rate: u32, ducked: bool) {
         let target = if ducked { DUCK_LEVEL } else { 1.0 };
         if self.0 == 1.0 && target == 1.0 {
             return;
