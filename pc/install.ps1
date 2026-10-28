@@ -25,6 +25,7 @@ Write-Host '=== soundya-pc: установка ===' -ForegroundColor Cyan
 # 1. Files and key.
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 Copy-Item -Force (Join-Path $PSScriptRoot 'soundya-pc.ps1') (Join-Path $Dir 'soundya-pc.ps1')
+Copy-Item -Force (Join-Path $PSScriptRoot 'soundya-pc-tray.ps1') (Join-Path $Dir 'soundya-pc-tray.ps1')
 $ConfigPath = Join-Path $Dir 'config.json'
 if (Test-Path $ConfigPath) {
     $Config = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -59,6 +60,14 @@ $vbs = Join-Path $startup 'soundya-pc.vbs'
     'Loop'
 ) | Set-Content -Path $vbs -Encoding Unicode
 
+# The tray icon (connection to the speaker, menu with the key and IP); started once per logon.
+$trayScript = Join-Path $Dir 'soundya-pc-tray.ps1'
+$trayVbs = Join-Path $startup 'soundya-pc-tray.vbs'
+@(
+    'Set sh = CreateObject("WScript.Shell")',
+    ('sh.Run "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File ""' + $trayScript + '""", 0, False')
+) | Set-Content -Path $trayVbs -Encoding Unicode
+
 # Remove the old scheduled task, if an earlier version made one.
 Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue
 cmd.exe /c "schtasks /Delete /TN $Task /F >nul 2>&1"
@@ -66,11 +75,13 @@ cmd.exe /c "schtasks /Delete /TN $Task /F >nul 2>&1"
 # Stop running copies (also ones started by hand as administrator), then start
 # it through Explorer, which runs it as the normal user.
 Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe' OR Name = 'wscript.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.ProcessId -ne $PID -and ($_.CommandLine -like '*soundya-pc.ps1*' -or $_.CommandLine -like '*soundya-pc.vbs*') } |
+    Where-Object { $_.ProcessId -ne $PID -and ($_.CommandLine -like '*soundya-pc.ps1*' -or $_.CommandLine -like '*soundya-pc.vbs*' -or $_.CommandLine -like '*soundya-pc-tray*') } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 1
 Start-Process explorer.exe -ArgumentList "`"$vbs`""
+Start-Process explorer.exe -ArgumentList "`"$trayVbs`""
 Write-Host "[ok] автозапуск при входе в Windows (папка «Автозагрузка»), уже запущен"
+Write-Host "[ok] значок в трее возле часов: связь с колонкой; ключ, IP и перезапуск — по правой кнопке"
 
 # 4. Wake-on-LAN: wired adapter wakes on a magic packet; fast startup off
 # (with it on, most PCs ignore wake-on-LAN after "Shut down").

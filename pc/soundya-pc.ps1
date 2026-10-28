@@ -697,6 +697,19 @@ function Send-Answer($stream, [int]$code, [string]$text) {
     $stream.Flush()
 }
 
+# What the tray icon (soundya-pc-tray.ps1) shows: who called last, when and what.
+$StatusFile = Join-Path $Dir 'status.json'
+$Status = [ordered]@{ pid = $PID; started = (Get-Date).ToString('o'); speaker = ''; last_seen = ''; last_action = ''; last_text = ''; last_answer = ''; last_ms = 0; requests = 0 }
+try {
+    $old = Get-Content $StatusFile -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+    $Status.speaker = [string]$old.speaker
+    $Status.last_seen = [string]$old.last_seen
+} catch {}
+function Save-Status {
+    try { [IO.File]::WriteAllText($StatusFile, ($Status | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false)) } catch {}
+}
+Save-Status
+
 $listener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Any), $Port
 try { $listener.Start() } catch { Log "cannot listen on port ${Port}: $_ (already running?)"; exit 1 }
 Log "listening on port $Port"
@@ -718,6 +731,7 @@ while ($true) {
         # Telegram contacts set on the speaker's settings page (base64 JSON).
         $global:SpeakerContacts = $req.Headers['x-soundya-contacts']
         $answer = $null
+        $clock = [Diagnostics.Stopwatch]::StartNew()
         try {
             $answer = Handle $action $req.Body.Trim()
         } catch {
@@ -727,6 +741,14 @@ while ($true) {
         }
         if ($null -eq $answer) { Send-Answer $stream 404 "Неизвестная команда $action" }
         else { Send-Answer $stream 200 ([string]$answer) }
+        $Status.speaker = ([Net.IPEndPoint]$client.Client.RemoteEndPoint).Address.ToString()
+        $Status.last_seen = (Get-Date).ToString('o')
+        $Status.last_action = $action
+        $Status.last_text = $req.Body.Trim()
+        $Status.last_answer = [string]$answer
+        $Status.last_ms = [int]$clock.Elapsed.TotalMilliseconds
+        $Status.requests++
+        Save-Status
     } catch {
         Log "error: $_"
     } finally {
