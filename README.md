@@ -20,7 +20,7 @@
   <img src="https://img.shields.io/badge/Станция_2-работает-2f9e5b" alt="Яндекс Станция 2: работает">
   <img src="https://img.shields.io/badge/Rust-armv7-dea584?logo=rust&logoColor=white" alt="Rust, armv7">
   <img src="https://img.shields.io/badge/лицензия-MIT-blue" alt="MIT">
-  <img src="https://img.shields.io/badge/версия-0.4.0-ff5500" alt="Версия 0.4.0">
+  <img src="https://img.shields.io/badge/версия-0.4.1-ff5500" alt="Версия 0.4.1">
 </p>
 
 ---
