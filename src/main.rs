@@ -541,6 +541,8 @@ impl Controller {
                 let e = e.to_string();
                 let speech = if e.contains("плейлистах нет") {
                     e.clone()
+                } else if e.contains("токен") {
+                    "Вход в SoundCloud устарел. Обновите токен на странице колонки".into()
                 } else {
                     "SoundCloud не ответил, попробуйте ещё раз".into()
                 };

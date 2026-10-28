@@ -293,6 +293,8 @@ impl Client {
         };
         let mut refreshed = false;
         let mut retried = false;
+        // The token was refused: try once without it (search and public pages work anonymously).
+        let mut anonymous = false;
         loop {
             let id = self.client_id(refreshed)?;
             let mut req = self
@@ -302,8 +304,10 @@ impl Client {
                 .set("Origin", "https://soundcloud.com")
                 .set("Referer", "https://soundcloud.com/")
                 .query("client_id", &id);
-            if let Some(t) = self.token.lock().unwrap().as_ref() {
-                req = req.set("Authorization", &format!("OAuth {t}"));
+            if !anonymous {
+                if let Some(t) = self.token.lock().unwrap().as_ref() {
+                    req = req.set("Authorization", &format!("OAuth {t}"));
+                }
             }
             for (k, v) in query {
                 req = req.query(k, v);
@@ -313,6 +317,11 @@ impl Client {
                 Ok(resp) => return Ok(resp.into_json()?),
                 Err(e) if !refreshed && matches!(status_of(&e), Some(401 | 403)) => {
                     refreshed = true;
+                    continue;
+                }
+                Err(e) if matches!(status_of(&e), Some(401)) && self.has_token() && !anonymous => {
+                    eprintln!("soundcloud: token refused on {short}; trying without login");
+                    anonymous = true;
                     continue;
                 }
                 Err(e) if matches!(status_of(&e), Some(401)) && self.has_token() => {

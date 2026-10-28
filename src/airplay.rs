@@ -35,6 +35,16 @@ const ANNOUNCE: &str = "/tmp/soundya-airplay.mdns";
 const PUBLISHER: &str = "avahi-publish-service";
 /// No sound for this long: the sender paused or disconnected.
 const IDLE: Duration = Duration::from_millis(1500);
+/// Sound kept queued in the card. shairport-sync sends in real time and cannot
+/// see the card, so soundya keeps the queue level itself: the iPhone's clock and
+/// the speaker's never run at exactly the same speed. A full card would block
+/// shairport-sync, which then drops late sound (audible stutter).
+const TARGET_MS: usize = 250;
+/// Within ±this, nothing is corrected.
+const BAND_MS: usize = 60;
+/// While correcting, one frame in this many is dropped or doubled (0.25 %, inaudible).
+const CORRECT_EVERY: u64 = 400;
+const FRAME_BYTES: usize = CHANNELS * 2;
 pub const DEFAULT_NAME: &str = "Яндекс Станция";
 
 /// State shared with the controller and the web page.
@@ -136,9 +146,9 @@ stdout = {{
   output_rate = {RATE};
   output_format = "S16_LE";
   output_channels = {CHANNELS};
-  // soundya keeps 0.4 s of sound in the card: send it that much earlier, so
+  // soundya keeps 0.25 s of sound in the card: send it that much earlier, so
   // video on the iPhone stays in sync with the sound.
-  audio_backend_latency_offset_in_seconds = -0.4;
+  audio_backend_latency_offset_in_seconds = -0.25;
 }};
 "#
     )
@@ -311,7 +321,10 @@ fn session(
     // The card refused to open: try again a little later, not for every block.
     let mut open_failed: Option<Instant> = None;
     let mut last_sound: Option<Instant> = None;
-    let mut leftover: Option<u8> = None;
+    // Bytes of an incomplete frame, kept for the next block.
+    let mut carry: Vec<u8> = Vec::new();
+    let mut drift = Drift::default();
+    let mut stats_at = Instant::now();
     let mut gain = crate::player::Gain::default();
     let mut announced = false;
     let mut samples: Vec<i16> = Vec::new();
@@ -335,18 +348,12 @@ fn session(
         }
         match sound.recv_timeout(Duration::from_millis(250)) {
             Ok(block) => {
-                // Bytes → little-endian samples (a block may end mid-sample).
+                // Bytes → little-endian samples, whole frames only (a block may end mid-frame).
+                carry.extend_from_slice(&block);
+                let whole = carry.len() / FRAME_BYTES * FRAME_BYTES;
                 samples.clear();
-                let mut bytes = block.as_slice();
-                if let Some(lo) = leftover.take() {
-                    if let Some((&hi, rest)) = bytes.split_first() {
-                        samples.push(i16::from_le_bytes([lo, hi]));
-                        bytes = rest;
-                    }
-                }
-                let mut pairs = bytes.chunks_exact(2);
-                samples.extend(pairs.by_ref().map(|p| i16::from_le_bytes([p[0], p[1]])));
-                leftover = pairs.remainder().first().copied();
+                samples.extend(carry[..whole].chunks_exact(2).map(|p| i16::from_le_bytes([p[0], p[1]])));
+                carry.drain(..whole);
                 if samples.iter().all(|&s| s == 0) {
                     if !air.is_active() {
                         continue; // silence before the music starts or after it stopped
@@ -372,12 +379,24 @@ fn session(
                 }
                 gain.apply(&mut samples, CHANNELS, RATE, shared.duck.active());
                 if let Some(o) = output.as_mut() {
-                    // Keep whole frames.
-                    let whole = samples.len() - samples.len() % CHANNELS;
-                    if let Err(e) = o.write(&samples[..whole]) {
+                    let queued = o.queued();
+                    let corrected = drift.correct(&samples, queued);
+                    if let Err(e) = o.write(corrected) {
                         eprintln!("airplay: sound card: {e}; reopening");
                         output = None;
+                    } else if o.queued().is_some_and(|q| q >= ms_to_frames(TARGET_MS)) {
+                        o.start();
                     }
+                }
+                if stats_at.elapsed() > Duration::from_secs(30) {
+                    stats_at = Instant::now();
+                    let q = output.as_ref().and_then(|o| o.queued()).map(|f| f * 1000 / RATE as usize);
+                    eprintln!(
+                        "airplay: queue {} ms, frames dropped {}, doubled {}",
+                        q.map_or("?".into(), |q| q.to_string()),
+                        drift.dropped,
+                        drift.doubled
+                    );
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -392,6 +411,8 @@ fn session(
             if let Some(mut o) = output.take() {
                 o.finish();
             }
+            eprintln!("airplay: frames dropped {}, doubled {}", drift.dropped, drift.doubled);
+            drift = Drift::default();
             air.active.store(false, Ordering::Release);
             let _ = tx.send(Cmd::AirPlay(false));
         }
@@ -400,6 +421,47 @@ fn session(
     stop(&mut child);
     let _ = std::fs::remove_file(ANNOUNCE);
     result
+}
+
+fn ms_to_frames(ms: usize) -> usize {
+    RATE as usize * ms / 1000
+}
+
+/// Keeps the card's queue near [`TARGET_MS`] by dropping or doubling single frames.
+#[derive(Default)]
+struct Drift {
+    frame: u64,
+    dropped: u64,
+    doubled: u64,
+    out: Vec<i16>,
+}
+
+impl Drift {
+    /// `samples`: whole interleaved frames. `queued`: frames waiting in the card.
+    fn correct<'a>(&'a mut self, samples: &'a [i16], queued: Option<usize>) -> &'a [i16] {
+        let Some(q) = queued else { return samples };
+        let (target, band) = (ms_to_frames(TARGET_MS), ms_to_frames(BAND_MS));
+        let drop = q > target + band;
+        let double = q + band < target && q > 0; // q == 0: not started yet, just filling
+        if !drop && !double {
+            self.frame += (samples.len() / CHANNELS) as u64;
+            return samples;
+        }
+        self.out.clear();
+        for f in samples.chunks_exact(CHANNELS) {
+            self.frame += 1;
+            if self.frame % CORRECT_EVERY == 0 {
+                if drop {
+                    self.dropped += 1;
+                    continue;
+                }
+                self.out.extend_from_slice(f);
+                self.doubled += 1;
+            }
+            self.out.extend_from_slice(f);
+        }
+        &self.out
+    }
 }
 
 #[cfg(test)]
@@ -423,6 +485,25 @@ mod tests {
         assert_eq!(s.txt, vec!["sf=0x4", "ch=2", "txtvers=1", "pw=false"]);
         assert!(parse_announce("x\n_raop._tcp\nport\n").is_none());
         assert!(parse_announce("").is_none());
+    }
+
+    #[test]
+    fn drift_correction() {
+        let block: Vec<i16> = (0..800).collect(); // 400 stereo frames
+        let mut d = Drift::default();
+        // Near the target: untouched.
+        assert_eq!(d.correct(&block, Some(ms_to_frames(TARGET_MS))).len(), 800);
+        // Too full: one frame of 400 dropped.
+        assert_eq!(d.correct(&block, Some(ms_to_frames(400))).len(), 798);
+        // Too empty (but playing): one frame doubled.
+        assert_eq!(d.correct(&block, Some(ms_to_frames(100))).len(), 802);
+        // Not started (empty): just fill.
+        assert_eq!(d.correct(&block, Some(0)).len(), 800);
+        assert_eq!(d.correct(&block, None).len(), 800);
+        assert_eq!((d.dropped, d.doubled), (1, 1));
+        // Frames stay whole: L/R pairs are never split.
+        let out = d.correct(&block, Some(ms_to_frames(400))).to_vec();
+        assert!(out.chunks_exact(2).all(|f| f[1] == f[0] + 1 && f[0] % 2 == 0));
     }
 
     #[test]

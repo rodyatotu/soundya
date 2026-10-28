@@ -242,6 +242,24 @@ impl Output {
         Ok(())
     }
 
+    /// Sound queued in the card, in frames (None if the card cannot tell).
+    pub fn queued(&self) -> Option<usize> {
+        let (mut buffer, mut period): (c_ulong, c_ulong) = (0, 0);
+        if unsafe { (self.lib.get_params)(self.pcm, &mut buffer, &mut period) } < 0 || buffer == 0 {
+            return None;
+        }
+        let avail = unsafe { (self.lib.avail_update)(self.pcm) };
+        (avail >= 0).then(|| (buffer as usize).saturating_sub(avail as usize))
+    }
+
+    /// Starts playback now instead of when the buffer is full (AirPlay keeps it
+    /// only partly filled, so it would never start on its own).
+    pub fn start(&mut self) {
+        if unsafe { (self.lib.state)(self.pcm) } == SND_PCM_STATE_PREPARED {
+            unsafe { (self.lib.start)(self.pcm) };
+        }
+    }
+
     /// Drops queued audio (pause or skip).
     pub fn stop_now(&mut self) {
         unsafe {
