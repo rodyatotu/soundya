@@ -143,6 +143,10 @@ general = {{
   udp_port_range = 10;
   volume_range_db = 50;
 }};
+diagnostics = {{
+  // A line of figures every few seconds in soundya's log (missing packets, rates).
+  statistics = "yes";
+}};
 sessioncontrol = {{
   allow_session_interruption = "yes";
   session_timeout = 60;
@@ -330,6 +334,9 @@ fn session(
     let mut carry: Vec<u8> = Vec::new();
     let mut rate = Resampler::default();
     let mut stats_at = Instant::now();
+    // Frames written to the card and its queue at the last report: the card's real speed.
+    let mut written = 0u64;
+    let mut queue_at_stats = 0usize;
     let mut gain = crate::player::Gain::default();
     let mut announced = false;
     let mut samples: Vec<i16> = Vec::new();
@@ -371,8 +378,13 @@ fn session(
                     let _ = tx.send(Cmd::AirPlay(true));
                 }
                 if output.is_none() && open_failed.map_or(true, |t| t.elapsed() > Duration::from_secs(2)) {
-                    match alsa::Output::open(device, RATE, CHANNELS) {
+                    let card = card_rate();
+                    match alsa::Output::open(device, card, CHANNELS) {
                         Ok(o) => {
+                            if rate.out_rate != card {
+                                eprintln!("airplay: card runs at {card} Hz; converting from {RATE} Hz");
+                                rate = rate.with_output_rate(card);
+                            }
                             output = Some(o);
                             open_failed = None;
                         }
@@ -386,22 +398,28 @@ fn session(
                 if let Some(o) = output.as_mut() {
                     let queued = o.queued();
                     let corrected = rate.process(&samples, queued, Instant::now());
+                    written += (corrected.len() / CHANNELS) as u64;
                     if let Err(e) = o.write(corrected) {
                         eprintln!("airplay: sound card: {e}; reopening");
                         output = None;
-                    } else if o.queued().is_some_and(|q| q >= ms_to_frames(TARGET_MS)) {
+                    } else if o.queued().is_some_and(|q| q >= rate.target_frames()) {
                         o.start();
                     }
                 }
                 if stats_at.elapsed() > Duration::from_secs(30) {
                     let secs = stats_at.elapsed().as_secs_f64();
                     stats_at = Instant::now();
-                    let q = output.as_ref().and_then(|o| o.queued()).map(|f| f * 1000 / RATE as usize);
+                    let q = output.as_ref().and_then(|o| o.queued()).unwrap_or(0);
+                    let played = written as f64 - (q as f64 - queue_at_stats as f64);
+                    written = 0;
+                    queue_at_stats = q;
                     eprintln!(
-                        "airplay: queue {} ms, in {:.0} frames/s, speed {:+.0} ppm, breaks {}, underruns {}",
-                        q.map_or("?".into(), |q| q.to_string()),
+                        "airplay: queue {} ms, in {:.0}/s, card {:.0}/s at {} Hz, speed {:+.0} ppm, breaks {}, underruns {}",
+                        q * 1000 / rate.out_rate as usize,
                         rate.take_frames_in() as f64 / secs,
-                        (1.0 / rate.ratio - 1.0) * 1e6,
+                        played / secs,
+                        rate.out_rate,
+                        rate.speed_ppm(),
                         std::mem::take(&mut rate.gaps),
                         output.as_mut().map_or(0, |o| std::mem::take(&mut o.xruns)),
                     );
@@ -434,10 +452,26 @@ fn ms_to_frames(ms: usize) -> usize {
     RATE as usize * ms / 1000
 }
 
+/// The rate the speaker's sound card runs at. Writing at that rate spares
+/// ALSA's own converter, which rounds the speed (≈0.3 % off on the speaker).
+fn card_rate() -> u32 {
+    if let Some(r) = std::env::var("SOUNDYA_AIRPLAY_RATE").ok().and_then(|r| r.parse().ok()) {
+        return r;
+    }
+    // "rate: 48000 (48000/1)" while anything plays (Alice keeps the card open).
+    crate::fsx::read_string(Path::new("/proc/asound/card0/pcm0p/sub0/hw_params"))
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("rate:").and_then(|r| r.split_whitespace().next()?.parse().ok())))
+        .filter(|&r: &u32| (8_000..=192_000).contains(&r))
+        .unwrap_or(48_000)
+}
+
 /// Plays the incoming sound a little faster or slower (linear interpolation),
 /// steered so the card's queue stays near [`TARGET_MS`].
 struct Resampler {
-    /// Input frames consumed per output frame (> 1: play faster, queue shrinks).
+    /// Output (card) rate and the plain conversion ratio RATE / out_rate.
+    out_rate: u32,
+    base: f64,
+    /// Input frames consumed per output frame (> base: play faster, queue shrinks).
     ratio: f64,
     /// Integral of the queue error (seconds × seconds): finds the steady speed.
     integral: f64,
@@ -456,6 +490,8 @@ struct Resampler {
 impl Default for Resampler {
     fn default() -> Self {
         Self {
+            out_rate: RATE,
+            base: 1.0,
             ratio: 1.0,
             integral: 0.0,
             pos: 0.0,
@@ -472,8 +508,25 @@ impl Default for Resampler {
 impl Resampler {
     /// The sender stopped. The learned speed is kept: it is mostly the speaker's own clock.
     fn end_session(&mut self) {
-        let integral = self.integral;
-        *self = Self { integral, ratio: 1.0 + (KI * integral).clamp(-MAX_CORRECTION, MAX_CORRECTION), ..Self::default() };
+        let (integral, out_rate) = (self.integral, self.out_rate);
+        *self = Self { integral, ..Self::default() }.with_output_rate(out_rate);
+    }
+
+    /// Converts to `out_rate` (the card's own rate), keeping the learned speed.
+    fn with_output_rate(mut self, out_rate: u32) -> Self {
+        self.out_rate = out_rate;
+        self.base = RATE as f64 / out_rate as f64;
+        self.ratio = self.base * (1.0 + (KI * self.integral).clamp(-MAX_CORRECTION, MAX_CORRECTION));
+        self
+    }
+
+    fn target_frames(&self) -> usize {
+        self.out_rate as usize * TARGET_MS / 1000
+    }
+
+    /// How much faster than nominal the sound is played (stretched: negative).
+    fn speed_ppm(&self) -> f64 {
+        (self.base / self.ratio - 1.0) * 1e6
     }
 
     fn take_frames_in(&mut self) -> u64 {
@@ -493,13 +546,13 @@ impl Resampler {
         let mut correction = KI * self.integral;
         if let Some(q) = queued.filter(|&q| q > 0) {
             if steady {
-                let error = (q as f64 - ms_to_frames(TARGET_MS) as f64) / RATE as f64; // seconds
+                let error = (q as f64 - self.target_frames() as f64) / self.out_rate as f64; // seconds
                 let dt = block_frames as f64 / RATE as f64;
                 self.integral = (self.integral + error * dt).clamp(-MAX_CORRECTION / KI, MAX_CORRECTION / KI);
                 correction = KP * error + KI * self.integral;
             }
         }
-        self.ratio = 1.0 + correction.clamp(-MAX_CORRECTION, MAX_CORRECTION);
+        self.ratio = self.base * (1.0 + correction.clamp(-MAX_CORRECTION, MAX_CORRECTION));
     }
 
     /// `samples`: whole interleaved frames.
@@ -638,6 +691,27 @@ mod tests {
         // And with a fast card plus breaks it still finds roughly the right speed.
         let (r, _) = simulate(1.003, 375, 600, 40_000);
         assert!((1.0 / r.ratio - 1.003).abs() < 0.0015, "ratio {}", r.ratio);
+    }
+
+    #[test]
+    fn converts_44100_to_48000() {
+        let mut r = Resampler::default().with_output_rate(48_000);
+        let block: Vec<i16> = (0..352 * 2).map(|i| ((i / 2) as f64 * 0.0627).sin().mul_add(10_000.0, 0.0) as i16).collect();
+        let mut frames = 0;
+        let now = Instant::now();
+        for k in 0..1000 {
+            frames += r.process(&block, None, now + Duration::from_millis(8 * k)).len() / 2;
+        }
+        // 352 000 input frames → 383 129 output frames (±1).
+        let expected = 352_000.0 * 48_000.0 / 44_100.0;
+        assert!((frames as f64 - expected).abs() < 2.0, "{frames} vs {expected}");
+        assert!(r.speed_ppm().abs() < 1.0);
+    }
+
+    #[test]
+    fn reads_card_rate() {
+        // No /proc/asound here: falls back to 48 kHz.
+        assert!(card_rate() >= 8_000);
     }
 
     #[test]

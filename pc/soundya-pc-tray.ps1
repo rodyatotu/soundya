@@ -131,7 +131,6 @@ function Refresh {
 # ---- icon: orange speaker badge with a status dot ----
 $Colors = @{
     Good = [Drawing.Color]::FromArgb(46, 204, 113)
-    Slow = [Drawing.Color]::FromArgb(241, 196, 15)
     Bad  = [Drawing.Color]::FromArgb(231, 76, 60)
     Off  = [Drawing.Color]::FromArgb(140, 140, 140)
 }
@@ -176,7 +175,6 @@ function Ago($t) {
 function Update-Icon {
     if (-not $State.AgentUp) { $color = 'Off'; $line = 'агент не запущен' }
     elseif ($State.PingMs -lt 0) { $color = 'Bad'; $line = 'колонка не отвечает' }
-    elseif ($State.PingMs -gt 300) { $color = 'Slow'; $line = "колонка: $($State.PingMs) мс (медленно)" }
     else { $color = 'Good'; $line = "колонка: $($State.PingMs) мс" }
 
     if ($script:IconKey -ne $color) {
