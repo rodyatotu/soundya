@@ -301,6 +301,12 @@
         <span class="hint">Плавно мигает, пока колонка загружает из SoundCloud, горит, пока играет музыка,
           и тускло светится на паузе. Анимации Алисы не перебивает.</span></span>
     </label>
+    <label class="check">
+      <input type="checkbox" id="stats">
+      <span>Анонимная статистика<br>
+        <span class="hint">Раз в день колонка сообщает автору soundya только случайный номер установки, версию
+          и модель — чтобы знать, на скольких колонках он работает. Без IP, треков и аккаунтов.</span></span>
+    </label>
     <div class="row">
       <button onclick="testProxy()" id="testbtn">Проверить прокси</button>
       <button class="primary" onclick="saveSettings()">Сохранить</button>
@@ -821,6 +827,7 @@ async function refresh() {
     $('pcmac').value = settings.pc_mac || '';
     renderContacts(settings.pc_contacts || []);
     $('airplay').checked = settings.airplay !== false;
+    $('stats').checked = settings.stats !== false;
     $('airplayname').value = settings.airplay_name || '';
     settingsLoaded = true;
   }
@@ -922,7 +929,7 @@ function settingsBody(extra) {
     proxy: $('proxy').value, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
     pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value,
     pc_contacts: readContacts(),
-    airplay: $('airplay').checked, airplay_name: $('airplayname').value
+    airplay: $('airplay').checked, airplay_name: $('airplayname').value, stats: $('stats').checked
   }, extra));
 }
 

@@ -13,6 +13,7 @@ mod pc;
 mod player;
 mod sc;
 mod settings;
+mod stats;
 mod web;
 
 use std::{
@@ -91,6 +92,8 @@ pub struct Shared {
     /// Latest JSON for the web page, so it never waits for a busy controller.
     pub status_json: Mutex<String>,
     pub airplay: airplay::AirPlay,
+    /// Anonymous statistics switched on (settings page).
+    pub stats: AtomicBool,
 }
 
 impl Shared {
@@ -297,6 +300,7 @@ impl Controller {
                 "pc_contacts": self.settings.pc_contacts,
                 "airplay": self.settings.airplay,
                 "airplay_name": self.settings.airplay_name,
+                "stats": self.settings.stats,
             },
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
@@ -461,6 +465,7 @@ impl Controller {
         self.shared.ring.store(new.ring, Ordering::Release);
         new.airplay_name = new.airplay_name.trim().to_owned();
         self.shared.airplay.configure(new.airplay, &new.airplay_name);
+        self.shared.stats.store(new.stats, Ordering::Release);
         let proxy_changed = new.proxy != self.settings.proxy;
         self.settings = new;
         let mut msg = match self.settings.save(&self.dir) {
@@ -1359,6 +1364,7 @@ fn daemon() {
         status: Mutex::new("stopped".into()),
         status_json: Mutex::new(String::new()),
         airplay: airplay::AirPlay::new(settings.airplay, &settings.airplay_name),
+        stats: AtomicBool::new(settings.stats),
     });
     let (tx, rx) = mpsc::channel();
     led::run(shared.clone());
@@ -1368,6 +1374,8 @@ fn daemon() {
     mdns::run(&std::env::var("SOUNDYA_NAME").unwrap_or_else(|_| "soundya".into()));
     // The speaker in the AirPlay list of iPhones and Macs.
     airplay::run(dir.clone(), device(), tx.clone(), shared.clone());
+    // Counts running speakers for the README badge (anonymous, can be switched off).
+    stats::run(dir.clone(), shared.clone());
     if std::env::var("SOUNDYA_NO_VOICE").is_err() {
         alice::watch(tx.clone(), shared.clone());
         buttons::run(tx.clone(), shared.clone());

@@ -380,6 +380,12 @@ SoundCloud отвечает на такие запросы капчей свое
 - [symphonia](https://github.com/pdeljanov/Symphonia), [ureq](https://github.com/algesten/ureq), [serde](https://serde.rs).
 - [**shairport-sync**](https://github.com/mikebrady/shairport-sync) — приёмник AirPlay. Собран статически с [musl](https://musl.libc.org), [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0), [libconfig](https://github.com/hyperrealm/libconfig) (LGPL-2.1) и [popt](https://github.com/rpm-software-management/popt) скриптом `scripts/build-shairport.sh`: исходники и точные версии — там, пересобрать можно им же.
 
+## Анонимная статистика
+
+Чтобы знать, на скольких колонках работает soundya (значок «работает на N колонках» вверху), колонка раз в день отправляет на сервер автора **только** случайный номер установки (его придумывает сама колонка, он не связан ни с ней, ни с аккаунтом), версию soundya, модель колонки и включены ли AirPlay и управление компьютером. IP-адреса сервер не хранит, треки, токены и голосовые команды никуда не уходят. Код сервера — [`server/stats.py`](server/stats.py).
+
+Выключается галочкой «Анонимная статистика» на странице колонки → «Настройки».
+
 ## Важно
 
 soundya — неофициальный проект и никак не связан с Яндексом и SoundCloud. Root-доступ и изменение прошивки — на ваш страх и риск: гарантию на колонку это может лишить. Пользуйтесь SoundCloud в рамках его правил.

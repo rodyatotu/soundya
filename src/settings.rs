@@ -36,6 +36,9 @@ pub struct Settings {
     /// Name in the AirPlay list on the iPhone; "" = «Яндекс Станция».
     #[serde(default)]
     pub airplay_name: String,
+    /// Anonymous daily «I'm running» ping for the speaker count (src/stats.rs).
+    #[serde(default = "yes")]
+    pub stats: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -65,6 +68,7 @@ impl Default for Settings {
             pc_contacts: Vec::new(),
             airplay: true,
             airplay_name: String::new(),
+            stats: true,
         }
     }
 }
