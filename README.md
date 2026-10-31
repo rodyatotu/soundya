@@ -21,7 +21,7 @@
   <img src="https://img.shields.io/badge/Rust-armv7-dea584?logo=rust&logoColor=white" alt="Rust, armv7">
   <img src="https://img.shields.io/badge/лицензия-MIT-blue" alt="MIT">
   <a href="http://195.209.211.30:8787/"><img src="http://195.209.211.30:8787/badge.svg" alt="Работает на колонках"></a>
-  <img src="https://img.shields.io/badge/версия-0.4.13-ff5500" alt="Версия 0.4.13">
+  <img src="https://img.shields.io/badge/версия-0.4.14-ff5500" alt="Версия 0.4.14">
 </p>
 
 ---

@@ -224,14 +224,29 @@ fn agent_for(strategy: Strategy) -> ureq::Agent {
 }
 
 /// Does SoundCloud answer with this strategy (or with no trick at all)?
-fn works(agent: &ureq::Agent, strategy: Strategy) -> bool {
-    CHECK.iter().all(|url| match agent.get(url).call() {
-        Ok(_) | Err(ureq::Error::Status(..)) => true, // any HTTP answer: the connection went through
-        Err(e) => {
-            eprintln!("bypass: {} on {url}: {e}", strategy.id());
-            false
+/// Err names the server that did not. Each gets a second try: zapret's fakes
+/// do not get through every time, and one miss is not a verdict.
+fn works(agent: &ureq::Agent, strategy: Strategy) -> Result<(), String> {
+    for url in CHECK {
+        let mut ok = false;
+        for attempt in 0..2 {
+            match agent.get(url).call() {
+                Ok(_) | Err(ureq::Error::Status(..)) => {
+                    // Any HTTP answer: the connection went through.
+                    ok = true;
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("bypass: {} on {url} (try {}): {e}", strategy.id(), attempt + 1);
+                    std::thread::sleep(Duration::from_millis(700));
+                }
+            }
         }
-    })
+        if !ok {
+            return Err(url.trim_start_matches("https://").trim_end_matches('/').to_owned());
+        }
+    }
+    Ok(())
 }
 
 /// A big file on SoundCloud's CDN (the site's script), to measure speed with:
@@ -287,6 +302,8 @@ pub fn measure(
             log(format!("{}: {e}", name_of(id)));
             return None;
         }
+        // nfqws and its rules settle before the first connection.
+        std::thread::sleep(Duration::from_millis(500));
         Strategy::Direct
     } else {
         crate::zapret::stop();
@@ -294,8 +311,8 @@ pub fn measure(
     };
     log(format!("{}: проверяю…", name_of(id)));
     let agent = agent_for(s);
-    if !works(&agent, s) {
-        log(format!("{}: SoundCloud не открывается", name_of(id)));
+    if let Err(host) = works(&agent, s) {
+        log(format!("{}: SoundCloud не открывается (нет ответа от {host})", name_of(id)));
         return None;
     }
     if file.is_none() {

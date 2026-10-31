@@ -987,6 +987,21 @@ async function refresh() {
   $('username').textContent = s.user || (logged ? 'токен сохранён, вход не подтверждён' : '');
   renderNet(s.net);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
+  // The switch, the line above it and the list always show what the speaker has
+  // on now, also when a check ends while the page waited (or was reloaded).
+  if (!s.bypass_busy) {
+    $('bypasson').checked = !!settings.bypass && settings.bypass_on !== false;
+    renderBypass(settings.bypass, settings.bypass_on !== false, settings.bypass_name);
+  }
+  if (bypassWasBusy && !s.bypass_busy) {
+    const lines = s.bypass_log || [];
+    const last = lines[lines.length - 1] || '';
+    if (last) show($('bypassmsg'), last, !last.startsWith('✅') && !last.includes('обход не нужен'));
+    if (settings.bypass && settings.bypass_on !== false) $('zstrat').value = settings.bypass;
+    $('zargsbox').hidden = $('zstrat').value !== 'nfqc';
+    $('bypassbtn').disabled = false;
+  }
+  bypassWasBusy = !!s.bypass_busy;
   if (!settingsLoaded) {
     $('proxy').value = settings.proxy;
     $('keyword').checked = settings.keyword_only;
@@ -1291,6 +1306,7 @@ async function savePc() {
 }
 
 let strategiesShown = false;
+let bypassWasBusy = false;
 function renderStrategies(presets, current, args) {
   const sel = $('zstrat');
   if (!strategiesShown) {
@@ -1319,6 +1335,7 @@ function renderBypass(id, on, name) {
 }
 
 function renderBypassLog(lines, running) {
+  if (running) $('bypassbtn').disabled = true;
   const el = $('bypasslog');
   if (!lines.length) { el.hidden = true; return; }
   el.hidden = false;
@@ -1338,7 +1355,10 @@ async function bypass(what) {
   busy($('bypassmsg'), what === 'off' ? 'Выключаю…'
     : what === 'auto' ? 'Перебираю способы по очереди, ход проверки — ниже. Это может занять пару минут.'
     : 'Включаю и проверяю скорость SoundCloud… Секунд 10–20.');
-  show($('bypassmsg'), (await post('/api/cmd', 'bypass ' + what)).replace(/^OK:\s*/, ''));
+  const r = await post('/api/cmd', 'bypass ' + what);
+  // A long automatic check outlives the page's wait: the result comes with the status.
+  if (r === 'error: timeout') { busy($('bypassmsg'), 'Проверка ещё идёт, ход — выше. Результат появится здесь.'); return; }
+  show($('bypassmsg'), r.replace(/^OK:\s*/, ''));
   $('bypassbtn').disabled = false;
   settingsLoaded = false;
   refresh();
