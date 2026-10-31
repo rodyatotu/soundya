@@ -172,6 +172,13 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
   .dot.good { background: #2f9e5b; } .dot.slow { background: #e0a100; } .dot.bad { background: var(--err); }
   h2.section { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .subnav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
+  .subnav::-webkit-scrollbar { display: none; }
+  .subnav button { flex: none; white-space: nowrap; padding: 7px 13px; font-size: 13px; border-radius: 999px; }
+  .subnav button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .sub { display: none; }
+  .sub.on { display: block; }
+  .sub > h2:first-child, .sub > h2.section:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
   .net { border: 1px solid var(--line); border-radius: 10px; padding: 4px 12px; }
   .netrow { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; font-size: 14px; }
   .netrow + .netrow { border-top: 1px solid var(--line); }
@@ -193,7 +200,7 @@
   <header>
     <h1>sound<span>ya</span></h1>
     <div class="headright">
-      <button class="netpill" id="netpill" onclick="openTab('settings')" title="Соединение с SoundCloud">
+      <button class="netpill" id="netpill" onclick="openSettings('net')" title="Соединение с SoundCloud">
         <i class="dot" id="netdot"></i><span id="nettext">сеть…</span>
       </button>
       <div class="state" id="state">…</div>
@@ -225,7 +232,7 @@
     <div class="msg" id="actmsg"></div>
   </section>
 
-  <button class="updbanner" id="updbanner" onclick="openTab('settings'); document.getElementById('updsection').scrollIntoView({behavior: 'smooth'})"></button>
+  <button class="updbanner" id="updbanner" onclick="openSettings('about', 'updsection')"></button>
 
   <nav>
     <button data-tab="search" class="on">Поиск</button>
@@ -267,10 +274,18 @@
   </section>
 
   <section class="tab" id="tab-settings">
+    <div class="subnav" role="tablist" aria-label="Разделы настроек">
+      <button data-sub="net" class="on">Соединение</button>
+      <button data-sub="account">Аккаунт</button>
+      <button data-sub="speaker">Колонка и AirPlay</button>
+      <button data-sub="devices">Устройства</button>
+      <button data-sub="about">Обновления</button>
+    </div>
+    <div class="sub on" data-sub="net">
     <h2>Соединение с SoundCloud</h2>
     <div class="net" id="netbox">
       <div class="netrow"><span>Состояние</span><b id="netverdict">проверяю…</b></div>
-      <div class="netrow"><span>Пинг через прокси</span><b id="netping">—</b></div>
+      <div class="netrow"><span>Пинг</span><b id="netping">—</b></div>
       <div class="netrow"><span>Скорость загрузки</span><b id="netspeed">—</b></div>
       <div class="netrow"><span>Запас трека в памяти</span><b id="netbuffer">—</b></div>
     </div>
@@ -279,6 +294,32 @@
       <button onclick="netCheck()" id="netbtn">Проверить сейчас</button>
     </div>
 
+    <h2 class="section">Прокси</h2>
+    <input type="text" id="proxy" placeholder="socks5://user:pass@host:1080" autocomplete="off" spellcheck="false">
+    <p class="hint">
+      <code>http://host:port</code>, <code>socks5://host:port</code> или
+      <code>socks5://user:pass@host:port</code>. Пустое поле — без прокси. Через прокси идут и поиск, и звук.
+    </p>
+    <div class="bypassbox">
+      <b>Обход блокировок без прокси</b>
+      <p class="hint">Как zapret: колонка прячет от провайдера имя сайта в соединении с SoundCloud. Помогает, если SoundCloud
+        блокируют по имени (так делает большинство провайдеров), и не помогает, если заблокированы сами адреса — тогда нужен прокси.
+        Пока обход включён, прокси не используется.</p>
+      <p class="hint" id="bypassstate"></p>
+      <div class="row">
+        <button onclick="bypass('auto')" id="bypassbtn">Подобрать и включить обход</button>
+        <button onclick="bypass('off')" id="bypassoff" hidden>Выключить обход</button>
+      </div>
+      <div class="msg" id="bypassmsg"></div>
+    </div>
+    <div class="row">
+      <button onclick="testProxy()" id="testbtn">Проверить прокси</button>
+      <button class="primary" onclick="saveSettings()">Сохранить</button>
+    </div>
+    <div class="msg" id="setmsg"></div>
+
+    </div>
+    <div class="sub" data-sub="account">
     <h2 class="section">Аккаунт SoundCloud</h2>
     <div id="loggedout">
       <p class="hint">SoundCloud не даёт сторонним приложениям вход по паролю, поэтому используется токен из браузера:</p>
@@ -303,24 +344,9 @@
     </div>
     <div class="msg" id="loginmsg"></div>
 
-    <h2 class="section">Прокси</h2>
-    <input type="text" id="proxy" placeholder="socks5://user:pass@host:1080" autocomplete="off" spellcheck="false">
-    <p class="hint">
-      <code>http://host:port</code>, <code>socks5://host:port</code> или
-      <code>socks5://user:pass@host:port</code>. Пустое поле — без прокси. Через прокси идут и поиск, и звук.
-    </p>
-    <div class="bypassbox">
-      <b>Обход блокировок без прокси</b>
-      <p class="hint">Как zapret: колонка прячет от провайдера имя сайта в соединении с SoundCloud. Помогает, если SoundCloud
-        блокируют по имени (так делает большинство провайдеров), и не помогает, если заблокированы сами адреса — тогда нужен прокси.
-        Пока обход включён, прокси не используется.</p>
-      <p class="hint" id="bypassstate"></p>
-      <div class="row">
-        <button onclick="bypass('auto')" id="bypassbtn">Подобрать и включить обход</button>
-        <button onclick="bypass('off')" id="bypassoff" hidden>Выключить обход</button>
-      </div>
-      <div class="msg" id="bypassmsg"></div>
     </div>
+    <div class="sub" data-sub="speaker">
+    <h2 class="section">Колонка</h2>
     <label class="check">
       <input type="checkbox" id="keyword">
       <span>Только по слову «саундклауд»<br>
@@ -339,19 +365,9 @@
           и модель — чтобы знать, на скольких колонках он работает. Без IP, треков и аккаунтов.</span></span>
     </label>
     <div class="row">
-      <button onclick="testProxy()" id="testbtn">Проверить прокси</button>
-      <button class="primary" onclick="saveSettings()">Сохранить</button>
+      <button class="primary" onclick="saveSettings('spkmsg')">Сохранить</button>
     </div>
-    <div class="msg" id="setmsg"></div>
-
-    <h2 class="section" id="updsection">Обновления</h2>
-    <p class="hint" id="updstate">Проверяю…</p>
-    <pre class="notes" id="updnotes" hidden></pre>
-    <div class="row">
-      <button onclick="checkUpdate()" id="updcheck">Проверить обновления</button>
-      <button class="primary" onclick="installUpdate()" id="updinstall" hidden>Установить обновление</button>
-    </div>
-    <div class="msg" id="updmsg"></div>
+    <div class="msg" id="spkmsg"></div>
 
     <h2 class="section">AirPlay</h2>
     <p class="hint">Колонка видна в списке AirPlay на iPhone, iPad и Mac: Пункт управления → значок AirPlay
@@ -381,6 +397,8 @@
     </div>
     <div class="msg" id="airplaymsg"></div>
 
+    </div>
+    <div class="sub" data-sub="devices">
     <h2 class="section">Компьютер</h2>
     <p class="hint">«Алиса, включи компьютер», «открой телеграм на компьютере», «закрой хром на компе»,
       «усыпи компьютер», «выключи компьютер». На компьютере с Windows нужна программа <b>soundya-pc</b>
@@ -419,6 +437,17 @@
     </div>
     <div class="msg" id="tvmsg"></div>
 
+    </div>
+    <div class="sub" data-sub="about">
+    <h2 class="section" id="updsection">Обновления</h2>
+    <p class="hint" id="updstate">Проверяю…</p>
+    <pre class="notes" id="updnotes" hidden></pre>
+    <div class="row">
+      <button onclick="checkUpdate()" id="updcheck">Проверить обновления</button>
+      <button class="primary" onclick="installUpdate()" id="updinstall" hidden>Установить обновление</button>
+    </div>
+    <div class="msg" id="updmsg"></div>
+
     <div id="donate" style="display:none">
       <h2 class="donate-title">Поддержать проект</h2>
       <p class="hint">Если soundya вам пригодился — можно сказать спасибо:</p>
@@ -436,6 +465,7 @@
       <button class="dangerbtn" onclick="uninstallSoundya()">Удалить soundya</button>
       <div class="msg" id="uninstmsg"></div>
     </details>
+    </div>
   </section>
 
 
@@ -449,7 +479,7 @@
     <p class="hint">Обновление ставится само за полминуты, музыка на это время прервётся. Настройки сохранятся.</p>
     <div class="row">
       <button onclick="laterUpdate()">Позже</button>
-      <button class="primary" onclick="closeUpdModal(); installUpdate(); openTab('settings'); document.getElementById('updsection').scrollIntoView({behavior: 'smooth'})">Обновить</button>
+      <button class="primary" onclick="closeUpdModal(); installUpdate(); openSettings('about', 'updsection')">Обновить</button>
     </div>
   </div>
 </div>
@@ -745,6 +775,21 @@ function playlistItems(ul, lists, msgEl) {
       refresh();
     }));
   });
+}
+
+function openSub(name) {
+  document.querySelectorAll('.subnav button').forEach(b => b.classList.toggle('on', b.dataset.sub === name));
+  document.querySelectorAll('.sub').forEach(x => x.classList.toggle('on', x.dataset.sub === name));
+  try { localStorage.setItem('soundya-sub', name); } catch (e) {}
+}
+document.querySelectorAll('.subnav button').forEach(b => b.addEventListener('click', () => openSub(b.dataset.sub)));
+try { const sub = localStorage.getItem('soundya-sub'); if (sub && document.querySelector('.sub[data-sub="' + sub + '"]')) openSub(sub); } catch (e) {}
+
+/// Settings tab, a section of it, and scroll to an element there.
+function openSettings(sub, id) {
+  openTab('settings');
+  openSub(sub);
+  if (id) setTimeout(() => document.getElementById(id).scrollIntoView({ behavior: 'smooth' }), 50);
 }
 
 function openTab(name) {

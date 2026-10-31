@@ -914,7 +914,7 @@ pub fn test_proxy(proxy: &str) -> Res<String> {
 
 type Refresh = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
-fn script_urls(html: &str) -> Vec<String> {
+pub(crate) fn script_urls(html: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = html;
     while let Some(i) = rest.find("src=\"") {

@@ -1155,13 +1155,21 @@ impl Controller {
                 let tx = self.tx.clone();
                 thread::spawn(move || {
                     let r = match bypass::pick() {
-                        Some(bypass::Strategy::Direct) => {
-                            let _ = tx.send(Cmd::Bypass("direct".into()));
-                            "OK: SoundCloud открывается напрямую — колонка теперь ходит к нему без прокси и без обхода".to_owned()
-                        }
-                        Some(s) => {
-                            let _ = tx.send(Cmd::Bypass(s.id().to_owned()));
-                            format!("OK: обход работает (стратегия {}). SoundCloud теперь идёт напрямую, прокси не нужен", s.id())
+                        Some((s, kbps)) => {
+                            // Switched on only when it is fast enough to play from.
+                            if kbps >= bypass::ENOUGH_KBPS {
+                                let _ = tx.send(Cmd::Bypass(s.id().to_owned()));
+                            }
+                            let how = if s == bypass::Strategy::Direct {
+                                "SoundCloud быстрее всего открывается напрямую — колонка ходит к нему без прокси и без обхода".to_owned()
+                            } else {
+                                format!("обход включён (стратегия {}), прокси не нужен", s.id())
+                            };
+                            if kbps >= bypass::ENOUGH_KBPS {
+                                format!("OK: {how}. Скорость загрузки {:.1} Мбит/с", kbps / 1000.0)
+                            } else {
+                                format!("error: лучший способ ({}) даёт только {kbps:.0} кбит/с — провайдер тормозит SoundCloud, обход не включён. Тут поможет только прокси или VPN", s.id())
+                            }
                         }
                         None => "error: ни один способ не прошёл: похоже, провайдер блокирует сами адреса SoundCloud. Тут поможет только прокси или VPN".to_owned(),
                     };

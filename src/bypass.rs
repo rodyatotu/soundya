@@ -209,17 +209,22 @@ pub fn active() -> Option<Strategy> {
 /// What has to open for music to play: the API, the audio servers and the site
 /// (soundya reads its client_id from there).
 const CHECK: [&str; 3] = ["https://api-v2.soundcloud.com/", "https://cf-hls-media.sndcdn.com/", "https://soundcloud.com/"];
+/// Below this the music stutters (a 128 kbit/s track plus headroom).
+pub const ENOUGH_KBPS: f64 = 400.0;
 
-/// Does SoundCloud answer with this strategy (or with no trick at all)?
-fn works(strategy: Strategy) -> bool {
+fn agent_for(strategy: Strategy) -> ureq::Agent {
     let mut b = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(6))
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(12))
         .resolver(crate::dns::Resolver::new());
     if strategy != Strategy::Direct {
         b = b.tls_connector(Arc::new(Connector::new(strategy)));
     }
-    let agent = b.build();
+    b.build()
+}
+
+/// Does SoundCloud answer with this strategy (or with no trick at all)?
+fn works(agent: &ureq::Agent, strategy: Strategy) -> bool {
     CHECK.iter().all(|url| match agent.get(url).call() {
         Ok(_) | Err(ureq::Error::Status(..)) => true, // any HTTP answer: the connection went through
         Err(e) => {
@@ -229,10 +234,53 @@ fn works(strategy: Strategy) -> bool {
     })
 }
 
-/// The first way that gets to SoundCloud: straight (no proxy, no trick), else
-/// the strategies one by one; None when nothing gets through.
-pub fn pick() -> Option<Strategy> {
-    std::iter::once(Strategy::Direct).chain(ALL).find(|&s| works(s))
+/// A big file on SoundCloud's CDN (the site's script), to measure speed with:
+/// providers slow SoundCloud's servers down to a trickle rather than block them.
+fn cdn_file(agent: &ureq::Agent) -> Option<String> {
+    let html = agent.get("https://soundcloud.com/").call().ok()?.into_string().ok()?;
+    crate::sc::script_urls(&html).into_iter().last()
+}
+
+/// Download speed in kbit/s: up to 768 KB or 6 seconds of the file.
+fn speed(agent: &ureq::Agent, url: &str) -> f64 {
+    let started = std::time::Instant::now();
+    let Ok(resp) = agent.get(url).call() else { return 0.0 };
+    let mut body = resp.into_reader();
+    let mut buf = [0u8; 16 * 1024];
+    let mut got = 0usize;
+    while got < 768 * 1024 && started.elapsed() < Duration::from_secs(6) {
+        match body.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got += n,
+        }
+    }
+    got as f64 * 8.0 / 1000.0 / started.elapsed().as_secs_f64().max(0.001)
+}
+
+/// The fastest way that gets to SoundCloud: straight, or one of the strategies.
+/// Returns it with its speed (kbit/s); None when nothing gets through.
+pub fn pick() -> Option<(Strategy, f64)> {
+    let mut best: Option<(Strategy, f64)> = None;
+    let mut file: Option<String> = None;
+    for s in std::iter::once(Strategy::Direct).chain(ALL) {
+        let agent = agent_for(s);
+        if !works(&agent, s) {
+            continue;
+        }
+        if file.is_none() {
+            file = cdn_file(&agent);
+        }
+        let kbps = file.as_deref().map_or(0.0, |f| speed(&agent, f));
+        eprintln!("bypass: {} gets through at {kbps:.0} kbit/s", s.id());
+        if best.map_or(true, |(_, b)| kbps > b) {
+            best = Some((s, kbps));
+        }
+        // Fast enough with no trick at all: nothing better to look for.
+        if s == Strategy::Direct && kbps >= 4.0 * ENOUGH_KBPS {
+            break;
+        }
+    }
+    best
 }
 
 #[cfg(test)]
