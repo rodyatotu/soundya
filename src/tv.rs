@@ -57,12 +57,34 @@ fn translit(s: &str) -> String {
 /// The installed package for a spoken app name.
 pub fn find_package(spoken: &str, packages: &[String]) -> Option<String> {
     let spoken = spoken.trim().to_lowercase();
-    for (names, parts) in APPS {
-        if names.iter().any(|n| spoken.starts_with(n)) {
-            for part in *parts {
-                if let Some(p) = packages.iter().find(|p| p.contains(part)) {
-                    return Some(p.clone());
-                }
+    // The most specific name wins: «ютуб музыку» is YouTube Music, not YouTube.
+    let entry = APPS
+        .iter()
+        .filter_map(|(names, parts)| {
+            let len = names.iter().filter(|n| spoken.starts_with(**n)).map(|n| n.len()).max()?;
+            Some((len, *parts))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, parts)| parts);
+    if let Some(parts) = entry {
+        // Parts of other apps: «…youtube.tvmusic» contains «…youtube.tv» but is YouTube Music.
+        // A full package name («com.google.android.youtube.tv») only matches itself.
+        let full = |p: &str| p.matches('.').count() >= 2;
+        let others: Vec<&str> =
+            APPS.iter().flat_map(|(_, p)| p.iter().copied()).filter(|p| !parts.contains(p) && !full(p)).collect();
+        for part in parts {
+            if let Some(p) = packages.iter().find(|p| p.as_str() == *part) {
+                return Some(p.clone());
+            }
+            if full(part) {
+                continue;
+            }
+            let found = packages.iter().find(|p| {
+                // …and not a package that another app's name explains better.
+                p.contains(part) && !others.iter().any(|o| p.contains(o) && !part.contains(o))
+            });
+            if let Some(p) = found {
+                return Some(p.clone());
             }
         }
     }
@@ -178,6 +200,14 @@ mod tests {
         assert_eq!(find_package("настройки", &pk).as_deref(), Some("com.android.tv.settings"));
         assert_eq!(find_package("окко", &pk).as_deref(), Some("tv.okko.androidtv"));
         assert_eq!(find_package("твич", &pk), None);
+        // Xiaomi L1 Pro lists YouTube Music before YouTube.
+        let pk: Vec<String> =
+            ["com.google.android.youtube.tvmusic", "com.google.android.youtube.tv"].iter().map(|s| (*s).to_owned()).collect();
+        assert_eq!(find_package("youtube", &pk).as_deref(), Some("com.google.android.youtube.tv"));
+        assert_eq!(find_package("ютуб", &pk).as_deref(), Some("com.google.android.youtube.tv"));
+        assert_eq!(find_package("ютуб музыку", &pk).as_deref(), Some("com.google.android.youtube.tvmusic"));
+        let only_music: Vec<String> = vec!["com.google.android.youtube.tvmusic".into()];
+        assert_eq!(find_package("ютуб", &only_music), None);
     }
 
     #[test]
