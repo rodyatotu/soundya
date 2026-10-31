@@ -59,6 +59,115 @@ pub enum Intent {
     Seek(i64),
     /// A command for the Windows PC (see pc.rs).
     Pc(PcAction),
+    /// A command for the Android TV / projector (see tv.rs).
+    Tv(TvAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TvAction {
+    Wake,
+    Sleep,
+    /// Open an app: «открой ютуб на проекторе».
+    Open(String),
+    /// Search films and shows across apps: «найди фильм дюна на проекторе».
+    Search(String),
+    /// Search YouTube: «включи на ютубе котиков на проекторе».
+    YouTube(String),
+    /// Remote-control keys: the Android key code and how many presses.
+    Key(&'static str, u8),
+    /// Connection check from the settings page.
+    Ping,
+}
+
+/// «на проекторе», «на телевизоре», «на тв», «на приставке» — or the device named
+/// as the object («включи проектор»). The phrase without it, if it was there.
+fn strip_tv(text: &str) -> Option<(String, bool)> {
+    const PLACES: [&str; 12] = [
+        " на телевизоре ", " на телеке ", " на телике ", " на тв ", " на проекторе ", " на приставке ",
+        " в телевизоре ", " в проекторе ", " на телевизор ", " на проектор ", " на тиви ", " на андроид тв ",
+    ];
+    const NOUNS: [&str; 14] = [
+        "телевизор", "телевизора", "телевизору", "телек", "телик", "тв", "тиви", "проектор", "проектора",
+        "проектору", "приставку", "приставка", "приставке", "приставки",
+    ];
+    let mut rest = format!(" {text} ");
+    for place in PLACES {
+        if rest.contains(place) {
+            rest = rest.replacen(place, " ", 1);
+            return Some((rest.split_whitespace().collect::<Vec<_>>().join(" "), false));
+        }
+    }
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let kept: Vec<&str> = words.iter().copied().filter(|w| !NOUNS.contains(w)).collect();
+    (kept.len() < words.len()).then(|| (kept.join(" "), true))
+}
+
+/// Commands for the Android TV. `None` when the phrase does not name it.
+fn tv(text: &str) -> Option<TvAction> {
+    let (rest, as_object) = strip_tv(text)?;
+    let rest = rest.replace("пожалуйста", "");
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let all = words.join(" ");
+    let first = words.first().copied().unwrap_or("");
+    let after = |n: usize| words.iter().skip(n).copied().collect::<Vec<_>>().join(" ");
+    // «включи проектор», «выключи телевизор»
+    if as_object && words.len() == 1 {
+        match first {
+            "включи" | "включить" | "разбуди" => return Some(TvAction::Wake),
+            "выключи" | "выключить" | "усыпи" | "отключи" => return Some(TvAction::Sleep),
+            _ => {}
+        }
+    }
+    let key = |code: &'static str, n: u8| Some(TvAction::Key(code, n));
+    match all.as_str() {
+        "пауза" | "поставь на паузу" | "останови" | "стоп" | "на паузу" | "поставь паузу" => return key("KEYCODE_MEDIA_PAUSE", 1),
+        "продолжи" | "играй" | "воспроизведи" | "сними с паузы" | "продолжай" => return key("KEYCODE_MEDIA_PLAY", 1),
+        "громче" | "сделай громче" | "прибавь звук" | "прибавь громкость" => return key("KEYCODE_VOLUME_UP", 3),
+        "тише" | "сделай тише" | "убавь звук" | "убавь громкость" => return key("KEYCODE_VOLUME_DOWN", 3),
+        "выключи звук" | "без звука" | "включи звук" => return key("KEYCODE_VOLUME_MUTE", 1),
+        "домой" | "на главную" | "главный экран" | "открой главный экран" => return key("KEYCODE_HOME", 1),
+        "назад" | "вернись назад" => return key("KEYCODE_BACK", 1),
+        "дальше" | "следующая серия" | "следующую серию" | "включи следующую серию" | "следующее" => {
+            return key("KEYCODE_MEDIA_NEXT", 1)
+        }
+        "перемотай вперед" | "вперед" => return key("KEYCODE_MEDIA_FAST_FORWARD", 1),
+        "перемотай назад" | "отмотай назад" => return key("KEYCODE_MEDIA_REWIND", 1),
+        _ => {}
+    }
+    let youtube = |w: &str| w.starts_with("ютуб") || w.starts_with("youtube") || w.starts_with("ютьюб");
+    // «найди на ютубе котиков», «включи на ютубе …»
+    if matches!(first, "найди" | "поищи" | "включи" | "поставь" | "открой" | "запусти") {
+        let mut i = 1;
+        if matches!(words.get(i), Some(&"на") | Some(&"в")) && words.get(i + 1).is_some_and(|w| youtube(w)) {
+            i += 2;
+            let q = after(i);
+            return Some(if q.is_empty() { TvAction::Open("ютуб".into()) } else { TvAction::YouTube(q) });
+        }
+    }
+    match first {
+        "найди" | "поищи" | "покажи" | "включи" | "поставь" => {
+            let mut q = after(1);
+            for noun in ["фильм ", "сериал ", "мультфильм ", "мультик ", "кино ", "фильмы ", "сериалы "] {
+                if let Some(r) = q.strip_prefix(noun) {
+                    q = r.to_owned();
+                    return (!q.is_empty()).then_some(TvAction::Search(q));
+                }
+            }
+            if q.is_empty() {
+                return None;
+            }
+            // «включи ютуб на проекторе»: an app; «найди дюну»: a search.
+            if matches!(first, "включи" | "поставь") {
+                return Some(TvAction::Open(q));
+            }
+            Some(TvAction::Search(q))
+        }
+        "открой" | "запусти" | "открыть" | "запустить" => {
+            let q = after(1);
+            (!q.is_empty()).then_some(TvAction::Open(q))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -468,6 +577,10 @@ const HOME: [&str; 30] = [
 const PLAY_VERBS: [&str; 5] = ["включи ", "поставь ", "запусти ", "сыграй ", "играй "];
 
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
+    // The TV first: «перемотай вперёд на проекторе», «открой ютуб на проекторе».
+    if let Some(action) = tv(&normalize(text)) {
+        return Some(Intent::Tv(action));
+    }
     if let Some(ms) = seek_command(&normalize(text)) {
         return Some(Intent::Seek(ms));
     }
@@ -968,6 +1081,7 @@ fn read_frames(
                 Intent::Resume => true,
                 // Only with a PC set up in the settings; otherwise the phrase stays Alice's.
                 Intent::Pc(_) => shared.pc_configured(),
+                Intent::Tv(_) => shared.tv_configured(),
                 Intent::Shuffle(_) | Intent::Repeat(_) => shared.has_queue(),
                 _ => shared.is_active(),
             };
@@ -1077,6 +1191,28 @@ mod tests {
         assert_eq!(super::pc("сделай громче"), None);
         assert_eq!(super::pc("открой навык угадай мелодию"), None);
         assert_eq!(super::pc("открой"), None);
+    }
+
+    #[test]
+    fn tv_commands() {
+        let t = |s: &str| match intent(s, false) {
+            Some(Intent::Tv(a)) => Some(a),
+            _ => None,
+        };
+        assert_eq!(t("Алиса, включи проектор"), Some(TvAction::Wake));
+        assert_eq!(t("выключи телевизор"), Some(TvAction::Sleep));
+        assert_eq!(t("открой ютуб на проекторе"), Some(TvAction::Open("ютуб".into())));
+        assert_eq!(t("запусти кинопоиск на телевизоре"), Some(TvAction::Open("кинопоиск".into())));
+        assert_eq!(t("найди фильм дюна на проекторе"), Some(TvAction::Search("дюна".into())));
+        assert_eq!(t("включи на ютубе котиков на проекторе"), Some(TvAction::YouTube("котиков".into())));
+        assert_eq!(t("найди на ютубе как приготовить плов на телевизоре"), Some(TvAction::YouTube("как приготовить плов".into())));
+        assert_eq!(t("пауза на проекторе"), Some(TvAction::Key("KEYCODE_MEDIA_PAUSE", 1)));
+        assert_eq!(t("сделай громче на телевизоре"), Some(TvAction::Key("KEYCODE_VOLUME_UP", 3)));
+        assert_eq!(t("перемотай вперед на проекторе"), Some(TvAction::Key("KEYCODE_MEDIA_FAST_FORWARD", 1)));
+        assert_eq!(t("включи сериал друзья на проекторе"), Some(TvAction::Search("друзья".into())));
+        // Without the TV named: not a TV command.
+        assert_eq!(t("включи bonobo"), None);
+        assert_eq!(t("открой ютуб"), None);
     }
 
     #[test]

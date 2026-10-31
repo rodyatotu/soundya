@@ -66,7 +66,7 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
 }
 
 /// Standard base64, for sending UTF-8 text in an HTTP header.
-fn base64(data: &[u8]) -> String {
+pub(crate) fn base64(data: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {

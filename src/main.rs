@@ -1,5 +1,6 @@
 //! soundya: SoundCloud for Yandex Station Mini, controlled by Alice's voice.
 
+mod adb;
 mod airplay;
 mod alice;
 mod alsa;
@@ -15,6 +16,7 @@ mod player;
 mod sc;
 mod settings;
 mod stats;
+mod tv;
 mod update;
 mod web;
 
@@ -100,6 +102,8 @@ pub struct Shared {
     pub updates: update::Updates,
     /// The proxy from the settings, for threads that do not own the settings.
     pub proxy: Mutex<String>,
+    /// An Android TV is set up for voice commands.
+    tv: AtomicBool,
 }
 
 impl Shared {
@@ -114,6 +118,9 @@ impl Shared {
     }
     pub fn pc_configured(&self) -> bool {
         self.pc.load(Ordering::Acquire)
+    }
+    pub fn tv_configured(&self) -> bool {
+        self.tv.load(Ordering::Acquire)
     }
     pub fn contact_names(&self) -> Vec<String> {
         self.contacts.lock().unwrap().clone()
@@ -307,6 +314,7 @@ impl Controller {
                 "airplay": self.settings.airplay,
                 "airplay_name": self.settings.airplay_name,
                 "stats": self.settings.stats,
+                "tv_host": self.settings.tv_host,
             },
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
@@ -474,6 +482,8 @@ impl Controller {
         self.shared.airplay.configure(new.airplay, &new.airplay_name);
         self.shared.stats.store(new.stats, Ordering::Release);
         *self.shared.proxy.lock().unwrap() = new.proxy.clone();
+        new.tv_host = new.tv_host.trim().to_owned();
+        self.shared.tv.store(!new.tv_host.is_empty(), Ordering::Release);
         let proxy_changed = new.proxy != self.settings.proxy;
         self.settings = new;
         let mut msg = match self.settings.save(&self.dir) {
@@ -926,6 +936,23 @@ impl Controller {
                     Err(text) => respond(reply, &format!("error: {text}"), Some(text)),
                 });
             }
+            Intent::Tv(action) => {
+                let host = self.settings.tv_host.clone();
+                if host.is_empty() {
+                    respond(reply, "error: адрес телевизора не задан в настройках", None);
+                    return;
+                }
+                // ADB (and making the key the first time) takes a moment: off the controller.
+                let dir = self.dir.clone();
+                thread::spawn(move || match tv::run(&host, &dir, &action) {
+                    Ok(text) => {
+                        // Short confirmations are not worth Alice's voice for keys.
+                        let say = (!matches!(action, alice::TvAction::Key(..))).then(|| text.clone());
+                        respond(reply, &format!("OK: {text}"), say);
+                    }
+                    Err(text) => respond(reply, &format!("error: {text}"), Some(text)),
+                });
+            }
             Intent::Like | Intent::Unlike | Intent::AddToPlaylist(_) if !WRITES => respond(
                 reply,
                 &format!("error: {WRITES_OFF}"),
@@ -1052,6 +1079,22 @@ impl Controller {
                     Some(Ok(ms)) => send_to(&reply, format!("OK {}", fmt_ms(ms))),
                     Some(Err(e)) => send_to(&reply, format!("error: {e}")),
                     None => send_to(&reply, "usage: seek 95 | seek 1:35 | seek +30 | seek -10".into()),
+                }
+            }
+            // tv ping | tv do <фраза> — from the settings page and the command line.
+            "tv" => {
+                let (what, phrase) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                let action = match what {
+                    "ping" => Some(alice::TvAction::Ping),
+                    "do" | "say" => match alice::intent(&format!("{} на телевизоре", phrase.trim()), false) {
+                        Some(Intent::Tv(a)) => Some(a),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match action {
+                    Some(a) => self.intent(Intent::Tv(a), Some(reply)),
+                    None => send_to(&reply, "usage: tv ping | tv do <фраза, например: открой ютуб>".into()),
                 }
             }
             "pc" => {
@@ -1432,6 +1475,7 @@ fn daemon() {
         stats: AtomicBool::new(settings.stats),
         updates: update::Updates::default(),
         proxy: Mutex::new(settings.proxy.clone()),
+        tv: AtomicBool::new(!settings.tv_host.trim().is_empty()),
     });
     let (tx, rx) = mpsc::channel();
     led::run(shared.clone());
@@ -1602,7 +1646,7 @@ fn main() {
             }
         }
         "play" | "playlist" | "likes" | "pause" | "resume" | "toggle" | "next" | "prev" | "stop"
-        | "status" | "queue" | "shuffle" | "repeat" | "like" | "unlike" | "similar" | "recs" | "seek" | "pc" => send(&format!("{cmd} {rest}")),
+        | "status" | "queue" | "shuffle" | "repeat" | "like" | "unlike" | "similar" | "recs" | "seek" | "pc" | "tv" => send(&format!("{cmd} {rest}")),
         _ => {
             println!(
                 "soundya {}\n\

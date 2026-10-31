@@ -81,7 +81,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
         ("POST", "/api/cmd") => (
             "200 OK",
             "text/plain; charset=utf-8",
-            ask(tx, |r| Cmd::Control(body.trim().to_owned(), r), 60),
+            ask(tx, |r| Cmd::Control(body.trim().to_owned(), r), 90),
         ),
         ("POST", "/api/settings") => match serde_json::from_str::<Settings>(&body) {
             Ok(s) => ("200 OK", "text/plain; charset=utf-8", ask(tx, |r| Cmd::Settings(s, r), 15)),

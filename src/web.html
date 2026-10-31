@@ -380,6 +380,19 @@
     </div>
     <div class="msg" id="pcmsg"></div>
 
+    <h2 class="section">Телевизор / проектор</h2>
+    <p class="hint">Android TV голосом: «включи проектор», «открой ютуб на проекторе», «найди фильм дюна на телевизоре»,
+      «включи на ютубе котиков на проекторе», «пауза на проекторе», «сделай громче на телевизоре».
+      На телевизоре: «Настройки» → «Об устройстве» → 7 раз нажмите на «Сборка», затем в «Для разработчиков» включите
+      «Отладку по USB» (и «Отладку по сети», если такой пункт есть). Адрес — в «Сеть» → ваша сеть.</p>
+    <label class="field">Адрес телевизора
+      <input type="text" id="tvhost" placeholder="192.168.0.50" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="row">
+      <button class="primary" onclick="testTv()" id="tvtestbtn">Сохранить и подключить</button>
+    </div>
+    <div class="msg" id="tvmsg"></div>
+
     <div id="donate" style="display:none">
       <h2 class="donate-title">Поддержать проект</h2>
       <p class="hint">Если soundya вам пригодился — можно сказать спасибо:</p>
@@ -855,6 +868,7 @@ async function refresh() {
     renderContacts(settings.pc_contacts || []);
     $('airplay').checked = settings.airplay !== false;
     $('stats').checked = settings.stats !== false;
+    $('tvhost').value = settings.tv_host || '';
     $('airplayname').value = settings.airplay_name || '';
     settingsLoaded = true;
   }
@@ -956,7 +970,8 @@ function settingsBody(extra) {
     proxy: $('proxy').value, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
     pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value,
     pc_contacts: readContacts(),
-    airplay: $('airplay').checked, airplay_name: $('airplayname').value, stats: $('stats').checked
+    airplay: $('airplay').checked, airplay_name: $('airplayname').value, stats: $('stats').checked,
+    tv_host: $('tvhost').value
   }, extra));
 }
 
@@ -1102,6 +1117,19 @@ function readContacts() {
 async function savePc() {
   show($('pcmsg'), await post('/api/settings', settingsBody({})));
   settingsLoaded = false;
+  refresh();
+}
+
+async function testTv() {
+  $('tvtestbtn').disabled = true;
+  busy($('tvmsg'), 'Сохраняю…');
+  const saved = await post('/api/settings', settingsBody({}));
+  if (saved.startsWith('error')) { show($('tvmsg'), saved); $('tvtestbtn').disabled = false; return; }
+  settingsLoaded = false;
+  if (!$('tvhost').value.trim()) { show($('tvmsg'), 'OK: телевизор отключён'); $('tvtestbtn').disabled = false; return; }
+  busy($('tvmsg'), 'Подключаюсь… Если на экране телевизора появится «Разрешить отладку?», отметьте «Всегда разрешать» и нажмите «Разрешить». В первый раз колонка ещё делает ключ — до минуты.');
+  show($('tvmsg'), await post('/api/cmd', 'tv ping'));
+  $('tvtestbtn').disabled = false;
   refresh();
 }
 

@@ -39,6 +39,9 @@ pub struct Settings {
     /// Anonymous daily «I'm running» ping for the speaker count (src/stats.rs).
     #[serde(default = "yes")]
     pub stats: bool,
+    /// Android TV / projector with network ADB: "192.168.0.50" or "host:port".
+    #[serde(default)]
+    pub tv_host: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -69,6 +72,7 @@ impl Default for Settings {
             airplay: true,
             airplay_name: String::new(),
             stats: true,
+            tv_host: String::new(),
         }
     }
 }
