@@ -85,8 +85,13 @@ Write-Host "[ok] значок в трее возле часов: связь с �
 
 # 4. Wake-on-LAN: wired adapter wakes on a magic packet; fast startup off
 # (with it on, most PCs ignore wake-on-LAN after "Shut down").
-$wired = Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
-    Where-Object { $_.Status -eq 'Up' -and $_.MediaType -eq '802.3' } | Select-Object -First 1
+# A wired card with the cable out still gets set up and its MAC shown: plug the
+# cable in later and wake-on-LAN works. Wi-Fi cannot wake a switched-off PC.
+$wiredAll = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.MediaType -eq '802.3' })
+$wired = $wiredAll | Where-Object Status -eq 'Up' | Select-Object -First 1
+if (-not $wired) { $wired = $wiredAll | Select-Object -First 1 }
+$up = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | Select-Object -First 1
+$ip = if ($up) { (Get-NetIPAddress -InterfaceIndex $up.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress } else { '' }
 if ($wired) {
     try { Set-NetAdapterPowerManagement -Name $wired.Name -WakeOnMagicPacket Enabled -ErrorAction Stop } catch {}
     foreach ($p in 'Wake on Magic Packet', '*WakeOnMagicPacket', 'Wake on magic packet') {
@@ -96,12 +101,14 @@ if ($wired) {
     Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -Name HiberbootEnabled -Value 0
     Write-Host "[ok] включение по сети: сетевая карта «$($wired.InterfaceDescription)», быстрый запуск выключен"
     $mac = $wired.MacAddress.Replace('-', ':')
-    $ip = (Get-NetIPAddress -InterfaceIndex $wired.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
+    if ($wired.Status -ne 'Up') {
+        Write-Host '[!] кабель сейчас не подключён: MAC всё равно впишите, а включение по сети заработает,' -ForegroundColor Yellow
+        Write-Host '    когда компьютер будет подключён к роутеру проводом (по Wi-Fi выключенный ПК не включить).' -ForegroundColor Yellow
+    }
 } else {
-    Write-Host '[!] кабель не подключён: включать компьютер по сети не получится (только по проводу).' -ForegroundColor Yellow
+    Write-Host '[!] у компьютера нет сетевой карты под кабель: включать его по сети не получится' -ForegroundColor Yellow
+    Write-Host '    (по Wi-Fi выключенный ПК не включить). Остальные команды работают.' -ForegroundColor Yellow
     $mac = ''
-    $up = Get-NetAdapter -Physical | Where-Object Status -eq 'Up' | Select-Object -First 1
-    $ip = if ($up) { (Get-NetIPAddress -InterfaceIndex $up.ifIndex -AddressFamily IPv4 | Select-Object -First 1).IPAddress } else { '' }
 }
 
 Write-Host ''
