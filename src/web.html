@@ -110,7 +110,15 @@
   .updbanner { display: none; width: 100%; margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; border: 0;
     background: var(--accent); color: #fff; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
   .updbanner.on { display: block; }
-  details.danger { margin-top: 16px; font-size: 14px; }
+  details.danger { margin-top: 28px; font-size: 14px; }
+  .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(0, 0, 0, .45); }
+  .modal[hidden] { display: none; }
+  .modalcard { width: 100%; max-width: 440px; max-height: 85vh; overflow: auto; padding: 20px; border-radius: 18px;
+    background: var(--card); color: var(--ink); box-shadow: 0 10px 40px rgba(0, 0, 0, .3); }
+  .modalcard h2 { margin: 0 0 8px; font-size: 20px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+  .changes { margin: 6px 0 12px; padding-left: 20px; font-size: 14px; line-height: 1.45; }
+  .changes li { margin: 4px 0; }
   details.danger summary { cursor: pointer; color: var(--muted); }
   .dangerbtn { margin-top: 8px; background: transparent; color: var(--err); border: 1px solid var(--err); }
   .notes { white-space: pre-wrap; font-family: inherit; font-size: 13px; color: var(--muted); margin: 8px 0 0; max-height: 160px; overflow: auto; }
@@ -330,13 +338,6 @@
       <button class="primary" onclick="installUpdate()" id="updinstall" hidden>Установить обновление</button>
     </div>
     <div class="msg" id="updmsg"></div>
-    <details class="danger">
-      <summary>Удалить soundya с колонки</summary>
-      <p class="hint">Удалит программу, приёмник AirPlay и все настройки (вход в SoundCloud, ключ компьютера).
-        Root и отключённые обновления останутся, колонка станет обычной Алисой. Вернуть — установить заново.</p>
-      <button class="dangerbtn" onclick="uninstallSoundya()">Удалить soundya</button>
-      <div class="msg" id="uninstmsg"></div>
-    </details>
 
     <h2 class="section">AirPlay</h2>
     <p class="hint">Колонка видна в списке AirPlay на iPhone, iPad и Mac: Пункт управления → значок AirPlay
@@ -402,10 +403,31 @@
       </a>
       <div id="donatecrypto"></div>
     </div>
+
+    <details class="danger">
+      <summary>Удалить soundya с колонки</summary>
+      <p class="hint">Удалит программу, приёмник AirPlay и все настройки (вход в SoundCloud, ключ компьютера).
+        Root и отключённые обновления останутся, колонка станет обычной Алисой. Вернуть — установить заново.</p>
+      <button class="dangerbtn" onclick="uninstallSoundya()">Удалить soundya</button>
+      <div class="msg" id="uninstmsg"></div>
+    </details>
   </section>
 
 
 </main>
+
+<div class="modal" id="updmodal" role="dialog" aria-modal="true" aria-labelledby="updmodaltitle" hidden>
+  <div class="modalcard">
+    <h2 id="updmodaltitle">Вышла soundya <span id="updmodalver"></span></h2>
+    <p class="hint">Что нового и что исправлено:</p>
+    <ul class="changes" id="updmodallist"></ul>
+    <p class="hint">Обновление ставится само за полминуты, музыка на это время прервётся. Настройки сохранятся.</p>
+    <div class="row">
+      <button onclick="laterUpdate()">Позже</button>
+      <button class="primary" onclick="closeUpdModal(); installUpdate(); openTab('settings'); document.getElementById('updsection').scrollIntoView({behavior: 'smooth'})">Обновить</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ---- Донаты: впишите свою ссылку и адреса. Пустые поля на странице не показываются. ----
@@ -1037,6 +1059,10 @@ function renderUpdate(u) {
   $('updnotes').hidden = !(u.available && u.notes);
   $('updnotes').textContent = u.notes || '';
   $('updinstall').hidden = !u.available || u.installing || !!updWaitFor;
+  if (u.available && !u.installing && !updWaitFor && !updModalShown && !laterFor(u.latest)) {
+    updModalShown = true;
+    showUpdModal(u);
+  }
   if (updWaitFor && u.current === updWaitFor) {
     updWaitFor = null;
     show($('updmsg'), `OK: обновлено до ${u.current}`);
@@ -1048,6 +1074,37 @@ async function uninstallSoundya() {
   busy($('uninstmsg'), 'Удаляю…');
   show($('uninstmsg'), await post('/api/cmd', 'uninstall'));
 }
+
+// The «вышла новая версия» window: once per version, «Позже» hides it for a day.
+let updModalShown = false;
+function laterKey() { return 'soundya-update-later'; }
+function laterFor(ver) {
+  try {
+    const v = JSON.parse(localStorage.getItem(laterKey()) || 'null');
+    return v && v.ver === ver && Date.now() < v.until;
+  } catch (e) { return false; }
+}
+function laterUpdate() {
+  try {
+    const ver = lastStatus && lastStatus.update && lastStatus.update.latest;
+    localStorage.setItem(laterKey(), JSON.stringify({ ver, until: Date.now() + 24 * 3600 * 1000 }));
+  } catch (e) {}
+  closeUpdModal();
+}
+function closeUpdModal() { $('updmodal').hidden = true; }
+function showUpdModal(u) {
+  $('updmodalver').textContent = u.latest;
+  const list = $('updmodallist');
+  list.innerHTML = '';
+  const lines = (u.notes || '').split('\n').map(l => l.replace(/^\s*[-*•]\s*/, '').replace(/\*\*|`/g, '').trim()).filter(Boolean);
+  for (const l of (lines.length ? lines : ['Исправления и улучшения'])) {
+    const li = document.createElement('li');
+    li.textContent = l;
+    list.appendChild(li);
+  }
+  $('updmodal').hidden = false;
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('updmodal').hidden) laterUpdate(); });
 
 async function checkUpdate() {
   busy($('updmsg'), 'Спрашиваю GitHub…');
