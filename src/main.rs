@@ -1271,6 +1271,11 @@ impl Controller {
                 let shared = self.shared.clone();
                 let proxy = self.settings.use_proxy().to_owned();
                 let install = arg == "install";
+                // «update auto»: the page was opened; ask GitHub unless asked a moment ago.
+                if arg == "auto" && shared.updates.fresh(120) {
+                    send_to(&reply, "OK".into());
+                    return;
+                }
                 thread::spawn(move || {
                     let r = if install {
                         shared.updates.install(&proxy).map(|m| format!("OK: {m}"))

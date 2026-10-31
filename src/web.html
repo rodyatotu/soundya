@@ -1466,6 +1466,8 @@ renderDonate();
 
 refresh();
 setInterval(refresh, 1000);
+// A new release shows up as soon as the page is opened, not hours later.
+post('/api/cmd', 'update auto').then(refresh);
 </script>
 </body>
 </html>

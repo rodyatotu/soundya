@@ -70,6 +70,11 @@ impl Updates {
         self.checked.lock().unwrap().map_or(true, |t| t.elapsed() > EVERY)
     }
 
+    /// Asked within the last `secs` seconds (GitHub allows 60 questions an hour).
+    pub fn fresh(&self, secs: u64) -> bool {
+        self.checked.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(secs))
+    }
+
     /// Asks GitHub for the latest release (through the SoundCloud proxy, if any).
     pub fn check(&self, proxy: &str) -> Result<Option<Release>, String> {
         *self.checked.lock().unwrap() = Some(Instant::now());
@@ -232,7 +237,8 @@ fn download(url: &str, api: bool, proxy: &str, size: u64) -> Result<(), String> 
 /// Checks for a new release now and then, so the page can show it.
 pub fn run(shared: std::sync::Arc<crate::Shared>) {
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(180));
+        // Soon after start (the network and the clock come up first).
+        std::thread::sleep(Duration::from_secs(30));
         loop {
             if shared.updates.due() {
                 let proxy = shared.proxy.lock().unwrap().clone();
