@@ -53,6 +53,9 @@ pub fn run(tx: Sender<Cmd>, shared: Arc<Shared>) {
                     eprintln!("buttons: {path} closed");
                     return;
                 }
+                if let Some((EV_KEY, code, value)) = parse(&event) {
+                    crate::volume::seen_key(code, value);
+                }
                 if !is_play_pause_press(&event) || last.elapsed() < Duration::from_millis(400) {
                     continue;
                 }

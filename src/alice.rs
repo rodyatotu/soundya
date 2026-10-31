@@ -1053,6 +1053,7 @@ fn read_frames(
             if seen.len() > 64 {
                 seen.pop_front();
             }
+            crate::volume::heard(&text);
             let intent = message_to_contact(&text, &shared.contact_names())
                 .or_else(|| intent(&text, shared.keyword_only()));
             let Some(intent) = intent else {

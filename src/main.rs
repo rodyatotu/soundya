@@ -351,6 +351,7 @@ impl Controller {
             "update": self.shared.updates.json(),
             "bypass_log": *self.shared.bypass_log.lock().unwrap(),
             "bypass_busy": self.shared.bypass_busy.load(Ordering::Acquire),
+            "volume": volume::level(),
             "zapret_presets": zapret::PRESETS.iter().enumerate().map(|(i, (name, _))| [zapret::id_of(i), (*name).to_owned()]).collect::<Vec<_>>(),
         })
         .to_string()
@@ -1172,15 +1173,19 @@ impl Controller {
                     .join("\n"),
             ),
             "status" => send_to(&reply, self.status()),
-            // «volume up» / «volume down 3» from the page: Alice's own volume.
+            // «volume set 6» (the slider), «volume up» / «volume down 3»: Alice's own volume.
             "volume" => {
-                let (dir, n) = arg.split_once(' ').unwrap_or((arg.as_str(), "1"));
-                let steps = n.trim().parse().unwrap_or(1);
-                let r = match dir {
-                    "up" | "down" => volume::press(dir == "up", steps).map(|()| "OK".to_owned()),
-                    _ => Err("volume up|down [шаги]".to_owned()),
-                };
-                send_to(&reply, r.unwrap_or_else(|e| format!("error: {e}")));
+                let (what, n) = arg.split_once(' ').unwrap_or((arg.as_str(), "1"));
+                let n: i32 = n.trim().parse().unwrap_or(1);
+                // Up to ten presses with pauses: not on the controller thread.
+                thread::spawn(move || {
+                    let r = match what {
+                        "set" => volume::set(n).map(|l| format!("OK: громкость {l}")),
+                        "up" | "down" => volume::press(what == "up", n.max(1) as u32).map(|()| "OK".to_owned()),
+                        _ => Err("volume set N | up | down".to_owned()),
+                    };
+                    let _ = reply.send(r.unwrap_or_else(|e| format!("error: {e}")));
+                });
             }
             "netcheck" => self.check_net(Some(reply)),
             // «Удалить soundya» on the settings page: the speaker becomes plain Alice again.

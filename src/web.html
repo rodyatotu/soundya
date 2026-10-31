@@ -73,9 +73,12 @@
   .controls.small button { padding: 9px 0; color: var(--muted); }
   .controls.small button.icon svg { width: 19px; height: 19px; }
   .controls.small button:hover:not(:disabled) { color: var(--ink); }
-  .controls.volume { align-items: center; }
-  .controls.volume span { color: var(--muted); font-size: 13px; flex: 0 0 auto; }
-  .controls.volume button { font-size: 15px; }
+  .volpop { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px 12px;
+    border: 1px solid var(--line); border-radius: 10px; }
+  .volpop[hidden] { display: none; }
+  .volpop input { flex: 1; accent-color: var(--accent); }
+  .volpop b { min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; }
+  .volpop svg { width: 18px; height: 18px; color: var(--muted); flex: 0 0 auto; }
   .controls.small button.on { color: var(--accent); border-color: var(--accent); }
   button:disabled { opacity: .35; cursor: default; }
   #likebtn.on { color: var(--accent); border-color: var(--accent); }
@@ -238,18 +241,20 @@
       <button class="icon" onclick="cmd('next')" title="Следующий" aria-label="Следующий"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.6 5H18v14h-2.4zM5 5.6v12.8a.6.6 0 0 0 .92.5l8.88-6.4a.6.6 0 0 0 0-1L5.92 5.1A.6.6 0 0 0 5 5.6z"/></svg></button>
       <button class="icon" onclick="cmd('stop')" title="Стоп" aria-label="Стоп"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 6h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z"/></svg></button>
     </div>
-    <div class="controls small volume">
-      <button onclick="volume('down')" title="Тише (громкость Алисы)" aria-label="Тише">− тише</button>
-      <span>громкость</span>
-      <button onclick="volume('up')" title="Громче (громкость Алисы)" aria-label="Громче">громче +</button>
-    </div>
     <div class="controls small">
       <button class="icon" id="shufflebtn" onclick="cmd('shuffle ' + (state.shuffle ? 'off' : 'on'))" title="Перемешать" aria-label="Перемешать"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h4v4"/><path d="M4 20 20 4"/><path d="M20 16v4h-4"/><path d="M14.5 14.5 20 20"/><path d="M4 4l5 5"/></svg></button>
       <button class="icon" id="repeatbtn" onclick="cmd('repeat ' + (state.repeat ? 'off' : 'on'))" title="Повтор трека" aria-label="Повтор трека"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg></button>
       <button id="likebtn" onclick="likeCurrent()" title="Лайк" style="display:none">♡</button>
       <button id="plbtn" onclick="togglePicker()" title="Добавить в плейлист" style="display:none">＋ В плейлист</button>
+      <button class="icon" id="volbtn" onclick="toggleVolume()" title="Громкость Алисы" aria-label="Громкость"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/></svg></button>
       <button class="icon" onclick="act('similar')" title="Включить похожие треки" aria-label="Похожие треки"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4"/><path d="M7.8 16.2a6 6 0 0 1 0-8.4"/><path d="M19 5a10 10 0 0 1 0 14"/><path d="M5 19A10 10 0 0 1 5 5"/></svg></button>
       <button class="icon" id="openbtn" onclick="openCurrent()" title="Открыть трек на SoundCloud: лайк, плейлисты, репост" aria-label="Открыть на SoundCloud"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg></button>
+    </div>
+    <div class="volpop" id="volpop" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/></svg>
+      <input type="range" id="volrange" min="1" max="10" step="1" value="5" aria-label="Громкость Алисы, 1–10"
+        oninput="$('volval').textContent = this.value" onchange="setVolume(this.value)">
+      <b id="volval">–</b>
     </div>
     <div id="picker" class="picker" style="display:none">
       <div class="hint">В какой плейлист добавить текущий трек?</div>
@@ -995,6 +1000,7 @@ async function refresh() {
   $('username').textContent = s.user || (logged ? 'токен сохранён, вход не подтверждён' : '');
   renderNet(s.net);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
+  renderVolume(s.volume);
   // The switch, the line above it and the list always show what the speaker has
   // on now, also when a check ends while the page waited (or was reloaded).
   if (!s.bypass_busy) {
@@ -1351,8 +1357,27 @@ function renderBypassLog(lines, running) {
   if (running) el.scrollTop = el.scrollHeight;
 }
 
-async function volume(dir) {
-  const r = await post('/api/cmd', 'volume ' + dir);
+// Alice's volume: the level soundya follows (null until known), the slider shows it.
+let volumeKnown = null, volumeMoving = false;
+function renderVolume(v) {
+  volumeKnown = v ?? null;
+  if (volumeMoving || document.activeElement === $('volrange')) return;
+  if (volumeKnown !== null) $('volrange').value = Math.max(1, volumeKnown);
+  $('volval').textContent = volumeKnown === null ? '?' : volumeKnown;
+  $('volbtn').title = 'Громкость Алисы' + (volumeKnown === null ? '' : ': ' + volumeKnown);
+}
+
+function toggleVolume() {
+  const pop = $('volpop');
+  pop.hidden = !pop.hidden;
+  $('volbtn').classList.toggle('on', !pop.hidden);
+}
+
+async function setVolume(v) {
+  volumeMoving = true;
+  $('volval').textContent = v;
+  const r = await post('/api/cmd', 'volume set ' + v);
+  volumeMoving = false;
   if (r.startsWith('error')) show($('actmsg'), r);
 }
 
