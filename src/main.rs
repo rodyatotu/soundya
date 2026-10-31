@@ -6,6 +6,7 @@ mod alice;
 mod alsa;
 mod buffer;
 mod buttons;
+mod bypass;
 mod clock;
 mod dns;
 mod fsx;
@@ -52,6 +53,8 @@ pub enum Cmd {
     Voice(Intent),
     /// AirPlay sound started (true) or stopped (false).
     AirPlay(bool),
+    /// «Обход блокировок»: the strategy that got through ("" = switched off).
+    Bypass(String),
     Control(String, Sender<String>),
     Ended(u64, Outcome),
     Settings(Settings, Sender<String>),
@@ -316,6 +319,7 @@ impl Controller {
                 "airplay_icon": self.settings.airplay_icon,
                 "stats": self.settings.stats,
                 "tv_host": self.settings.tv_host,
+                "bypass": self.settings.bypass,
             },
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
@@ -483,6 +487,8 @@ impl Controller {
         self.shared.airplay.configure(new.airplay, &new.airplay_name, &new.airplay_icon);
         self.shared.stats.store(new.stats, Ordering::Release);
         *self.shared.proxy.lock().unwrap() = new.proxy.clone();
+        // Set only by «bypass auto/off», not by the settings form.
+        new.bypass = self.settings.bypass.clone();
         new.tv_host = new.tv_host.trim().to_owned();
         self.shared.tv.store(!new.tv_host.is_empty(), Ordering::Release);
         let proxy_changed = new.proxy != self.settings.proxy;
@@ -1139,6 +1145,29 @@ impl Controller {
                 let r = uninstall();
                 send_to(&reply, r);
             }
+            // «Обход блокировок»: «bypass auto» finds a working strategy, «bypass off».
+            "bypass" => {
+                if arg == "off" {
+                    let _ = self.tx.send(Cmd::Bypass(String::new()));
+                    send_to(&reply, "OK: обход выключен, снова через прокси (если задан) или напрямую".into());
+                    return;
+                }
+                let tx = self.tx.clone();
+                thread::spawn(move || {
+                    let r = if bypass::direct_works() {
+                        "OK: SoundCloud открывается и без обхода — включать его не нужно. Очистите поле «Прокси», если он не работает".to_owned()
+                    } else {
+                        match bypass::pick() {
+                            Some(s) => {
+                                let _ = tx.send(Cmd::Bypass(s.id().to_owned()));
+                                format!("OK: обход работает (стратегия {}). SoundCloud теперь идёт напрямую, прокси не нужен", s.id())
+                            }
+                            None => "error: ни одна стратегия не прошла: похоже, провайдер блокирует сами адреса SoundCloud. Тут поможет только прокси или VPN".to_owned(),
+                        }
+                    };
+                    let _ = reply.send(r);
+                });
+            }
             // «update check» / «update install» from the settings page.
             "update" => {
                 let shared = self.shared.clone();
@@ -1337,6 +1366,17 @@ impl Controller {
                     }
                 }
                 Cmd::User(user) => self.user = user,
+                Cmd::Bypass(id) => {
+                    self.settings.bypass = id;
+                    bypass::set(bypass::Strategy::from_id(&self.settings.bypass));
+                    // New connections with (or without) the trick from now on.
+                    let _ = self.client.set_proxy(&self.settings.proxy);
+                    if let Err(e) = self.settings.save(&self.dir) {
+                        eprintln!("bypass: settings not saved: {e}");
+                    }
+                    self.net = None;
+                    self.net_checked = None;
+                }
                 Cmd::AirPlay(true) => {
                     // AirPlay took over: pause SoundCloud and Alice's own music.
                     alice::pause_native();
@@ -1375,6 +1415,7 @@ fn state_dir() -> PathBuf {
 }
 
 fn client_with(settings: &Settings) -> Client {
+    bypass::set(bypass::Strategy::from_id(&settings.bypass));
     let dir = state_dir();
     let cache = fsx::is_dir(&dir).then(|| dir.join("client_id"));
     let client = Client::new(cache, &settings.proxy);

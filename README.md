@@ -21,7 +21,7 @@
   <img src="https://img.shields.io/badge/Rust-armv7-dea584?logo=rust&logoColor=white" alt="Rust, armv7">
   <img src="https://img.shields.io/badge/лицензия-MIT-blue" alt="MIT">
   <a href="http://195.209.211.30:8787/"><img src="http://195.209.211.30:8787/badge.svg" alt="Работает на колонках"></a>
-  <img src="https://img.shields.io/badge/версия-0.4.7-ff5500" alt="Версия 0.4.7">
+  <img src="https://img.shields.io/badge/версия-0.4.8-ff5500" alt="Версия 0.4.8">
 </p>
 
 ---
@@ -242,6 +242,7 @@ adb shell "cd /tmp && tar -xf soundya-armv7.tar && sh /tmp/soundya/install.sh"
 Откройте **http://soundya.local:8765** (или `http://<IP-колонки>:8765`) → **Настройки**:
 
 1. **Прокси** — если SoundCloud у вас открывается только через него. Кнопка «Проверить прокси» покажет, работает ли он.
+   **Или без прокси:** кнопка «Подобрать и включить обход» — колонка, как zapret, прячет от провайдера имя сайта в соединении (режет TLS-приветствие на части) и сама подбирает рабочий способ. Помогает при блокировке по имени сайта; если заблокированы сами адреса SoundCloud, честно скажет, что нужен прокси.
 2. **Аккаунт SoundCloud** — для лайков, плейлистов и рекомендаций. SoundCloud не даёт сторонним приложениям вход по паролю, поэтому нужен токен из браузера: войдите на soundcloud.com → инструменты разработчика (Cmd+Option+I / F12) → Application → Cookies → `https://soundcloud.com` → значение `oauth_token`. Токен — как пароль: никому его не отправляйте.
 
 Всё. Скажите: **«Алиса, включи рекомендации»**.

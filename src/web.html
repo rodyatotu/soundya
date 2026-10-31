@@ -111,6 +111,7 @@
   .updbanner { display: none; width: 100%; margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; border: 0;
     background: var(--accent); color: #fff; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
   .updbanner.on { display: block; }
+  .bypassbox { margin-top: 14px; padding: 12px; border: 1px dashed var(--line); border-radius: 12px; }
   details.danger { margin-top: 28px; font-size: 14px; }
   .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
     padding: 16px; background: rgba(0, 0, 0, .45); }
@@ -308,6 +309,18 @@
       <code>http://host:port</code>, <code>socks5://host:port</code> или
       <code>socks5://user:pass@host:port</code>. Пустое поле — без прокси. Через прокси идут и поиск, и звук.
     </p>
+    <div class="bypassbox">
+      <b>Обход блокировок без прокси</b>
+      <p class="hint">Как zapret: колонка прячет от провайдера имя сайта в соединении с SoundCloud. Помогает, если SoundCloud
+        блокируют по имени (так делает большинство провайдеров), и не помогает, если заблокированы сами адреса — тогда нужен прокси.
+        Пока обход включён, прокси не используется.</p>
+      <p class="hint" id="bypassstate"></p>
+      <div class="row">
+        <button onclick="bypass('auto')" id="bypassbtn">Подобрать и включить обход</button>
+        <button onclick="bypass('off')" id="bypassoff" hidden>Выключить обход</button>
+      </div>
+      <div class="msg" id="bypassmsg"></div>
+    </div>
     <label class="check">
       <input type="checkbox" id="keyword">
       <span>Только по слову «саундклауд»<br>
@@ -903,6 +916,7 @@ async function refresh() {
     $('airplay').checked = settings.airplay !== false;
     $('stats').checked = settings.stats !== false;
     $('tvhost').value = settings.tv_host || '';
+    renderBypass(settings.bypass);
     $('airplayname').value = settings.airplay_name || '';
     $('airplayicon').value = settings.airplay_icon || 'speaker';
     settingsLoaded = true;
@@ -1187,6 +1201,21 @@ function readContacts() {
 
 async function savePc() {
   show($('pcmsg'), await post('/api/settings', settingsBody({})));
+  settingsLoaded = false;
+  refresh();
+}
+
+function renderBypass(id) {
+  $('bypassstate').textContent = id ? `Включён (стратегия ${id}).` : 'Выключен.';
+  $('bypassoff').hidden = !id;
+  $('bypassbtn').textContent = id ? 'Подобрать заново' : 'Подобрать и включить обход';
+}
+
+async function bypass(what) {
+  $('bypassbtn').disabled = true;
+  busy($('bypassmsg'), what === 'off' ? 'Выключаю…' : 'Проверяю, открывается ли SoundCloud, и подбираю способ обхода… До минуты.');
+  show($('bypassmsg'), await post('/api/cmd', 'bypass ' + what));
+  $('bypassbtn').disabled = false;
   settingsLoaded = false;
   refresh();
 }

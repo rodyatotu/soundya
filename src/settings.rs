@@ -42,6 +42,9 @@ pub struct Settings {
     /// Anonymous daily «I'm running» ping for the speaker count (src/stats.rs).
     #[serde(default = "yes")]
     pub stats: bool,
+    /// «Обход блокировок без прокси»: the strategy found by bypass::pick ("" = off).
+    #[serde(default)]
+    pub bypass: String,
     /// Android TV / projector with network ADB: "192.168.0.50" or "host:port".
     #[serde(default)]
     pub tv_host: String,
@@ -81,6 +84,7 @@ impl Default for Settings {
             airplay_icon: speaker(),
             stats: true,
             tv_host: String::new(),
+            bypass: String::new(),
         }
     }
 }
