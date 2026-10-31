@@ -5,7 +5,10 @@
 DIR=/data/opt/soundya
 touch /run/soundya.stop
 [ -x /etc/init.d/S99soundya ] && /etc/init.d/S99soundya stop
-for p in $(pidof soundya shairport-sync 2>/dev/null); do kill -9 "$p" 2>/dev/null; done
+for p in $(pidof soundya shairport-sync nfqws 2>/dev/null); do kill -9 "$p" 2>/dev/null; done
+# zapret rules (soundya's own chain), if the bypass was on.
+while iptables -t mangle -D POSTROUTING -j SOUNDYA_ZAPRET 2>/dev/null; do :; done
+iptables -t mangle -F SOUNDYA_ZAPRET 2>/dev/null; iptables -t mangle -X SOUNDYA_ZAPRET 2>/dev/null
 RO=0
 if grep -q ' / [^ ]* ro[ ,]' /proc/mounts; then RO=1; mount -o remount,rw /; fi
 rm -f /etc/init.d/S99soundya /usr/bin/soundya

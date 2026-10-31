@@ -21,7 +21,7 @@
   <img src="https://img.shields.io/badge/Rust-armv7-dea584?logo=rust&logoColor=white" alt="Rust, armv7">
   <img src="https://img.shields.io/badge/лицензия-MIT-blue" alt="MIT">
   <a href="http://195.209.211.30:8787/"><img src="http://195.209.211.30:8787/badge.svg" alt="Работает на колонках"></a>
-  <img src="https://img.shields.io/badge/версия-0.4.10-ff5500" alt="Версия 0.4.10">
+  <img src="https://img.shields.io/badge/версия-0.4.11-ff5500" alt="Версия 0.4.11">
 </p>
 
 ---
@@ -411,6 +411,7 @@ SoundCloud отвечает на такие запросы капчей свое
 - [**yandex-station-extended**](https://github.com/Marker284/yandex-station-extended) и [**hackalice.me**](https://hackalice.me) — гайды по руту, скрипт отключения обновлений, описание озвучки через Алису.
 - [**lite-kit**](https://github.com/krevetkqqq/lite-kit) — стенд для получения root.
 - [symphonia](https://github.com/pdeljanov/Symphonia), [ureq](https://github.com/algesten/ureq), [serde](https://serde.rs).
+- [**zapret**](https://github.com/bol-van/zapret) (MIT) — nfqws для обхода блокировок; файл из официального релиза, см. `packaging/NFQWS.md`.
 - [**shairport-sync**](https://github.com/mikebrady/shairport-sync) — приёмник AirPlay. Собран статически с [musl](https://musl.libc.org), [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0), [libconfig](https://github.com/hyperrealm/libconfig) (LGPL-2.1) и [popt](https://github.com/rpm-software-management/popt) скриптом `scripts/build-shairport.sh`: исходники и точные версии — там, пересобрать можно им же.
 
 ## Анонимная статистика

@@ -42,6 +42,8 @@ cp "$BIN" dist/soundya/soundya
 cp packaging/install.sh packaging/uninstall.sh packaging/run.sh packaging/guard.sh packaging/S99soundya packaging/soundya.env dist/soundya/
 # AirPlay receiver (prebuilt; rebuild with scripts/build-shairport.sh).
 cp packaging/shairport-sync dist/soundya/
-chmod 755 dist/soundya/soundya dist/soundya/shairport-sync dist/soundya/install.sh dist/soundya/uninstall.sh dist/soundya/run.sh dist/soundya/guard.sh dist/soundya/S99soundya
+# zapret nfqws v72.9, linux-arm static, from the official release (see packaging/NFQWS.md).
+cp packaging/nfqws dist/soundya/
+chmod 755 dist/soundya/soundya dist/soundya/shairport-sync dist/soundya/nfqws dist/soundya/install.sh dist/soundya/uninstall.sh dist/soundya/run.sh dist/soundya/guard.sh dist/soundya/S99soundya
 COPYFILE_DISABLE=1 tar -C dist -cf dist/soundya-armv7.tar soundya
 echo "Built dist/soundya-armv7.tar"

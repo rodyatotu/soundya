@@ -10,6 +10,12 @@ DIR=/data/opt/soundya
 mkdir -p "$DIR"
 cp "$SRC/soundya" "$SRC/run.sh" "$SRC/guard.sh" "$DIR/"
 [ -f "$SRC/uninstall.sh" ] && cp "$SRC/uninstall.sh" "$DIR/" && chmod 755 "$DIR/uninstall.sh"
+# zapret's nfqws (official release build) for «обход блокировок».
+if [ -f "$SRC/nfqws" ]; then
+    killall nfqws 2>/dev/null || true
+    cp "$SRC/nfqws" "$DIR/nfqws.new" && mv "$DIR/nfqws.new" "$DIR/nfqws"
+    chmod 755 "$DIR/nfqws"
+fi
 # AirPlay receiver; the old one may still be running until soundya restarts.
 if [ -f "$SRC/shairport-sync" ]; then
     killall shairport-sync 2>/dev/null || true

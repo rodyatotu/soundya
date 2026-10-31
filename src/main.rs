@@ -19,6 +19,7 @@ mod settings;
 mod stats;
 mod tv;
 mod update;
+mod zapret;
 mod web;
 
 use std::{
@@ -1153,22 +1154,27 @@ impl Controller {
                     return;
                 }
                 let tx = self.tx.clone();
+                let dir = self.dir.clone();
                 thread::spawn(move || {
-                    let r = match bypass::pick() {
-                        Some((s, kbps)) => {
+                    let r = match bypass::pick(&dir) {
+                        Some((id, kbps)) => {
                             // Switched on only when it is fast enough to play from.
                             if kbps >= bypass::ENOUGH_KBPS {
-                                let _ = tx.send(Cmd::Bypass(s.id().to_owned()));
-                            }
-                            let how = if s == bypass::Strategy::Direct {
-                                "SoundCloud быстрее всего открывается напрямую — колонка ходит к нему без прокси и без обхода".to_owned()
+                                let _ = tx.send(Cmd::Bypass(id.clone()));
                             } else {
-                                format!("обход включён (стратегия {}), прокси не нужен", s.id())
+                                zapret::stop();
+                            }
+                            let how = if id == "direct" {
+                                "SoundCloud быстрее всего открывается напрямую — колонка ходит к нему без прокси и без обхода".to_owned()
+                            } else if zapret::index_of(&id).is_some() {
+                                format!("включён zapret (nfqws, стратегия {}), прокси не нужен", &id[3..])
+                            } else {
+                                format!("обход включён (стратегия {id}), прокси не нужен")
                             };
                             if kbps >= bypass::ENOUGH_KBPS {
                                 format!("OK: {how}. Скорость загрузки {:.1} Мбит/с", kbps / 1000.0)
                             } else {
-                                format!("error: лучший способ ({}) даёт только {kbps:.0} кбит/с — провайдер тормозит SoundCloud, обход не включён. Тут поможет только прокси или VPN", s.id())
+                                format!("error: лучший способ ({id}) даёт только {kbps:.0} кбит/с — провайдер тормозит SoundCloud, обход не включён. Тут поможет только прокси или VPN")
                             }
                         }
                         None => "error: ни один способ не прошёл: похоже, провайдер блокирует сами адреса SoundCloud. Тут поможет только прокси или VPN".to_owned(),
@@ -1376,7 +1382,10 @@ impl Controller {
                 Cmd::User(user) => self.user = user,
                 Cmd::Bypass(id) => {
                     self.settings.bypass = id;
-                    bypass::set(bypass::Strategy::from_id(&self.settings.bypass));
+                    bypass::set(bypass_strategy(&self.settings.bypass));
+                    if zapret::index_of(&self.settings.bypass).is_none() {
+                        zapret::stop();
+                    }
                     // New connections with (or without) the trick from now on.
                     let _ = self.client.set_proxy(&self.settings.proxy);
                     if let Err(e) = self.settings.save(&self.dir) {
@@ -1423,7 +1432,7 @@ fn state_dir() -> PathBuf {
 }
 
 fn client_with(settings: &Settings) -> Client {
-    bypass::set(bypass::Strategy::from_id(&settings.bypass));
+    bypass::set(bypass_strategy(&settings.bypass));
     let dir = state_dir();
     let cache = fsx::is_dir(&dir).then(|| dir.join("client_id"));
     let client = Client::new(cache, &settings.proxy);
@@ -1471,6 +1480,16 @@ fn note_audio_error(dir: &std::path::Path, device: &str, e: &str) {
     }
     if let Ok(mut f) = std::fs::File::create(&path) {
         let _ = f.write_all(text.as_bytes());
+    }
+}
+
+/// soundya's own HTTPS behaviour for a stored bypass id: zapret (nfqws) works
+/// below soundya, so soundya itself then just goes straight, without the proxy.
+fn bypass_strategy(id: &str) -> Option<bypass::Strategy> {
+    if zapret::index_of(id).is_some() {
+        Some(bypass::Strategy::Direct)
+    } else {
+        bypass::Strategy::from_id(id)
     }
 }
 
@@ -1537,6 +1556,8 @@ fn daemon() {
     airplay::run(dir.clone(), device(), tx.clone(), shared.clone());
     // Counts running speakers for the README badge (anonymous, can be switched off).
     stats::run(dir.clone(), shared.clone());
+    // zapret (nfqws) with the saved strategy, before anything talks to SoundCloud.
+    zapret::restore(&dir, &settings.bypass);
     // Looks for a newer soundya on GitHub; the page offers to install it.
     update::run(shared.clone());
     // A wrong clock breaks every HTTPS site (GitHub first): set it from the web.

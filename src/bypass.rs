@@ -257,11 +257,19 @@ fn speed(agent: &ureq::Agent, url: &str) -> f64 {
     got as f64 * 8.0 / 1000.0 / started.elapsed().as_secs_f64().max(0.001)
 }
 
-/// The fastest way that gets to SoundCloud: straight, or one of the strategies.
-/// Returns it with its speed (kbit/s); None when nothing gets through.
-pub fn pick() -> Option<(Strategy, f64)> {
-    let mut best: Option<(Strategy, f64)> = None;
+/// The fastest way that gets to SoundCloud: straight, one of soundya's own
+/// strategies, or — when those are too slow — zapret's nfqws with its strategies.
+/// Returns its id (as stored in the settings) and speed (kbit/s); None when
+/// nothing gets through. A chosen nfqws strategy is left running.
+pub fn pick(dir: &std::path::Path) -> Option<(String, f64)> {
+    let mut best: Option<(String, f64)> = None;
     let mut file: Option<String> = None;
+    let mut better = |id: String, kbps: f64, best: &mut Option<(String, f64)>| {
+        eprintln!("bypass: {id} gets through at {kbps:.0} kbit/s");
+        if best.as_ref().map_or(true, |(_, b)| kbps > *b) {
+            *best = Some((id, kbps));
+        }
+    };
     for s in std::iter::once(Strategy::Direct).chain(ALL) {
         let agent = agent_for(s);
         if !works(&agent, s) {
@@ -271,14 +279,43 @@ pub fn pick() -> Option<(Strategy, f64)> {
             file = cdn_file(&agent);
         }
         let kbps = file.as_deref().map_or(0.0, |f| speed(&agent, f));
-        eprintln!("bypass: {} gets through at {kbps:.0} kbit/s", s.id());
-        if best.map_or(true, |(_, b)| kbps > b) {
-            best = Some((s, kbps));
-        }
+        better(s.id().to_owned(), kbps, &mut best);
         // Fast enough with no trick at all: nothing better to look for.
         if s == Strategy::Direct && kbps >= 4.0 * ENOUGH_KBPS {
+            return best;
+        }
+    }
+    if best.as_ref().is_some_and(|(_, k)| *k >= ENOUGH_KBPS) || !crate::zapret::installed(dir) {
+        return best;
+    }
+    // The original zapret: nfqws in the kernel's packet path, strategy by strategy.
+    for i in 0..crate::zapret::STRATEGIES.len() {
+        if let Err(e) = crate::zapret::start(dir, i) {
+            eprintln!("bypass: zapret: {e}");
             break;
         }
+        let agent = agent_for(Strategy::Direct);
+        if !works(&agent, Strategy::Direct) {
+            continue;
+        }
+        if file.is_none() {
+            file = cdn_file(&agent);
+        }
+        let kbps = file.as_deref().map_or(0.0, |f| speed(&agent, f));
+        let enough = kbps >= ENOUGH_KBPS;
+        better(crate::zapret::id_of(i), kbps, &mut best);
+        if enough {
+            break;
+        }
+    }
+    // Leave nfqws running only with the winner.
+    match best.as_ref().and_then(|(id, _)| crate::zapret::index_of(id)) {
+        Some(i) => {
+            if let Err(e) = crate::zapret::start(dir, i) {
+                eprintln!("bypass: zapret: {e}");
+            }
+        }
+        None => crate::zapret::stop(),
     }
     best
 }
