@@ -726,6 +726,14 @@ fn intent_core(text: &str, keyword_only: bool) -> Option<Intent> {
     Some(Intent::Play(query.to_owned()))
 }
 
+/// «Включи радио», «поставь сказку», «включи яндекс музыку»: Alice starts
+/// something to listen to (not the light, a timer or the TV).
+fn starts_music(text: &str) -> bool {
+    let n = normalize(text);
+    let Some(rest) = PLAY_VERBS.iter().find_map(|v| n.strip_prefix(v)) else { return false };
+    !rest.split_whitespace().any(|w| HOME.iter().any(|p| w.starts_with(p) && *p != "радио" && *p != "сказк"))
+}
+
 // ---- minimal protobuf reader/writer ----
 
 fn varint(data: &[u8], offset: &mut usize) -> Option<u64> {
@@ -1048,10 +1056,15 @@ fn read_frames(
             let intent = message_to_contact(&text, &shared.contact_names())
                 .or_else(|| intent(&text, shared.keyword_only()));
             let Some(intent) = intent else {
+                // «Включи радио», «включи яндекс музыку»…: her music from now on.
+                if starts_music(&text) {
+                    shared.set_alice_music();
+                }
                 eprintln!("voice: {text:?} left to Alice");
                 continue;
             };
             if intent == Intent::ToAlice {
+                shared.set_alice_music();
                 // Alice plays it; SoundCloud steps aside instead of playing over her.
                 if shared.playing.load(std::sync::atomic::Ordering::Acquire) {
                     eprintln!("voice: {text:?} -> Alice's music; pausing SoundCloud");
@@ -1076,9 +1089,10 @@ fn read_frames(
                 | Intent::Shuffled(_)
                 | Intent::Default
                 | Intent::Recommend => true,
-                // «Продолжи» is ours even with an empty queue (e.g. after a restart):
-                // Alice can only answer it with «нужна подписка».
-                Intent::Resume => true,
+                // «Продолжи» goes to whoever played last: Alice after her own music,
+                // otherwise SoundCloud — even with an empty queue (after a restart),
+                // where Alice could only answer «нужна подписка».
+                Intent::Resume => !shared.alice_music() || playing,
                 // Only with a PC set up in the settings; otherwise the phrase stays Alice's.
                 Intent::Pc(_) => shared.pc_configured(),
                 Intent::Tv(_) => shared.tv_configured(),
@@ -1121,6 +1135,16 @@ pub fn watch(tx: Sender<Cmd>, shared: std::sync::Arc<Shared>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn what_starts_alices_music() {
+        assert!(starts_music("включи радио"));
+        assert!(starts_music("Алиса, поставь сказку"));
+        assert!(starts_music("включи песни в яндекс музыке"));
+        assert!(!starts_music("включи свет на кухне"));
+        assert!(!starts_music("поставь будильник на 7"));
+        assert!(!starts_music("какая погода"));
+    }
+
     use super::*;
 
     #[test]

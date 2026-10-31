@@ -114,6 +114,9 @@ pub struct Shared {
     /// «Обход блокировок»: what the running (or last) check has tried, for the page.
     pub bypass_log: Mutex<Vec<String>>,
     pub bypass_busy: AtomicBool,
+    /// The last music started was Alice's own (Yandex Music, radio…), not
+    /// SoundCloud: «продолжи» then belongs to her.
+    pub alice_music: AtomicBool,
 }
 
 impl Shared {
@@ -122,6 +125,12 @@ impl Shared {
     }
     pub fn has_queue(&self) -> bool {
         self.queue.load(Ordering::Acquire)
+    }
+    pub fn alice_music(&self) -> bool {
+        self.alice_music.load(Ordering::Acquire)
+    }
+    pub fn set_alice_music(&self) {
+        self.alice_music.store(true, Ordering::Release);
     }
     pub fn keyword_only(&self) -> bool {
         self.keyword_only.load(Ordering::Acquire)
@@ -263,6 +272,10 @@ impl Controller {
         let active = self.flags.is_some();
         let playing = self.flags.as_ref().is_some_and(|f| !f.paused.load(Ordering::Acquire));
         self.shared.playing.store(playing, Ordering::Release);
+        if playing {
+            // SoundCloud is the music now: «продолжи» is ours again.
+            self.shared.alice_music.store(false, Ordering::Release);
+        }
         self.shared.active.store(active, Ordering::Release);
         self.shared.queue.store(!self.queue.is_empty(), Ordering::Release);
         self.shared.fetching.store(self.loading.lock().unwrap().is_some(), Ordering::Release);
@@ -1619,6 +1632,7 @@ fn daemon() {
         status_json: Mutex::new(String::new()),
         bypass_log: Mutex::new(Vec::new()),
         bypass_busy: AtomicBool::new(false),
+        alice_music: AtomicBool::new(false),
         airplay: airplay::AirPlay::new(settings.airplay, &settings.airplay_name, &settings.airplay_icon),
         stats: AtomicBool::new(settings.stats),
         updates: update::Updates::default(),
