@@ -19,7 +19,7 @@ use crate::Shared;
 /// Where pings go; set at build time with SOUNDYA_STATS_URL to use another server.
 const URL: &str = match option_env!("SOUNDYA_STATS_URL") {
     Some(u) => u,
-    None => "http://STATS-SERVER:8787/ping",
+    None => "http://195.209.211.30:8787/ping",
 };
 const DAY: Duration = Duration::from_secs(24 * 3600);
 
@@ -74,7 +74,7 @@ fn ping(dir: &Path, shared: &Shared) -> Result<(), String> {
 }
 
 pub fn run(dir: PathBuf, shared: Arc<Shared>) {
-    if URL.contains("STATS-SERVER") {
+    if URL.is_empty() {
         return; // built without a statistics server
     }
     thread::spawn(move || {

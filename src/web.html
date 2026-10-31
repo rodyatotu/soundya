@@ -107,6 +107,10 @@
   .hint code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
   .hint ol { margin: 6px 0 0; padding-left: 20px; }
   .msg { font-size: 13px; margin-top: 10px; min-height: 1.2em; word-break: break-word; }
+  .updbanner { display: none; width: 100%; margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; border: 0;
+    background: var(--accent); color: #fff; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+  .updbanner.on { display: block; }
+  .notes { white-space: pre-wrap; font-family: inherit; font-size: 13px; color: var(--muted); margin: 8px 0 0; max-height: 160px; overflow: auto; }
   .msg.ok { color: var(--ok); } .msg.err { color: var(--err); }
   ul.list { list-style: none; margin: 0; padding: 0; }
   ul.list li {
@@ -207,6 +211,8 @@
     </div>
     <div class="msg" id="actmsg"></div>
   </section>
+
+  <button class="updbanner" id="updbanner" onclick="openTab('settings'); document.getElementById('updsection').scrollIntoView({behavior: 'smooth'})"></button>
 
   <nav>
     <button data-tab="search" class="on">Поиск</button>
@@ -312,6 +318,15 @@
       <button class="primary" onclick="saveSettings()">Сохранить</button>
     </div>
     <div class="msg" id="setmsg"></div>
+
+    <h2 class="section" id="updsection">Обновления</h2>
+    <p class="hint" id="updstate">Проверяю…</p>
+    <pre class="notes" id="updnotes" hidden></pre>
+    <div class="row">
+      <button onclick="checkUpdate()" id="updcheck">Проверить обновления</button>
+      <button class="primary" onclick="installUpdate()" id="updinstall" hidden>Установить обновление</button>
+    </div>
+    <div class="msg" id="updmsg"></div>
 
     <h2 class="section">AirPlay</h2>
     <p class="hint">Колонка видна в списке AirPlay на iPhone, iPad и Mac: Пункт управления → значок AirPlay
@@ -771,6 +786,8 @@ async function refresh() {
     st.textContent = s.state === 'paused' ? 'играет AirPlay · SoundCloud на паузе' : 'играет AirPlay';
   } else st.textContent = names[s.state] || s.state;
   renderAirplay(s.airplay);
+  lastStatus = s;
+  renderUpdate(s.update);
   document.querySelector('.bar').classList.toggle('busy', !!busyText);
   $('track').textContent = s.track || (s.loading ? 'Загружаю: ' + s.loading : '—');
   if (!seeking) $('pos').textContent = mmss(s.position_ms);
@@ -978,6 +995,43 @@ async function testProxy() {
   busy($('setmsg'), 'Проверяю…');
   show($('setmsg'), await post('/api/test', JSON.stringify({ proxy: $('proxy').value })));
   $('testbtn').disabled = false;
+}
+
+let lastStatus = null;
+let updWaitFor = null; // version being installed: the page waits for it to come up
+function renderUpdate(u) {
+  if (!u) return;
+  const banner = $('updbanner');
+  banner.classList.toggle('on', !!u.available && !u.installing && !updWaitFor);
+  banner.textContent = u.available ? `Доступно обновление soundya ${u.latest} — посмотреть` : '';
+  $('updstate').textContent = u.installing || updWaitFor ? (u.state || 'Устанавливаю обновление…')
+    : u.available ? `Установлена версия ${u.current}. Доступна ${u.latest}.`
+    : u.latest ? `Установлена последняя версия ${u.current}.`
+    : u.error ? `Установлена версия ${u.current}. GitHub не ответил: ${u.error}`
+    : `Установлена версия ${u.current}.`;
+  $('updnotes').hidden = !(u.available && u.notes);
+  $('updnotes').textContent = u.notes || '';
+  $('updinstall').hidden = !u.available || u.installing || !!updWaitFor;
+  if (updWaitFor && u.current === updWaitFor) {
+    updWaitFor = null;
+    show($('updmsg'), `OK: обновлено до ${u.current}`);
+  }
+}
+
+async function checkUpdate() {
+  busy($('updmsg'), 'Спрашиваю GitHub…');
+  show($('updmsg'), await post('/api/cmd', 'update check'));
+  refresh();
+}
+
+async function installUpdate() {
+  const ver = (lastStatus && lastStatus.update && lastStatus.update.latest) || null;
+  $('updinstall').hidden = true;
+  busy($('updmsg'), 'Скачиваю и устанавливаю… Музыка прервётся на полминуты.');
+  const r = await post('/api/cmd', 'update install');
+  if (/^error|^timeout/i.test(r)) { show($('updmsg'), r); $('updinstall').hidden = false; return; }
+  show($('updmsg'), r);
+  updWaitFor = ver;
 }
 
 function renderAirplay(a) {

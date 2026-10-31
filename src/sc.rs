@@ -13,7 +13,53 @@ use serde_json::Value;
 pub type Res<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const API: &str = "https://api-v2.soundcloud.com";
-const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
+/// soundya talks to SoundCloud the way its web player in Chrome does: same
+/// User-Agent and client hints, same Origin/Referer and Accept headers, the
+/// site's own client_id and app_version, and it never re-reads the site more
+/// than needed. (The TLS handshake is rustls's, not Chrome's; that cannot be
+/// changed without a much bigger library.)
+const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+const SEC_CH_UA: &str = "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"";
+/// Re-reading soundcloud.com for a client_id at most this often.
+const SCRAPE_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// Adds the headers Chrome sends to SoundCloud's site, API and CDN.
+fn browser_headers(req: ureq::Request, next: ureq::MiddlewareNext) -> Result<ureq::Response, ureq::Error> {
+    let url = req.url().to_owned();
+    let host = url.split("://").nth(1).and_then(|r| r.split(['/', '?', ':']).next()).unwrap_or("").to_owned();
+    if !(host.ends_with("soundcloud.com") || host.ends_with("sndcdn.com") || host.ends_with("soundcloud.cloud")) {
+        return next.handle(req);
+    }
+    let page = host == "soundcloud.com";
+    let mut req = req
+        .set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+        .set("sec-ch-ua", SEC_CH_UA)
+        .set("sec-ch-ua-mobile", "?0")
+        .set("sec-ch-ua-platform", "\"Windows\"");
+    if page {
+        // Opening the site itself, as a tab would.
+        if req.header("Accept").is_none() {
+            req = req.set(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            );
+        }
+        req = req.set("Sec-Fetch-Site", "none").set("Sec-Fetch-Mode", "navigate").set("Sec-Fetch-Dest", "document");
+    } else {
+        // Everything else is fetched by the player page.
+        if req.header("Origin").is_none() {
+            req = req.set("Origin", "https://soundcloud.com");
+        }
+        if req.header("Referer").is_none() {
+            req = req.set("Referer", "https://soundcloud.com/");
+        }
+        if req.header("Accept").is_none() {
+            req = req.set("Accept", "*/*");
+        }
+        req = req.set("Sec-Fetch-Site", "same-site").set("Sec-Fetch-Mode", "cors").set("Sec-Fetch-Dest", "empty");
+    }
+    next.handle(req)
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct User {
@@ -147,7 +193,12 @@ struct Collection<T> {
 pub struct Client {
     agent: Arc<Mutex<ureq::Agent>>,
     client_id: Arc<Mutex<Option<String>>>,
+    /// The site's build number (`window.__sc_version`), sent as `app_version` like the web player.
+    app_version: Arc<Mutex<Option<String>>>,
+    last_scrape: Arc<Mutex<Option<std::time::Instant>>>,
     token: Arc<Mutex<Option<String>>>,
+    /// SoundCloud refused the token: requests go without it until a new one is entered.
+    token_bad: Arc<std::sync::atomic::AtomicBool>,
     cache: Option<std::path::PathBuf>,
     /// Formats that answered 404 this session; tried last from then on.
     dead: Arc<Mutex<std::collections::HashSet<String>>>,
@@ -217,7 +268,10 @@ impl Client {
         Self {
             agent: Arc::new(Mutex::new(agent)),
             client_id: Arc::new(Mutex::new(cached)),
+            app_version: Arc::new(Mutex::new(None)),
+            last_scrape: Arc::new(Mutex::new(None)),
             token: Arc::new(Mutex::new(None)),
+            token_bad: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cache,
             dead: Arc::new(Mutex::new(std::collections::HashSet::new())),
             recs: Arc::new(Mutex::new(None)),
@@ -233,6 +287,7 @@ impl Client {
     pub fn set_token(&self, token: &str) {
         let t = token.trim().trim_start_matches("OAuth ").trim();
         *self.token.lock().unwrap() = (!t.is_empty()).then(|| t.to_owned());
+        self.token_bad.store(false, std::sync::atomic::Ordering::Release);
     }
 
     pub fn has_token(&self) -> bool {
@@ -248,11 +303,14 @@ impl Client {
 
     fn client_id(&self, refresh: bool) -> Res<String> {
         let mut guard = self.client_id.lock().unwrap();
-        if !refresh {
+        // A browser reads the site once, not before every request.
+        let recent = self.last_scrape.lock().unwrap().is_some_and(|t| t.elapsed() < SCRAPE_EVERY);
+        if !refresh || recent {
             if let Some(id) = guard.as_ref() {
                 return Ok(id.clone());
             }
         }
+        *self.last_scrape.lock().unwrap() = Some(std::time::Instant::now());
         let id = self.scrape_client_id()?;
         eprintln!("soundcloud: new client_id");
         if let Some(p) = &self.cache {
@@ -268,6 +326,9 @@ impl Client {
             .get("https://soundcloud.com/")
             .call()?
             .into_string()?;
+        if let Some(v) = app_version(&html) {
+            *self.app_version.lock().unwrap() = Some(v);
+        }
         let scripts = script_urls(&html);
         for url in scripts.iter().rev() {
             let Ok(resp) = self.agent().get(url).call() else {
@@ -293,16 +354,15 @@ impl Client {
         };
         let mut refreshed = false;
         let mut retried = false;
-        // The token was refused: try once without it (search and public pages work anonymously).
-        let mut anonymous = false;
+        let bad = std::sync::atomic::Ordering::Acquire;
+        // Without the token: it was refused (search and public pages work anonymously).
+        let mut anonymous = self.token_bad.load(bad);
         loop {
             let id = self.client_id(refreshed)?;
             let mut req = self
                 .agent()
                 .get(&url)
-                .set("Accept", "application/json")
-                .set("Origin", "https://soundcloud.com")
-                .set("Referer", "https://soundcloud.com/")
+                .set("Accept", "application/json, text/javascript, */*; q=0.01")
                 .query("client_id", &id);
             if !anonymous {
                 if let Some(t) = self.token.lock().unwrap().as_ref() {
@@ -312,16 +372,27 @@ impl Client {
             for (k, v) in query {
                 req = req.query(k, v);
             }
+            if let Some(v) = self.app_version.lock().unwrap().as_ref() {
+                req = req.query("app_version", v).query("app_locale", "ru");
+            }
             let short = url.split('?').next().unwrap_or(&url).to_owned();
             match req.call() {
-                Ok(resp) => return Ok(resp.into_json()?),
-                Err(e) if !refreshed && matches!(status_of(&e), Some(401 | 403)) => {
-                    refreshed = true;
-                    continue;
+                Ok(resp) => {
+                    // Worked without the token and with the same client_id: the token is what failed.
+                    if anonymous && !refreshed && self.has_token() && !self.token_bad.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                        eprintln!("soundcloud: token refused; going on without login until a new one is entered");
+                    }
+                    return Ok(resp.into_json()?);
                 }
+                // Refused with a token: the token is the likely cause, try without it
+                // first (re-reading the site for a new client_id is the slow, unusual path).
                 Err(e) if matches!(status_of(&e), Some(401)) && self.has_token() && !anonymous => {
                     eprintln!("soundcloud: token refused on {short}; trying without login");
                     anonymous = true;
+                    continue;
+                }
+                Err(e) if !refreshed && matches!(status_of(&e), Some(401 | 403)) => {
+                    refreshed = true;
                     continue;
                 }
                 Err(e) if matches!(status_of(&e), Some(401)) && self.has_token() => {
@@ -645,6 +716,22 @@ impl Client {
         }
     }
 
+    /// «Включи альбом …»: the best matching album; a playlist if no album has tracks.
+    pub fn search_album(&self, q: &str) -> Res<Vec<Track>> {
+        let v = self.api("/search/albums", &[("q", q), ("limit", "5")])?;
+        let c: Collection<Value> = serde_json::from_value(v)?;
+        for p in c.collection {
+            let Some(id) = p.get("id").and_then(Value::as_u64) else {
+                continue;
+            };
+            let tracks = self.playlist(id)?;
+            if !tracks.is_empty() {
+                return Ok(tracks);
+            }
+        }
+        self.search_playlist(q)
+    }
+
     pub fn search_playlist(&self, q: &str) -> Res<Vec<Track>> {
         let v = self.api("/search/playlists", &[("q", q), ("limit", "5")])?;
         let c: Collection<Value> = serde_json::from_value(v)?;
@@ -792,6 +879,7 @@ pub fn build_agent(proxy: &str) -> Res<ureq::Agent> {
         // Reuse connections: every new one costs several round trips through the proxy.
         .max_idle_connections_per_host(8)
         .user_agent(UA)
+        .middleware(browser_headers)
         .resolver(crate::dns::Resolver::new());
     let proxy = proxy.trim();
     if !proxy.is_empty() {
@@ -833,6 +921,13 @@ fn script_urls(html: &str) -> Vec<String> {
         rest = &rest[end..];
     }
     out
+}
+
+/// `window.__sc_version="1761234567"` from the site's HTML.
+fn app_version(html: &str) -> Option<String> {
+    let i = html.find("__sc_version")?;
+    let v: String = html[i..].chars().skip_while(|c| !c.is_ascii_digit()).take_while(char::is_ascii_digit).collect();
+    (v.len() >= 6 && v.len() <= 16).then_some(v)
 }
 
 fn find_client_id(js: &str) -> Option<String> {

@@ -22,6 +22,11 @@ const MAX_FRAME: usize = 512 * 1024;
 pub enum Intent {
     Play(String),
     Playlist(String),
+    /// «Включи альбом …»: a SoundCloud album (falls back to a playlist).
+    Album(String),
+    /// A music request for Alice's own service («… в яндекс музыке», or any music
+    /// request in «только по слову саундклауд» mode): she plays it, SoundCloud pauses.
+    ToAlice,
     Likes,
     MyPlaylist(String),
     Resume,
@@ -443,12 +448,36 @@ pub fn message_to_contact(text: &str, contacts: &[String]) -> Option<Intent> {
         .then(|| Intent::Pc(PcAction::Command(norm.clone())))
 }
 
+/// «… в яндекс музыке», «… в яндексе», «… из яндекса»: Alice's own music service.
+fn names_yandex(text: &str) -> bool {
+    let t = format!(" {text} ");
+    [" яндекс музык", " яндекс-музык", " яндексмузык", " в яндексе ", " из яндекса ", " на яндексе ", " яндекса "]
+        .iter()
+        .any(|n| t.contains(n))
+}
+
+/// Smart-home words: «включи свет» is never music.
+const HOME: [&str; 30] = [
+    "свет", "освещение", "ламп", "люстр", "торшер", "ночник", "розетк", "телевизор", "тв",
+    "кондиционер", "вентилятор", "обогревател", "пылесос", "робот", "чайник", "будильник",
+    "таймер", "блютуз", "bluetooth", "режим", "экран", "микрофон", "громк", "звук",
+    "отоплен", "увлажнител", "очистител", "зарядк", "радио", "сказк",
+];
+
+/// The verbs of a music request.
+const PLAY_VERBS: [&str; 5] = ["включи ", "поставь ", "запусти ", "сыграй ", "играй "];
+
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
     if let Some(ms) = seek_command(&normalize(text)) {
         return Some(Intent::Seek(ms));
     }
     if let Some(action) = pc(&normalize(text)) {
         return Some(Intent::Pc(action));
+    }
+    // «Включи бонобо в яндекс музыке»: Alice's, whatever the mode.
+    if names_yandex(&normalize(text)) {
+        let n = normalize(text);
+        return PLAY_VERBS.iter().any(|v| n.starts_with(v)).then_some(Intent::ToAlice);
     }
     let (norm, named) = strip_service(&normalize(text));
     if named
@@ -502,7 +531,7 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
         };
         let cmd = if named { format!("{cmd} в саундклауде") } else { cmd };
         return match intent_core(&cmd, keyword_only) {
-            Some(i @ (Intent::Play(_) | Intent::Playlist(_) | Intent::Likes | Intent::MyPlaylist(_))) => {
+            Some(i @ (Intent::Play(_) | Intent::Playlist(_) | Intent::Album(_) | Intent::Likes | Intent::MyPlaylist(_))) => {
                 Some(Intent::Shuffled(Box::new(i)))
             }
             _ => Some(Intent::Shuffle(true)),
@@ -543,12 +572,20 @@ fn intent_core(text: &str, keyword_only: bool) -> Option<Intent> {
         }
     }
     if keyword_only && !named {
-        return None;
+        // A music request for Alice: SoundCloud pauses so the two do not play at once.
+        let home = rest.split_whitespace().any(|w| HOME.iter().any(|p| w.starts_with(p)));
+        return (!home && !rest.is_empty()).then_some(Intent::ToAlice);
     }
     if matches!(rest, "мою музыку" | "мои треки" | "мое любимое" | "любимое" | "мои любимые треки") {
         return Some(Intent::Likes);
     }
-    for p in ["плейлист ", "альбом ", "подборку "] {
+    for p in ["альбом ", "пластинку "] {
+        if let Some(q) = rest.strip_prefix(p) {
+            let q = q.trim().trim_matches('"').trim();
+            return (!q.is_empty()).then(|| Intent::Album(q.to_owned()));
+        }
+    }
+    for p in ["плейлист ", "подборку "] {
         if let Some(q) = rest.strip_prefix(p) {
             let q = q.trim().trim_matches('"').trim();
             return (!q.is_empty()).then(|| Intent::Playlist(q.to_owned()));
@@ -564,12 +601,7 @@ fn intent_core(text: &str, keyword_only: bool) -> Option<Intent> {
     if query == "музыку" {
         return Some(Intent::Resume);
     }
-    const HOME: [&str; 30] = [
-        "свет", "освещение", "ламп", "люстр", "торшер", "ночник", "розетк", "телевизор", "тв",
-        "кондиционер", "вентилятор", "обогревател", "пылесос", "робот", "чайник", "будильник",
-        "таймер", "блютуз", "bluetooth", "режим", "экран", "микрофон", "громк", "звук",
-        "отоплен", "увлажнител", "очистител", "зарядк", "радио", "сказк",
-    ];
+
     if explicit.is_none()
         && !named
         && query
@@ -906,9 +938,25 @@ fn read_frames(
                 eprintln!("voice: {text:?} left to Alice");
                 continue;
             };
+            if intent == Intent::ToAlice {
+                // Alice plays it; SoundCloud steps aside instead of playing over her.
+                if shared.playing.load(std::sync::atomic::Ordering::Acquire) {
+                    eprintln!("voice: {text:?} -> Alice's music; pausing SoundCloud");
+                    let _ = tx.send(Cmd::Voice(Intent::Pause));
+                } else {
+                    eprintln!("voice: {text:?} left to Alice (her music)");
+                }
+                continue;
+            }
+            let playing = shared.playing.load(std::sync::atomic::Ordering::Acquire);
             // Transport commands are ours only while SoundCloud owns the speaker.
             let ours = match intent {
+                // On pause Alice's own music may be playing: «что играет», «стоп» are about hers.
+                Intent::WhatPlaying => playing || shared.airplay.is_active(),
+                Intent::Pause => playing,
+                Intent::Next | Intent::Previous if shared.keyword_only() => playing,
                 Intent::Play(_)
+                | Intent::Album(_)
                 | Intent::Playlist(_)
                 | Intent::Likes
                 | Intent::MyPlaylist(_)
@@ -1045,7 +1093,18 @@ mod tests {
             intent("включи bonobo в саундклауде", true),
             Some(Intent::Play("bonobo".into()))
         );
-        assert_eq!(intent("включи bonobo", true), None);
+        // Keyword mode: Alice's music (SoundCloud steps aside), but «включи свет» stays plainly hers.
+        assert_eq!(intent("включи bonobo", true), Some(Intent::ToAlice));
+        assert_eq!(intent("включи свет", true), None);
+        // «… в яндекс музыке» goes to Alice in either mode.
+        for p in ["включи bonobo в яндекс музыке", "поставь мою волну в яндексе", "включи радиохед из яндекса"] {
+            assert_eq!(intent(p, false), Some(Intent::ToAlice), "{p}");
+        }
+        assert_eq!(intent("какая погода в яндексе", false), None);
+        // Albums.
+        assert_eq!(intent("включи альбом OK Computer", false), Some(Intent::Album("ok computer".into())));
+        assert_eq!(intent("включи альбом in rainbows в саундклауде", true), Some(Intent::Album("in rainbows".into())));
+        assert_eq!(intent("включи мой альбом лето", false), Some(Intent::MyPlaylist("лето".into())));
         assert_eq!(
             intent("включи плейлист lofi beats", false),
             Some(Intent::Playlist("lofi beats".into()))

@@ -14,6 +14,7 @@ mod player;
 mod sc;
 mod settings;
 mod stats;
+mod update;
 mod web;
 
 use std::{
@@ -94,6 +95,10 @@ pub struct Shared {
     pub airplay: airplay::AirPlay,
     /// Anonymous statistics switched on (settings page).
     pub stats: AtomicBool,
+    /// New releases on GitHub (settings page → «Обновления»).
+    pub updates: update::Updates,
+    /// The proxy from the settings, for threads that do not own the settings.
+    pub proxy: Mutex<String>,
 }
 
 impl Shared {
@@ -305,6 +310,7 @@ impl Controller {
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
             "airplay": self.shared.airplay.json(),
+            "update": self.shared.updates.json(),
         })
         .to_string()
     }
@@ -466,6 +472,7 @@ impl Controller {
         new.airplay_name = new.airplay_name.trim().to_owned();
         self.shared.airplay.configure(new.airplay, &new.airplay_name);
         self.shared.stats.store(new.stats, Ordering::Release);
+        *self.shared.proxy.lock().unwrap() = new.proxy.clone();
         let proxy_changed = new.proxy != self.settings.proxy;
         self.settings = new;
         let mut msg = match self.settings.save(&self.dir) {
@@ -818,6 +825,14 @@ impl Controller {
                 let query = q.clone();
                 self.fetch(q, reply, move |c| c.search_tracks(&query));
             }
+            Intent::Album(q) => {
+                let query = q.clone();
+                self.fetch(q, reply, move |c| c.search_album(&query));
+            }
+            Intent::ToAlice => {
+                self.set_paused(true);
+                respond(reply, "OK", None);
+            }
             Intent::Playlist(q) => {
                 // «Включи плейлист X»: the account's own playlists first, then SoundCloud search.
                 let query = q.clone();
@@ -951,6 +966,10 @@ impl Controller {
                 }
                 None => respond(reply, "error: сейчас ничего не играет", None),
             },
+            Intent::WhatPlaying if self.shared.airplay.is_active() => {
+                let text = "Сейчас играет музыка с телефона по AirPlay".to_owned();
+                respond(reply, &text, Some(text.clone()));
+            }
             Intent::WhatPlaying => match self.current() {
                 Some(track) => {
                     let text = format!("Сейчас играет {}", spoken(track));
@@ -973,6 +992,7 @@ impl Controller {
             "play" if !arg.is_empty() => self.intent(Intent::Play(arg), Some(reply)),
             "play" | "resume" => self.intent(Intent::Resume, Some(reply)),
             "playlist" if !arg.is_empty() => self.intent(Intent::Playlist(arg), Some(reply)),
+            "album" if !arg.is_empty() => self.intent(Intent::Album(arg), Some(reply)),
             "pause" => self.intent(Intent::Pause, Some(reply)),
             "toggle" => {
                 let paused = self.flags.as_ref().is_some_and(|f| f.paused.load(Ordering::Acquire));
@@ -1069,6 +1089,23 @@ impl Controller {
             ),
             "status" => send_to(&reply, self.status()),
             "netcheck" => self.check_net(Some(reply)),
+            // «update check» / «update install» from the settings page.
+            "update" => {
+                let shared = self.shared.clone();
+                let proxy = self.settings.proxy.clone();
+                let install = arg == "install";
+                thread::spawn(move || {
+                    let r = if install {
+                        shared.updates.install(&proxy).map(|m| format!("OK: {m}"))
+                    } else {
+                        shared.updates.check(&proxy).map(|r| match r {
+                            Some(r) => format!("OK: доступна версия {}", r.version),
+                            None => format!("OK: стоит последняя версия {}", env!("CARGO_PKG_VERSION")),
+                        })
+                    };
+                    let _ = reply.send(r.unwrap_or_else(|e| format!("error: {e}")));
+                });
+            }
             "json" => send_to(&reply, self.json()),
             "pick" => match arg.parse::<usize>() {
                 Ok(i) if i < self.results.len() => {
@@ -1365,6 +1402,8 @@ fn daemon() {
         status_json: Mutex::new(String::new()),
         airplay: airplay::AirPlay::new(settings.airplay, &settings.airplay_name),
         stats: AtomicBool::new(settings.stats),
+        updates: update::Updates::default(),
+        proxy: Mutex::new(settings.proxy.clone()),
     });
     let (tx, rx) = mpsc::channel();
     led::run(shared.clone());
@@ -1376,6 +1415,8 @@ fn daemon() {
     airplay::run(dir.clone(), device(), tx.clone(), shared.clone());
     // Counts running speakers for the README badge (anonymous, can be switched off).
     stats::run(dir.clone(), shared.clone());
+    // Looks for a newer soundya on GitHub; the page offers to install it.
+    update::run(shared.clone());
     if std::env::var("SOUNDYA_NO_VOICE").is_err() {
         alice::watch(tx.clone(), shared.clone());
         buttons::run(tx.clone(), shared.clone());
