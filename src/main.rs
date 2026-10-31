@@ -321,6 +321,8 @@ impl Controller {
                 "stats": self.settings.stats,
                 "tv_host": self.settings.tv_host,
                 "bypass": self.settings.bypass,
+                "bypass_on": self.settings.bypass_on,
+                "proxy_on": self.settings.proxy_on,
             },
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
@@ -475,8 +477,19 @@ impl Controller {
         *self.shared.contacts.lock().unwrap() = contact_names(&new);
         let token_changed = new.token != self.settings.token;
         new.proxy = self.real_proxy(&new.proxy);
-        if new.proxy != self.settings.proxy {
-            if let Err(e) = self.client.set_proxy(&new.proxy) {
+        // Set only by «bypass auto/off», not by the settings form.
+        new.bypass = self.settings.bypass.clone();
+        let bypass_changed = new.active_bypass() != self.settings.active_bypass();
+        if bypass_changed {
+            bypass::set(bypass_strategy(new.active_bypass()));
+            if zapret::index_of(new.active_bypass()).is_some() {
+                zapret::restore(&self.dir, new.active_bypass());
+            } else {
+                zapret::stop();
+            }
+        }
+        if new.use_proxy() != self.settings.use_proxy() || bypass_changed {
+            if let Err(e) = self.client.set_proxy(new.use_proxy()) {
                 return format!("error: неверный прокси: {e}");
             }
             self.net = None;
@@ -487,12 +500,10 @@ impl Controller {
         new.airplay_name = new.airplay_name.trim().to_owned();
         self.shared.airplay.configure(new.airplay, &new.airplay_name, &new.airplay_icon);
         self.shared.stats.store(new.stats, Ordering::Release);
-        *self.shared.proxy.lock().unwrap() = new.proxy.clone();
-        // Set only by «bypass auto/off», not by the settings form.
-        new.bypass = self.settings.bypass.clone();
+        *self.shared.proxy.lock().unwrap() = new.use_proxy().to_owned();
         new.tv_host = new.tv_host.trim().to_owned();
         self.shared.tv.store(!new.tv_host.is_empty(), Ordering::Release);
-        let proxy_changed = new.proxy != self.settings.proxy;
+        let proxy_changed = new.use_proxy() != self.settings.use_proxy();
         self.settings = new;
         let mut msg = match self.settings.save(&self.dir) {
             Ok(()) => "OK: сохранено".to_owned(),
@@ -1185,7 +1196,7 @@ impl Controller {
             // «update check» / «update install» from the settings page.
             "update" => {
                 let shared = self.shared.clone();
-                let proxy = self.settings.proxy.clone();
+                let proxy = self.settings.use_proxy().to_owned();
                 let install = arg == "install";
                 thread::spawn(move || {
                     let r = if install {
@@ -1381,13 +1392,15 @@ impl Controller {
                 }
                 Cmd::User(user) => self.user = user,
                 Cmd::Bypass(id) => {
+                    // A found strategy is switched on; "" forgets it.
+                    self.settings.bypass_on = !id.is_empty();
                     self.settings.bypass = id;
-                    bypass::set(bypass_strategy(&self.settings.bypass));
-                    if zapret::index_of(&self.settings.bypass).is_none() {
+                    bypass::set(bypass_strategy(self.settings.active_bypass()));
+                    if zapret::index_of(self.settings.active_bypass()).is_none() {
                         zapret::stop();
                     }
                     // New connections with (or without) the trick from now on.
-                    let _ = self.client.set_proxy(&self.settings.proxy);
+                    let _ = self.client.set_proxy(self.settings.use_proxy());
                     if let Err(e) = self.settings.save(&self.dir) {
                         eprintln!("bypass: settings not saved: {e}");
                     }
@@ -1432,10 +1445,10 @@ fn state_dir() -> PathBuf {
 }
 
 fn client_with(settings: &Settings) -> Client {
-    bypass::set(bypass_strategy(&settings.bypass));
+    bypass::set(bypass_strategy(settings.active_bypass()));
     let dir = state_dir();
     let cache = fsx::is_dir(&dir).then(|| dir.join("client_id"));
-    let client = Client::new(cache, &settings.proxy);
+    let client = Client::new(cache, settings.use_proxy());
     client.set_token(&settings.token);
     client
 }
@@ -1543,7 +1556,7 @@ fn daemon() {
         airplay: airplay::AirPlay::new(settings.airplay, &settings.airplay_name, &settings.airplay_icon),
         stats: AtomicBool::new(settings.stats),
         updates: update::Updates::default(),
-        proxy: Mutex::new(settings.proxy.clone()),
+        proxy: Mutex::new(settings.use_proxy().to_owned()),
         tv: AtomicBool::new(!settings.tv_host.trim().is_empty()),
     });
     let (tx, rx) = mpsc::channel();
@@ -1557,7 +1570,7 @@ fn daemon() {
     // Counts running speakers for the README badge (anonymous, can be switched off).
     stats::run(dir.clone(), shared.clone());
     // zapret (nfqws) with the saved strategy, before anything talks to SoundCloud.
-    zapret::restore(&dir, &settings.bypass);
+    zapret::restore(&dir, settings.active_bypass());
     // Looks for a newer soundya on GitHub; the page offers to install it.
     update::run(shared.clone());
     // A wrong clock breaks every HTTPS site (GitHub first): set it from the web.

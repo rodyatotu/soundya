@@ -111,6 +111,14 @@
   .updbanner { display: none; width: 100%; margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; border: 0;
     background: var(--accent); color: #fff; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
   .updbanner.on { display: block; }
+  label.switch { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; cursor: pointer; }
+  label.switch input { appearance: none; -webkit-appearance: none; flex: none; width: 42px; height: 24px; margin: 0;
+    border-radius: 12px; background: var(--line); position: relative; cursor: pointer; transition: background .15s; }
+  label.switch input::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+    border-radius: 50%; background: #fff; transition: left .15s; }
+  label.switch input:checked { background: var(--accent); }
+  label.switch input:checked::after { left: 21px; }
+  label.switch input:disabled { opacity: .45; cursor: default; }
   .bypassbox { margin-top: 14px; padding: 12px; border: 1px dashed var(--line); border-radius: 12px; }
   details.danger { margin-top: 28px; font-size: 14px; }
   .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
@@ -295,13 +303,25 @@
     </div>
 
     <h2 class="section">Прокси</h2>
+    <label class="switch">
+      <input type="checkbox" id="proxyon" onchange="saveSettings()">
+      <span>Использовать прокси</span>
+    </label>
     <input type="text" id="proxy" placeholder="socks5://user:pass@host:1080" autocomplete="off" spellcheck="false">
     <p class="hint">
       <code>http://host:port</code>, <code>socks5://host:port</code> или
       <code>socks5://user:pass@host:port</code>. Пустое поле — без прокси. Через прокси идут и поиск, и звук.
     </p>
+    <div class="row">
+      <button onclick="testProxy()" id="testbtn">Проверить прокси</button>
+      <button class="primary" onclick="saveSettings()">Сохранить</button>
+    </div>
+    <div class="msg" id="setmsg"></div>
     <div class="bypassbox">
-      <b>Обход блокировок без прокси</b>
+      <label class="switch">
+        <input type="checkbox" id="bypasson" onchange="saveSettings('bypassmsg')">
+        <span><b>Обход блокировок без прокси</b></span>
+      </label>
       <p class="hint">Колонка подбирает способ сама: сначала свои хитрости, потом настоящий zapret (nfqws, как на ПК) с
         несколькими стратегиями, и включает самый быстрый. Помогает, если SoundCloud блокируют или тормозят по имени сайта; если
         заблокированы сами адреса — нужен прокси. Пока обход включён, прокси не используется. Подбор занимает до двух минут.</p>
@@ -312,11 +332,6 @@
       </div>
       <div class="msg" id="bypassmsg"></div>
     </div>
-    <div class="row">
-      <button onclick="testProxy()" id="testbtn">Проверить прокси</button>
-      <button class="primary" onclick="saveSettings()">Сохранить</button>
-    </div>
-    <div class="msg" id="setmsg"></div>
 
     </div>
     <div class="sub" data-sub="account">
@@ -961,7 +976,9 @@ async function refresh() {
     $('airplay').checked = settings.airplay !== false;
     $('stats').checked = settings.stats !== false;
     $('tvhost').value = settings.tv_host || '';
-    renderBypass(settings.bypass);
+    $('proxyon').checked = settings.proxy_on !== false;
+    $('bypasson').checked = !!settings.bypass && settings.bypass_on !== false;
+    renderBypass(settings.bypass, settings.bypass_on !== false);
     $('airplayname').value = settings.airplay_name || '';
     $('airplayicon').value = settings.airplay_icon || 'speaker';
     settingsLoaded = true;
@@ -1061,7 +1078,7 @@ $('query').addEventListener('keydown', e => { if (e.key === 'Enter') search(); }
 // ---- account ----
 function settingsBody(extra) {
   return JSON.stringify(Object.assign({
-    proxy: $('proxy').value, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
+    proxy: $('proxy').value, proxy_on: $('proxyon').checked, bypass_on: $('bypasson').checked, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
     pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value,
     pc_contacts: readContacts(),
     airplay: $('airplay').checked, airplay_name: $('airplayname').value, airplay_icon: $('airplayicon').value,
@@ -1250,10 +1267,13 @@ async function savePc() {
   refresh();
 }
 
-function renderBypass(id) {
-  $('bypassstate').textContent = id === 'direct' ? 'Напрямую: SoundCloud открывается без прокси и без обхода.'
-    : id ? `Обход включён (стратегия ${id}), прокси не используется.` : 'Выключен.';
-  $('bypassoff').hidden = !id;
+function renderBypass(id, on) {
+  const name = !id ? '' : id === 'direct' ? 'напрямую, без прокси и без обхода'
+    : id.startsWith('nfq') ? `zapret (nfqws), стратегия ${id.slice(3)}` : `встроенная стратегия ${id}`;
+  $('bypassstate').textContent = !id ? 'Способ ещё не подобран: нажмите кнопку ниже.'
+    : on ? `Работает: ${name}. Прокси сейчас не используется.` : `Выключен (подобран: ${name}).`;
+  $('bypasson').disabled = !id;
+  $('bypassoff').hidden = true;
   $('bypassbtn').textContent = id ? 'Подобрать заново' : 'Подобрать и включить обход';
 }
 

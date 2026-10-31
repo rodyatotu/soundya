@@ -42,9 +42,15 @@ pub struct Settings {
     /// Anonymous daily «I'm running» ping for the speaker count (src/stats.rs).
     #[serde(default = "yes")]
     pub stats: bool,
-    /// «Обход блокировок без прокси»: the strategy found by bypass::pick ("" = off).
+    /// «Обход блокировок без прокси»: the strategy found by bypass::pick ("" = none yet).
     #[serde(default)]
     pub bypass: String,
+    /// The switches on the page: the proxy and the bypass can be turned off
+    /// without forgetting the proxy address or the found strategy.
+    #[serde(default = "yes")]
+    pub proxy_on: bool,
+    #[serde(default = "yes")]
+    pub bypass_on: bool,
     /// Android TV / projector with network ADB: "192.168.0.50" or "host:port".
     #[serde(default)]
     pub tv_host: String,
@@ -85,6 +91,8 @@ impl Default for Settings {
             stats: true,
             tv_host: String::new(),
             bypass: String::new(),
+            proxy_on: true,
+            bypass_on: true,
         }
     }
 }
@@ -119,6 +127,16 @@ impl Settings {
 
     pub fn masked_pc_token(&self) -> String {
         mask(&self.pc_token)
+    }
+
+    /// The proxy in use: "" when switched off.
+    pub fn use_proxy(&self) -> &str {
+        if self.proxy_on { &self.proxy } else { "" }
+    }
+
+    /// The bypass strategy in use: "" when switched off or not found yet.
+    pub fn active_bypass(&self) -> &str {
+        if self.bypass_on { &self.bypass } else { "" }
     }
 
     /// Commands can go to the PC (switching on needs only the MAC address).
