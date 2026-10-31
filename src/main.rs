@@ -19,6 +19,7 @@ mod settings;
 mod stats;
 mod tv;
 mod update;
+mod volume;
 mod zapret;
 mod web;
 
@@ -1158,6 +1159,16 @@ impl Controller {
                     .join("\n"),
             ),
             "status" => send_to(&reply, self.status()),
+            // «volume up» / «volume down 3» from the page: Alice's own volume.
+            "volume" => {
+                let (dir, n) = arg.split_once(' ').unwrap_or((arg.as_str(), "1"));
+                let steps = n.trim().parse().unwrap_or(1);
+                let r = match dir {
+                    "up" | "down" => volume::press(dir == "up", steps).map(|()| "OK".to_owned()),
+                    _ => Err("volume up|down [шаги]".to_owned()),
+                };
+                send_to(&reply, r.unwrap_or_else(|e| format!("error: {e}")));
+            }
             "netcheck" => self.check_net(Some(reply)),
             // «Удалить soundya» on the settings page: the speaker becomes plain Alice again.
             "uninstall" => {

@@ -1,5 +1,5 @@
 //! Orange ring while SoundCloud plays, dim on pause, pulsing while something loads
-//! (Station Lite: three RGB zones in sysfs).
+//! (Station Lite: three RGB zones in sysfs, Mini 2: six).
 //!
 //! Alice's own animations (listening, speaking, volume) write the same LEDs, so
 //! the ring is only set while Alice is idle and put back after her animations.
@@ -58,14 +58,17 @@ struct Ring(Vec<Zone>);
 
 impl Ring {
     fn detect() -> Option<Self> {
-        let zones: Vec<Zone> = (1..=3)
-            .map(|z| {
-                let p = |c: &str| PathBuf::from(format!("/sys/class/leds/micro:{c}:ring{z}/brightness"));
-                Zone { r: p("red"), g: p("green"), b: p("blue") }
-            })
-            .filter(|z| crate::fsx::exists(&z.r) && crate::fsx::exists(&z.g) && crate::fsx::exists(&z.b))
-            .collect();
-        (!zones.is_empty()).then_some(Ring(zones))
+        // Station Lite: micro:red:ring1..3; Mini 2: mini2:red:ring1..6.
+        ["micro", "mini2"].into_iter().find_map(|board| {
+            let zones: Vec<Zone> = (1..=6)
+                .map(|z| {
+                    let p = |c: &str| PathBuf::from(format!("/sys/class/leds/{board}:{c}:ring{z}/brightness"));
+                    Zone { r: p("red"), g: p("green"), b: p("blue") }
+                })
+                .filter(|z| crate::fsx::exists(&z.r) && crate::fsx::exists(&z.g) && crate::fsx::exists(&z.b))
+                .collect();
+            (!zones.is_empty()).then_some(Ring(zones))
+        })
     }
 
     fn is(&self, (r, g, b): (u8, u8, u8)) -> bool {

@@ -73,6 +73,9 @@
   .controls.small button { padding: 9px 0; color: var(--muted); }
   .controls.small button.icon svg { width: 19px; height: 19px; }
   .controls.small button:hover:not(:disabled) { color: var(--ink); }
+  .controls.volume { align-items: center; }
+  .controls.volume span { color: var(--muted); font-size: 13px; flex: 0 0 auto; }
+  .controls.volume button { font-size: 15px; }
   .controls.small button.on { color: var(--accent); border-color: var(--accent); }
   button:disabled { opacity: .35; cursor: default; }
   #likebtn.on { color: var(--accent); border-color: var(--accent); }
@@ -234,6 +237,11 @@
       <button class="primary icon" id="toggle" onclick="cmd('toggle')" title="Пауза / продолжить" aria-label="Пауза или продолжить"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.6v12.8a.6.6 0 0 0 .92.5l9.6-6.4a.6.6 0 0 0 0-1L8.92 5.1A.6.6 0 0 0 8 5.6z"/></svg></button>
       <button class="icon" onclick="cmd('next')" title="Следующий" aria-label="Следующий"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.6 5H18v14h-2.4zM5 5.6v12.8a.6.6 0 0 0 .92.5l8.88-6.4a.6.6 0 0 0 0-1L5.92 5.1A.6.6 0 0 0 5 5.6z"/></svg></button>
       <button class="icon" onclick="cmd('stop')" title="Стоп" aria-label="Стоп"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 6h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z"/></svg></button>
+    </div>
+    <div class="controls small volume">
+      <button onclick="volume('down')" title="Тише (громкость Алисы)" aria-label="Тише">− тише</button>
+      <span>громкость</span>
+      <button onclick="volume('up')" title="Громче (громкость Алисы)" aria-label="Громче">громче +</button>
     </div>
     <div class="controls small">
       <button class="icon" id="shufflebtn" onclick="cmd('shuffle ' + (state.shuffle ? 'off' : 'on'))" title="Перемешать" aria-label="Перемешать"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h4v4"/><path d="M4 20 20 4"/><path d="M20 16v4h-4"/><path d="M14.5 14.5 20 20"/><path d="M4 4l5 5"/></svg></button>
@@ -1341,6 +1349,11 @@ function renderBypassLog(lines, running) {
   el.hidden = false;
   el.textContent = lines.join('\n') + (running ? '\n…' : '');
   if (running) el.scrollTop = el.scrollHeight;
+}
+
+async function volume(dir) {
+  const r = await post('/api/cmd', 'volume ' + dir);
+  if (r.startsWith('error')) show($('actmsg'), r);
 }
 
 async function bypassTry() {
