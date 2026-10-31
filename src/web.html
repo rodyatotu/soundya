@@ -1206,7 +1206,8 @@ async function savePc() {
 }
 
 function renderBypass(id) {
-  $('bypassstate').textContent = id ? `Включён (стратегия ${id}).` : 'Выключен.';
+  $('bypassstate').textContent = id === 'direct' ? 'Напрямую: SoundCloud открывается без прокси и без обхода.'
+    : id ? `Обход включён (стратегия ${id}), прокси не используется.` : 'Выключен.';
   $('bypassoff').hidden = !id;
   $('bypassbtn').textContent = id ? 'Подобрать заново' : 'Подобрать и включить обход';
 }

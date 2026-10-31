@@ -1154,16 +1154,16 @@ impl Controller {
                 }
                 let tx = self.tx.clone();
                 thread::spawn(move || {
-                    let r = if bypass::direct_works() {
-                        "OK: SoundCloud открывается и без обхода — включать его не нужно. Очистите поле «Прокси», если он не работает".to_owned()
-                    } else {
-                        match bypass::pick() {
-                            Some(s) => {
-                                let _ = tx.send(Cmd::Bypass(s.id().to_owned()));
-                                format!("OK: обход работает (стратегия {}). SoundCloud теперь идёт напрямую, прокси не нужен", s.id())
-                            }
-                            None => "error: ни одна стратегия не прошла: похоже, провайдер блокирует сами адреса SoundCloud. Тут поможет только прокси или VPN".to_owned(),
+                    let r = match bypass::pick() {
+                        Some(bypass::Strategy::Direct) => {
+                            let _ = tx.send(Cmd::Bypass("direct".into()));
+                            "OK: SoundCloud открывается напрямую — колонка теперь ходит к нему без прокси и без обхода".to_owned()
                         }
+                        Some(s) => {
+                            let _ = tx.send(Cmd::Bypass(s.id().to_owned()));
+                            format!("OK: обход работает (стратегия {}). SoundCloud теперь идёт напрямую, прокси не нужен", s.id())
+                        }
+                        None => "error: ни один способ не прошёл: похоже, провайдер блокирует сами адреса SoundCloud. Тут поможет только прокси или VPN".to_owned(),
                     };
                     let _ = reply.send(r);
                 });

@@ -882,8 +882,10 @@ pub fn build_agent(proxy: &str) -> Res<ureq::Agent> {
         .middleware(browser_headers)
         .resolver(crate::dns::Resolver::new());
     // «Обход блокировок» on: the site name is hidden from DPI, no proxy needed.
-    if let Some(strategy) = crate::bypass::active() {
-        return Ok(b.tls_connector(Arc::new(crate::bypass::Connector::new(strategy))).build());
+    match crate::bypass::active() {
+        Some(crate::bypass::Strategy::Direct) => return Ok(b.build()),
+        Some(strategy) => return Ok(b.tls_connector(Arc::new(crate::bypass::Connector::new(strategy))).build()),
+        None => {}
     }
     let proxy = proxy.trim();
     if !proxy.is_empty() {

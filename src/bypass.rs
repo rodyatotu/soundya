@@ -19,6 +19,8 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strategy {
+    /// No trick: straight to SoundCloud, ignoring the proxy (it opens without one).
+    Direct,
     /// First byte in its own TCP packet (tpws --split-pos=1).
     Split1,
     /// TCP packets cut in the middle of the site name (--split-pos=midsld).
@@ -34,6 +36,7 @@ pub const ALL: [Strategy; 4] = [Strategy::TlsRecSplit, Strategy::TlsRec, Strateg
 impl Strategy {
     pub fn id(self) -> &'static str {
         match self {
+            Strategy::Direct => "direct",
             Strategy::Split1 => "split1",
             Strategy::SplitSni => "splitsni",
             Strategy::TlsRec => "tlsrec",
@@ -42,7 +45,7 @@ impl Strategy {
     }
 
     pub fn from_id(id: &str) -> Option<Strategy> {
-        ALL.into_iter().find(|s| s.id() == id)
+        std::iter::once(Strategy::Direct).chain(ALL).find(|s| s.id() == id)
     }
 
     /// The ClientHello as the pieces to send, each in its own TCP packet.
@@ -203,38 +206,33 @@ pub fn active() -> Option<Strategy> {
     *ACTIVE.lock().unwrap()
 }
 
-/// Does SoundCloud answer with this strategy? Both the API and the audio servers.
+/// What has to open for music to play: the API, the audio servers and the site
+/// (soundya reads its client_id from there).
+const CHECK: [&str; 3] = ["https://api-v2.soundcloud.com/", "https://cf-hls-media.sndcdn.com/", "https://soundcloud.com/"];
+
+/// Does SoundCloud answer with this strategy (or with no trick at all)?
 fn works(strategy: Strategy) -> bool {
-    let agent = ureq::AgentBuilder::new()
+    let mut b = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(6))
         .timeout(Duration::from_secs(10))
-        .resolver(crate::dns::Resolver::new())
-        .tls_connector(Arc::new(Connector::new(strategy)))
-        .build();
-    ["https://api-v2.soundcloud.com/", "https://cf-hls-media.sndcdn.com/", "https://soundcloud.com/"].iter().all(|url| {
-        match agent.get(url).call() {
-            Ok(_) | Err(ureq::Error::Status(..)) => true, // any HTTP answer: the connection went through
-            Err(e) => {
-                eprintln!("bypass: {} on {url}: {e}", strategy.id());
-                false
-            }
+        .resolver(crate::dns::Resolver::new());
+    if strategy != Strategy::Direct {
+        b = b.tls_connector(Arc::new(Connector::new(strategy)));
+    }
+    let agent = b.build();
+    CHECK.iter().all(|url| match agent.get(url).call() {
+        Ok(_) | Err(ureq::Error::Status(..)) => true, // any HTTP answer: the connection went through
+        Err(e) => {
+            eprintln!("bypass: {} on {url}: {e}", strategy.id());
+            false
         }
     })
 }
 
-/// Tries the strategies one by one; the first that gets through, or None.
+/// The first way that gets to SoundCloud: straight (no proxy, no trick), else
+/// the strategies one by one; None when nothing gets through.
 pub fn pick() -> Option<Strategy> {
-    ALL.into_iter().find(|&s| works(s))
-}
-
-/// Whether SoundCloud opens with no tricks at all.
-pub fn direct_works() -> bool {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(6))
-        .timeout(Duration::from_secs(10))
-        .resolver(crate::dns::Resolver::new())
-        .build();
-    matches!(agent.get("https://api-v2.soundcloud.com/").call(), Ok(_) | Err(ureq::Error::Status(..)))
+    std::iter::once(Strategy::Direct).chain(ALL).find(|&s| works(s))
 }
 
 #[cfg(test)]
