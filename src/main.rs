@@ -56,6 +56,8 @@ pub enum Cmd {
     AirPlay(bool),
     /// «Обход блокировок»: the strategy that got through ("" = switched off).
     Bypass(String),
+    /// zapret arguments pasted from a .bat on the page.
+    ZapretArgs(String),
     Control(String, Sender<String>),
     Ended(u64, Outcome),
     Settings(Settings, Sender<String>),
@@ -108,6 +110,9 @@ pub struct Shared {
     pub proxy: Mutex<String>,
     /// An Android TV is set up for voice commands.
     tv: AtomicBool,
+    /// «Обход блокировок»: what the running (or last) check has tried, for the page.
+    pub bypass_log: Mutex<Vec<String>>,
+    pub bypass_busy: AtomicBool,
 }
 
 impl Shared {
@@ -322,12 +327,17 @@ impl Controller {
                 "tv_host": self.settings.tv_host,
                 "bypass": self.settings.bypass,
                 "bypass_on": self.settings.bypass_on,
+                "bypass_name": bypass::name_of(&self.settings.bypass),
+                "zapret_args": self.settings.zapret_args,
                 "proxy_on": self.settings.proxy_on,
             },
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
             "airplay": self.shared.airplay.json(),
             "update": self.shared.updates.json(),
+            "bypass_log": *self.shared.bypass_log.lock().unwrap(),
+            "bypass_busy": self.shared.bypass_busy.load(Ordering::Acquire),
+            "zapret_presets": zapret::PRESETS.iter().enumerate().map(|(i, (name, _))| [zapret::id_of(i), (*name).to_owned()]).collect::<Vec<_>>(),
         })
         .to_string()
     }
@@ -479,14 +489,11 @@ impl Controller {
         new.proxy = self.real_proxy(&new.proxy);
         // Set only by «bypass auto/off», not by the settings form.
         new.bypass = self.settings.bypass.clone();
+        new.zapret_args = self.settings.zapret_args.clone();
         let bypass_changed = new.active_bypass() != self.settings.active_bypass();
         if bypass_changed {
             bypass::set(bypass_strategy(new.active_bypass()));
-            if zapret::index_of(new.active_bypass()).is_some() {
-                zapret::restore(&self.dir, new.active_bypass());
-            } else {
-                zapret::stop();
-            }
+            zapret::restore(&self.dir, new.active_bypass(), &new.zapret_args);
         }
         if new.use_proxy() != self.settings.use_proxy() || bypass_changed {
             if let Err(e) = self.client.set_proxy(new.use_proxy()) {
@@ -1157,39 +1164,75 @@ impl Controller {
                 let r = uninstall();
                 send_to(&reply, r);
             }
-            // «Обход блокировок»: «bypass auto» finds a working strategy, «bypass off».
+            // «Обход блокировок»: «bypass auto» tries every way and switches the
+            // fastest on, «bypass try nfq2» (or «bypass try nfqc <args from a .bat>»)
+            // checks the chosen one and switches it on if it works, «bypass off».
             "bypass" => {
                 if arg == "off" {
                     let _ = self.tx.send(Cmd::Bypass(String::new()));
                     send_to(&reply, "OK: обход выключен, снова через прокси (если задан) или напрямую".into());
                     return;
                 }
+                if self.shared.bypass_busy.swap(true, Ordering::AcqRel) {
+                    send_to(&reply, "error: проверка уже идёт, дождитесь её конца".into());
+                    return;
+                }
+                let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                let (id, custom) = match what {
+                    "try" => {
+                        let (id, args) = rest.split_once(' ').unwrap_or((rest, ""));
+                        let custom = if id == zapret::CUSTOM { args.trim().to_owned() } else { self.settings.zapret_args.clone() };
+                        (Some(id.to_owned()), custom)
+                    }
+                    _ => (None, self.settings.zapret_args.clone()),
+                };
+                if id.as_deref() == Some(zapret::CUSTOM) {
+                    if custom.is_empty() {
+                        self.shared.bypass_busy.store(false, Ordering::Release);
+                        send_to(&reply, "error: вставьте аргументы из .bat в поле".into());
+                        return;
+                    }
+                    let _ = self.tx.send(Cmd::ZapretArgs(custom.clone()));
+                }
+                let was = self.settings.active_bypass().to_owned();
                 let tx = self.tx.clone();
                 let dir = self.dir.clone();
+                let shared = self.shared.clone();
+                shared.bypass_log.lock().unwrap().clear();
                 thread::spawn(move || {
-                    let r = match bypass::pick(&dir) {
-                        Some((id, kbps)) => {
-                            // Switched on only when it is fast enough to play from.
-                            if kbps >= bypass::ENOUGH_KBPS {
-                                let _ = tx.send(Cmd::Bypass(id.clone()));
+                    let log = |line: String| {
+                        eprintln!("bypass: {line}");
+                        shared.bypass_log.lock().unwrap().push(line);
+                    };
+                    let found = match &id {
+                        Some(id) => bypass::measure(&dir, id, &custom, &mut None, &log).map(|k| (id.clone(), k)),
+                        None => bypass::pick(&dir, &custom, &log),
+                    };
+                    let r = match found {
+                        Some((id, kbps)) if kbps >= bypass::ENOUGH_KBPS => {
+                            let _ = tx.send(Cmd::Bypass(id.clone()));
+                            if id == "direct" {
+                                format!("OK: SoundCloud и так открывается напрямую ({}) — обход не нужен, колонка ходит к нему без прокси. Проверьте: «Алиса, включи …»", mbit(kbps))
                             } else {
-                                zapret::stop();
-                            }
-                            let how = if id == "direct" {
-                                "SoundCloud быстрее всего открывается напрямую — колонка ходит к нему без прокси и без обхода".to_owned()
-                            } else if zapret::index_of(&id).is_some() {
-                                format!("включён zapret (nfqws, стратегия {}), прокси не нужен", &id[3..])
-                            } else {
-                                format!("обход включён (стратегия {id}), прокси не нужен")
-                            };
-                            if kbps >= bypass::ENOUGH_KBPS {
-                                format!("OK: {how}. Скорость загрузки {:.1} Мбит/с", kbps / 1000.0)
-                            } else {
-                                format!("error: лучший способ ({id}) даёт только {kbps:.0} кбит/с — провайдер тормозит SoundCloud, обход не включён. Тут поможет только прокси или VPN")
+                                format!("OK: ✅ включено: {} — {}. Прокси не используется. Проверьте: «Алиса, включи …»", bypass::name_of(&id), mbit(kbps))
                             }
                         }
-                        None => "error: ни один способ не прошёл: похоже, провайдер блокирует сами адреса SoundCloud. Тут поможет только прокси или VPN".to_owned(),
+                        other => {
+                            // Back to what worked before the check.
+                            zapret::restore(&dir, &was, &custom);
+                            match (other, id) {
+                                (Some((found, kbps)), _) => format!(
+                                    "error: {} открывает SoundCloud только на {kbps:.0} кбит/с — для музыки мало, не включаю. {}",
+                                    bypass::name_of(&found),
+                                    "Попробуйте другую стратегию или прокси/VPN"
+                                ),
+                                (None, Some(id)) => format!("error: {} не помогает: SoundCloud не открывается. Попробуйте другую стратегию", bypass::name_of(&id)),
+                                (None, None) => "error: ни один способ не прошёл: похоже, провайдер блокирует сами адреса SoundCloud. Тут поможет только прокси или VPN".to_owned(),
+                            }
+                        }
                     };
+                    shared.bypass_log.lock().unwrap().push(r.trim_start_matches("OK: ").trim_start_matches("error: ").to_owned());
+                    shared.bypass_busy.store(false, Ordering::Release);
                     let _ = reply.send(r);
                 });
             }
@@ -1391,12 +1434,18 @@ impl Controller {
                     }
                 }
                 Cmd::User(user) => self.user = user,
+                Cmd::ZapretArgs(args) => {
+                    self.settings.zapret_args = args;
+                    if let Err(e) = self.settings.save(&self.dir) {
+                        eprintln!("bypass: settings not saved: {e}");
+                    }
+                }
                 Cmd::Bypass(id) => {
                     // A found strategy is switched on; "" forgets it.
                     self.settings.bypass_on = !id.is_empty();
                     self.settings.bypass = id;
                     bypass::set(bypass_strategy(self.settings.active_bypass()));
-                    if zapret::index_of(self.settings.active_bypass()).is_none() {
+                    if !zapret::is_zapret(self.settings.active_bypass()) {
                         zapret::stop();
                     }
                     // New connections with (or without) the trick from now on.
@@ -1498,8 +1547,12 @@ fn note_audio_error(dir: &std::path::Path, device: &str, e: &str) {
 
 /// soundya's own HTTPS behaviour for a stored bypass id: zapret (nfqws) works
 /// below soundya, so soundya itself then just goes straight, without the proxy.
+fn mbit(kbps: f64) -> String {
+    format!("{:.1} Мбит/с", kbps / 1000.0)
+}
+
 fn bypass_strategy(id: &str) -> Option<bypass::Strategy> {
-    if zapret::index_of(id).is_some() {
+    if zapret::is_zapret(id) {
         Some(bypass::Strategy::Direct)
     } else {
         bypass::Strategy::from_id(id)
@@ -1553,6 +1606,8 @@ fn daemon() {
         queue: AtomicBool::new(false),
         status: Mutex::new("stopped".into()),
         status_json: Mutex::new(String::new()),
+        bypass_log: Mutex::new(Vec::new()),
+        bypass_busy: AtomicBool::new(false),
         airplay: airplay::AirPlay::new(settings.airplay, &settings.airplay_name, &settings.airplay_icon),
         stats: AtomicBool::new(settings.stats),
         updates: update::Updates::default(),
@@ -1570,7 +1625,7 @@ fn daemon() {
     // Counts running speakers for the README badge (anonymous, can be switched off).
     stats::run(dir.clone(), shared.clone());
     // zapret (nfqws) with the saved strategy, before anything talks to SoundCloud.
-    zapret::restore(&dir, settings.active_bypass());
+    zapret::restore(&dir, settings.active_bypass(), &settings.zapret_args);
     // Looks for a newer soundya on GitHub; the page offers to install it.
     update::run(shared.clone());
     // A wrong clock breaks every HTTPS site (GitHub first): set it from the web.

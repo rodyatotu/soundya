@@ -120,6 +120,16 @@
   label.switch input:checked::after { left: 21px; }
   label.switch input:disabled { opacity: .45; cursor: default; }
   .bypassbox { margin-top: 14px; padding: 12px; border: 1px dashed var(--line); border-radius: 12px; }
+  .bypassbox select, .bypassbox textarea {
+    display: block; width: 100%; margin-top: 5px; font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-sizing: border-box;
+  }
+  .bypassbox textarea { font: 12px/1.4 ui-monospace, Menlo, monospace; resize: vertical; }
+  .bypasslog {
+    margin: 10px 0 0; padding: 10px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line);
+    font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; max-height: 220px; overflow: auto;
+  }
+  #bypassmsg.ok, #bypassmsg.err { font-size: 15px; font-weight: 600; padding: 10px 12px; border-radius: 10px; margin-top: 10px; }
   details.danger { margin-top: 28px; font-size: 14px; }
   .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
     padding: 16px; background: rgba(0, 0, 0, .45); }
@@ -322,14 +332,25 @@
         <input type="checkbox" id="bypasson" onchange="saveSettings('bypassmsg')">
         <span><b>Обход блокировок без прокси</b></span>
       </label>
-      <p class="hint">Колонка подбирает способ сама: сначала свои хитрости, потом настоящий zapret (nfqws, как на ПК) с
-        несколькими стратегиями, и включает самый быстрый. Помогает, если SoundCloud блокируют или тормозят по имени сайта; если
-        заблокированы сами адреса — нужен прокси. Пока обход включён, прокси не используется. Подбор занимает до двух минут.</p>
+      <p class="hint">Как zapret на ПК, только на самой колонке. Выберите стратегию и нажмите «Включить и проверить» — колонка
+        включит её, скачает кусок музыки с SoundCloud и скажет, работает ли и с какой скоростью. «Подобрать автоматически»
+        переберёт всё по очереди и оставит самую быструю. Помогает, когда SoundCloud режут по имени сайта; если заблокированы
+        сами адреса — нужен прокси. Пока обход включён, прокси не используется.</p>
       <p class="hint" id="bypassstate"></p>
-      <div class="row">
-        <button onclick="bypass('auto')" id="bypassbtn">Подобрать и включить обход</button>
-        <button onclick="bypass('off')" id="bypassoff" hidden>Выключить обход</button>
+      <label class="field">Стратегия
+        <select id="zstrat" onchange="$('zargsbox').hidden = this.value !== 'nfqc'"></select>
+      </label>
+      <div id="zargsbox" hidden>
+        <label class="field">Аргументы из .bat (zapret для Windows)
+          <textarea id="zargs" rows="4" placeholder='Откройте свой рабочий «general (ALT).bat» блокнотом и вставьте строку с --filter-tcp=443 … --dpi-desync=… целиком'></textarea>
+        </label>
+        <p class="hint">Колонка сама уберёт то, что нужно только Windows (--wf-*, списки, %BIN%), и возьмёт часть до первого --new.</p>
       </div>
+      <div class="row">
+        <button class="primary" onclick="bypassTry()" id="bypassbtn">Включить и проверить</button>
+        <button onclick="bypass('off')" id="bypassoff">Выключить обход</button>
+      </div>
+      <pre class="bypasslog" id="bypasslog" hidden></pre>
       <div class="msg" id="bypassmsg"></div>
     </div>
 
@@ -965,6 +986,7 @@ async function refresh() {
   $('likesbtn').style.display = logged ? '' : 'none';
   $('username').textContent = s.user || (logged ? 'токен сохранён, вход не подтверждён' : '');
   renderNet(s.net);
+  renderBypassLog(s.bypass_log || [], s.bypass_busy);
   if (!settingsLoaded) {
     $('proxy').value = settings.proxy;
     $('keyword').checked = settings.keyword_only;
@@ -978,7 +1000,8 @@ async function refresh() {
     $('tvhost').value = settings.tv_host || '';
     $('proxyon').checked = settings.proxy_on !== false;
     $('bypasson').checked = !!settings.bypass && settings.bypass_on !== false;
-    renderBypass(settings.bypass, settings.bypass_on !== false);
+    renderStrategies(s.zapret_presets || [], settings.bypass, settings.zapret_args || '');
+    renderBypass(settings.bypass, settings.bypass_on !== false, settings.bypass_name);
     $('airplayname').value = settings.airplay_name || '';
     $('airplayicon').value = settings.airplay_icon || 'speaker';
     settingsLoaded = true;
@@ -1267,20 +1290,55 @@ async function savePc() {
   refresh();
 }
 
-function renderBypass(id, on) {
-  const name = !id ? '' : id === 'direct' ? 'напрямую, без прокси и без обхода'
-    : id.startsWith('nfq') ? `zapret (nfqws), стратегия ${id.slice(3)}` : `встроенная стратегия ${id}`;
-  $('bypassstate').textContent = !id ? 'Способ ещё не подобран: нажмите кнопку ниже.'
-    : on ? `Работает: ${name}. Прокси сейчас не используется.` : `Выключен (подобран: ${name}).`;
+let strategiesShown = false;
+function renderStrategies(presets, current, args) {
+  const sel = $('zstrat');
+  if (!strategiesShown) {
+    const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; };
+    sel.append(opt('auto', 'Подобрать автоматически (перебрать все)'));
+    const own = document.createElement('optgroup'); own.label = 'zapret (nfqws), как на ПК';
+    presets.forEach(([id, name]) => own.append(opt(id, name)));
+    own.append(opt('nfqc', 'Свои аргументы из .bat…'));
+    sel.append(own);
+    const builtIn = document.createElement('optgroup'); builtIn.label = 'Встроенные в soundya (без nfqws)';
+    [['split1', 'split1'], ['splitsni', 'splitsni'], ['tlsrec', 'tlsrec'], ['tlsrec+split', 'tlsrec+split'], ['direct', 'напрямую (без обхода)']]
+      .forEach(([id, name]) => builtIn.append(opt(id, name)));
+    sel.append(builtIn);
+    strategiesShown = true;
+  }
+  sel.value = current && [...sel.options].some(o => o.value === current) ? current : 'auto';
+  $('zargs').value = args;
+  $('zargsbox').hidden = sel.value !== 'nfqc';
+}
+
+function renderBypass(id, on, name) {
+  $('bypassstate').textContent = !id ? 'Обход ещё не включался: выберите стратегию и нажмите кнопку.'
+    : on ? `✅ Включено: ${name}. Прокси сейчас не используется.` : `Выключено (последняя рабочая: ${name}).`;
   $('bypasson').disabled = !id;
-  $('bypassoff').hidden = true;
-  $('bypassbtn').textContent = id ? 'Подобрать заново' : 'Подобрать и включить обход';
+  $('bypassoff').hidden = !id || !on;
+}
+
+function renderBypassLog(lines, running) {
+  const el = $('bypasslog');
+  if (!lines.length) { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = lines.join('\n') + (running ? '\n…' : '');
+  if (running) el.scrollTop = el.scrollHeight;
+}
+
+async function bypassTry() {
+  const id = $('zstrat').value;
+  if (id === 'nfqc' && !$('zargs').value.trim()) { show($('bypassmsg'), 'error: вставьте аргументы из .bat в поле'); return; }
+  const what = id === 'auto' ? 'auto' : 'try ' + id + (id === 'nfqc' ? ' ' + $('zargs').value.replace(/\s+/g, ' ').trim() : '');
+  await bypass(what);
 }
 
 async function bypass(what) {
   $('bypassbtn').disabled = true;
-  busy($('bypassmsg'), what === 'off' ? 'Выключаю…' : 'Проверяю, открывается ли SoundCloud, и подбираю способ обхода… До минуты.');
-  show($('bypassmsg'), await post('/api/cmd', 'bypass ' + what));
+  busy($('bypassmsg'), what === 'off' ? 'Выключаю…'
+    : what === 'auto' ? 'Перебираю способы по очереди, ход проверки — ниже. Это может занять пару минут.'
+    : 'Включаю и проверяю скорость SoundCloud… Секунд 10–20.');
+  show($('bypassmsg'), (await post('/api/cmd', 'bypass ' + what)).replace(/^OK:\s*/, ''));
   $('bypassbtn').disabled = false;
   settingsLoaded = false;
   refresh();

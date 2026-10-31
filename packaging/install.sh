@@ -16,6 +16,10 @@ if [ -f "$SRC/nfqws" ]; then
     cp "$SRC/nfqws" "$DIR/nfqws.new" && mv "$DIR/nfqws.new" "$DIR/nfqws"
     chmod 755 "$DIR/nfqws"
 fi
+# Fake TLS hellos for zapret strategies (from zapret's release).
+if [ -d "$SRC/fake" ]; then
+    mkdir -p "$DIR/fake" && cp "$SRC"/fake/*.bin "$DIR/fake/"
+fi
 # AirPlay receiver; the old one may still be running until soundya restarts.
 if [ -f "$SRC/shairport-sync" ]; then
     killall shairport-sync 2>/dev/null || true

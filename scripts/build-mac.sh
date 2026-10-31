@@ -11,6 +11,7 @@ cp packaging/install.sh packaging/uninstall.sh packaging/run.sh packaging/guard.
 cp packaging/shairport-sync dist/soundya/
 # zapret nfqws v72.9, linux-arm static, from the official release (see packaging/NFQWS.md).
 cp packaging/nfqws dist/soundya/
+mkdir -p dist/soundya/fake && cp packaging/fake/*.bin dist/soundya/fake/
 chmod 755 dist/soundya/*
 # Plain tar: the speaker's busybox tar cannot read gzip.
 COPYFILE_DISABLE=1 tar -C dist -cf dist/soundya-armv7.tar soundya

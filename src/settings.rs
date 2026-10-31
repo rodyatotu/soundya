@@ -51,6 +51,9 @@ pub struct Settings {
     pub proxy_on: bool,
     #[serde(default = "yes")]
     pub bypass_on: bool,
+    /// zapret arguments pasted from a Windows .bat (strategy "nfqc").
+    #[serde(default)]
+    pub zapret_args: String,
     /// Android TV / projector with network ADB: "192.168.0.50" or "host:port".
     #[serde(default)]
     pub tv_host: String,
@@ -93,6 +96,7 @@ impl Default for Settings {
             bypass: String::new(),
             proxy_on: true,
             bypass_on: true,
+            zapret_args: String::new(),
         }
     }
 }

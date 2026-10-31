@@ -9,3 +9,9 @@
 
 soundya starts it for «Обход блокировок» when its own tricks are too slow (src/zapret.rs).
 To update: take the same file from a newer release and replace this one.
+
+`packaging/fake/*.bin` are zapret's fake TLS ClientHello files from the same release
+(`zapret-v72.9/files/fake/`), used by the strategies as `--dpi-desync-fake-tls=@…`.
+
+The first strategy («Станция (alice-zapret2)») is the TLS strategy of
+https://github.com/lr1ne/alice-zapret2 (zapret2 on Yandex Stations), written in nfqws v1 terms.
