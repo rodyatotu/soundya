@@ -1,6 +1,6 @@
 [package]
 name = "soundya"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2021"
 license = "MIT"
 description = "SoundCloud player with Alice voice control for Yandex Station Lite"
