@@ -125,16 +125,31 @@ pub fn run(host: &str, dir: &Path, action: &TvAction) -> Result<String, String> 
             let packages: Vec<String> =
                 list.lines().filter_map(|l| l.trim().strip_prefix("package:")).map(str::to_owned).collect();
             let Some(pkg) = find_package(name, &packages) else {
+                eprintln!("tv: no app for {name:?} among {} packages", packages.len());
                 return Err(format!("Не нашла на телевизоре приложение {name}"));
             };
-            // TV apps start from the TV launcher category; phone-style apps from the usual one.
-            sh(&format!(
-                "monkey -p {pkg} -c android.intent.category.LEANBACK_LAUNCHER 1 2>&1 | grep -q 'No activities' && \
-                 monkey -p {pkg} -c android.intent.category.LAUNCHER 1; true"
-            ))?;
+            let out = sh(&launch_script(&pkg))?;
+            eprintln!("tv: open {name:?} -> {pkg}: {}", out.trim().replace('\n', " | "));
+            if out.contains("Error") || out.contains("No activities") || out.contains("Exception") {
+                return Err(format!("Телевизор не открыл {name}"));
+            }
             Ok(format!("Открываю {name}"))
         }
     }
+}
+
+/// Starts an app's main screen: the TV launcher entry (Android TV apps), else the
+/// phone launcher entry, else whatever monkey finds.
+fn launch_script(pkg: &str) -> String {
+    let resolve = |cat: &str| {
+        format!("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.{cat} {pkg} 2>/dev/null | tail -n 1")
+    };
+    format!(
+        "c=$({}); case \"$c\" in */*) ;; *) c=$({});; esac; \
+         case \"$c\" in */*) am start -n \"$c\" 2>&1 ;; *) monkey -p {pkg} 1 2>&1 ;; esac",
+        resolve("LEANBACK_LAUNCHER"),
+        resolve("LAUNCHER")
+    )
 }
 
 #[cfg(test)]
@@ -163,6 +178,14 @@ mod tests {
         assert_eq!(find_package("настройки", &pk).as_deref(), Some("com.android.tv.settings"));
         assert_eq!(find_package("окко", &pk).as_deref(), Some("tv.okko.androidtv"));
         assert_eq!(find_package("твич", &pk), None);
+    }
+
+    #[test]
+    fn launch_script_is_valid_shell() {
+        let script = launch_script("com.google.android.youtube.tv");
+        assert!(script.contains("LEANBACK_LAUNCHER com.google.android.youtube.tv"));
+        let ok = std::process::Command::new("sh").arg("-n").arg("-c").arg(&script).status().unwrap().success();
+        assert!(ok, "{script}");
     }
 
     #[test]
