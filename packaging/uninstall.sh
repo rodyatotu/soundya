@@ -7,6 +7,8 @@ touch /run/soundya.stop
 [ -x /etc/init.d/S99soundya ] && /etc/init.d/S99soundya stop
 for p in $(pidof soundya shairport-sync nfqws 2>/dev/null); do kill -9 "$p" 2>/dev/null; done
 # zapret rules (soundya's own chain), if the bypass was on.
+# Alice's volume tick, if soundya was stopped while it was silenced.
+umount /system/vendor/quasar/sounds/common/volume_sound.opus 2>/dev/null || true
 while iptables -t mangle -D POSTROUTING -j SOUNDYA_ZAPRET 2>/dev/null; do :; done
 iptables -t mangle -F SOUNDYA_ZAPRET 2>/dev/null; iptables -t mangle -X SOUNDYA_ZAPRET 2>/dev/null
 RO=0

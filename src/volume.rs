@@ -134,12 +134,60 @@ fn event(kind: u16, code: u16, value: i32) -> [u8; 16] {
     e
 }
 
-/// One press of + (`up`) or −, `steps` times.
+/// The «tick» Alice plays on every press of + and −.
+const CLICK: &str = "/system/vendor/quasar/sounds/common/volume_sound.opus";
+/// 0.2 s of silence in the same format (packaging/silent.opus).
+const SILENT: &[u8] = include_bytes!("../packaging/silent.opus");
+
+fn click_covered() -> bool {
+    crate::fsx::read_string(std::path::Path::new("/proc/mounts")).is_some_and(|m| m.contains(CLICK))
+}
+
+/// Puts silence over Alice's tick while soundya presses (a bind mount: nothing
+/// on the read-only system partition changes, and it is undone right after).
+fn hush_click() -> bool {
+    if !crate::fsx::exists(std::path::Path::new(CLICK)) {
+        return false;
+    }
+    if click_covered() {
+        return true;
+    }
+    let dir = std::env::var("SOUNDYA_DIR").unwrap_or_else(|_| "/data/opt/soundya".into());
+    let silent = std::path::Path::new(&dir).join("silent.opus");
+    if std::fs::write(&silent, SILENT).is_err() {
+        return false;
+    }
+    let ok = std::process::Command::new("mount")
+        .arg("--bind")
+        .arg(&silent)
+        .arg(CLICK)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        eprintln!("volume: could not silence the tick");
+    }
+    ok
+}
+
+fn unhush_click() {
+    while click_covered() {
+        if !std::process::Command::new("umount").arg(CLICK).status().is_ok_and(|s| s.success()) {
+            eprintln!("volume: could not bring the tick back");
+            return;
+        }
+    }
+}
+
+/// One press of + (`up`) or −, `steps` times, without Alice's tick.
 pub fn press(up: bool, steps: u32) -> Result<(), String> {
     PRESSING.store(true, Ordering::Release);
+    let hushed = hush_click();
     let r = press_keys(up, steps);
-    // The button reader sees them a moment later.
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // The button reader sees them a moment later, and the last tick plays then.
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    if hushed {
+        unhush_click();
+    }
     PRESSING.store(false, Ordering::Release);
     if r.is_ok() {
         nudge(if up { steps as i32 } else { -(steps as i32) });
