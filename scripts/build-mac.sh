@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 cargo zigbuild --release --target armv7-unknown-linux-gnueabihf.2.23
 rm -rf dist && mkdir -p dist/soundya
 cp target/armv7-unknown-linux-gnueabihf/release/soundya dist/soundya/
-cp packaging/install.sh packaging/run.sh packaging/guard.sh packaging/S99soundya packaging/soundya.env dist/soundya/
+cp packaging/install.sh packaging/uninstall.sh packaging/run.sh packaging/guard.sh packaging/S99soundya packaging/soundya.env dist/soundya/
 # AirPlay receiver (prebuilt; rebuild with scripts/build-shairport.sh).
 cp packaging/shairport-sync dist/soundya/
 chmod 755 dist/soundya/*

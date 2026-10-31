@@ -5,6 +5,7 @@ mod alice;
 mod alsa;
 mod buffer;
 mod buttons;
+mod clock;
 mod dns;
 mod fsx;
 mod led;
@@ -1089,6 +1090,11 @@ impl Controller {
             ),
             "status" => send_to(&reply, self.status()),
             "netcheck" => self.check_net(Some(reply)),
+            // «Удалить soundya» on the settings page: the speaker becomes plain Alice again.
+            "uninstall" => {
+                let r = uninstall();
+                send_to(&reply, r);
+            }
             // «update check» / «update install» from the settings page.
             "update" => {
                 let shared = self.shared.clone();
@@ -1375,6 +1381,28 @@ fn note_audio_error(dir: &std::path::Path, device: &str, e: &str) {
     }
 }
 
+/// Runs packaging/uninstall.sh (built in) in its own session: it stops soundya,
+/// this very process, so it must outlive it.
+fn uninstall() -> String {
+    const SCRIPT: &str = include_str!("../packaging/uninstall.sh");
+    let path = "/tmp/soundya-uninstall.sh";
+    if let Err(e) = std::fs::write(path, SCRIPT) {
+        return format!("error: {e}");
+    }
+    eprintln!("uninstall: removing soundya");
+    let started = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("(nohup setsid sh -c 'sleep 2; sh {path}' > /tmp/soundya-uninstall.log 2>&1 < /dev/null &) && echo started"))
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("started"))
+        .unwrap_or(false);
+    if started {
+        "OK: soundya удаляется. Через несколько секунд колонка снова будет обычной Алисой".into()
+    } else {
+        "error: не удалось запустить удаление".into()
+    }
+}
+
 fn device() -> String {
     std::env::var("SOUNDYA_DEVICE").unwrap_or_else(|_| "default".into())
 }
@@ -1417,6 +1445,8 @@ fn daemon() {
     stats::run(dir.clone(), shared.clone());
     // Looks for a newer soundya on GitHub; the page offers to install it.
     update::run(shared.clone());
+    // A wrong clock breaks every HTTPS site (GitHub first): set it from the web.
+    clock::run(shared.clone());
     if std::env::var("SOUNDYA_NO_VOICE").is_err() {
         alice::watch(tx.clone(), shared.clone());
         buttons::run(tx.clone(), shared.clone());
@@ -1527,6 +1557,10 @@ fn main() {
     let code = match cmd {
         "daemon" => {
             daemon();
+            0
+        }
+        "uninstall" => {
+            println!("{}", uninstall());
             0
         }
         "search" => match client().search_tracks(&rest) {

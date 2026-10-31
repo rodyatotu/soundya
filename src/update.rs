@@ -30,6 +30,8 @@ pub struct Release {
     pub version: String,
     pub notes: String,
     url: String,
+    /// The same file through the API (another host, another certificate).
+    api_url: String,
     size: u64,
 }
 
@@ -58,6 +60,7 @@ fn release_from(v: &Value) -> Option<Release> {
         version: v.get("tag_name")?.as_str()?.trim_start_matches('v').to_owned(),
         notes: v.get("body").and_then(Value::as_str).unwrap_or("").chars().take(1500).collect(),
         url: asset.get("browser_download_url")?.as_str()?.to_owned(),
+        api_url: asset.get("url").and_then(Value::as_str).unwrap_or("").to_owned(),
         size: asset.get("size").and_then(Value::as_u64).unwrap_or(0),
     })
 }
@@ -70,17 +73,11 @@ impl Updates {
     /// Asks GitHub for the latest release (through the SoundCloud proxy, if any).
     pub fn check(&self, proxy: &str) -> Result<Option<Release>, String> {
         *self.checked.lock().unwrap() = Some(Instant::now());
-        let result = (|| -> Result<Release, String> {
-            let agent = crate::sc::build_agent(proxy).map_err(|e| e.to_string())?;
-            let v: Value = agent
-                .get(RELEASES)
-                .set("Accept", "application/vnd.github+json")
-                .call()
-                .map_err(|e| e.to_string())?
-                .into_json()
-                .map_err(|e| e.to_string())?;
-            release_from(&v).ok_or_else(|| "в последнем релизе нет сборки".to_owned())
-        })();
+        let result = match fetch_latest(proxy) {
+            // The speaker's clock was wrong: once it is set, ask again.
+            Err(e) if crate::clock::is_clock_error(&e) && crate::clock::fix(proxy).is_ok() => fetch_latest(proxy),
+            other => other,
+        };
         match result {
             Ok(r) => {
                 *self.error.lock().unwrap() = None;
@@ -133,23 +130,45 @@ impl Updates {
             None => return Err(format!("уже стоит последняя версия {}", env!("CARGO_PKG_VERSION"))),
         };
         self.set_state(&format!("скачиваю {}…", release.version));
-        let agent = crate::sc::build_agent(proxy).map_err(|e| e.to_string())?;
-        let resp = agent.get(&release.url).call().map_err(|e| format!("не скачалось: {e}"))?;
-        let mut body = resp.into_reader();
-        let mut file = std::fs::File::create(TAR).map_err(|e| format!("{TAR}: {e}"))?;
-        let mut got = 0u64;
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = body.read(&mut buf).map_err(|e| format!("не скачалось: {e}"))?;
-            if n == 0 {
+        let mut last = String::new();
+        let mut done = false;
+        // Through the proxy and directly, the download link and the API link; a wrong
+        // clock on the speaker breaks every HTTPS site, so it is fixed and tried again.
+        'outer: for attempt in 0..2 {
+            for via_proxy in [true, false] {
+                if via_proxy && proxy.trim().is_empty() {
+                    continue;
+                }
+                for (url, api) in [(&release.url, false), (&release.api_url, true)] {
+                    if url.is_empty() {
+                        continue;
+                    }
+                    match download(url, api, if via_proxy { proxy } else { "" }, release.size) {
+                        Ok(()) => {
+                            done = true;
+                            break 'outer;
+                        }
+                        Err(e) => {
+                            eprintln!("update: {url}: {e}");
+                            last = e;
+                        }
+                    }
+                }
+            }
+            if attempt == 0 && crate::clock::is_clock_error(&last) {
+                match crate::clock::fix(proxy) {
+                    Ok(skew) => eprintln!("update: clock corrected by {skew} s; trying again"),
+                    Err(e) => {
+                        last = format!("часы колонки неверны, и поправить их не вышло: {e}");
+                        break;
+                    }
+                }
+            } else {
                 break;
             }
-            file.write_all(&buf[..n]).map_err(|e| format!("{TAR}: {e}"))?;
-            got += n as u64;
         }
-        drop(file);
-        if release.size != 0 && got != release.size {
-            return Err(format!("скачалось {got} байт из {}", release.size));
+        if !done {
+            return Err(format!("не скачалось: {last}"));
         }
         self.set_state(&format!("устанавливаю {}…", release.version));
         // Unpack, then run the installer in its own session: it stops soundya
@@ -170,6 +189,44 @@ impl Updates {
         }
         Ok(format!("Устанавливаю soundya {}. Через полминуты страница обновится сама", release.version))
     }
+}
+
+fn fetch_latest(proxy: &str) -> Result<Release, String> {
+    let agent = crate::sc::build_agent(proxy).map_err(|e| e.to_string())?;
+    let v: Value = agent
+        .get(RELEASES)
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_json()
+        .map_err(|e| e.to_string())?;
+    release_from(&v).ok_or_else(|| "в последнем релизе нет сборки".to_owned())
+}
+
+/// Downloads one URL to TAR and checks its size.
+fn download(url: &str, api: bool, proxy: &str, size: u64) -> Result<(), String> {
+    let agent = crate::sc::build_agent(proxy).map_err(|e| e.to_string())?;
+    let mut req = agent.get(url);
+    if api {
+        req = req.set("Accept", "application/octet-stream");
+    }
+    let resp = req.call().map_err(|e| e.to_string())?;
+    let mut body = resp.into_reader();
+    let mut file = std::fs::File::create(TAR).map_err(|e| format!("{TAR}: {e}"))?;
+    let mut got = 0u64;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = body.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).map_err(|e| format!("{TAR}: {e}"))?;
+        got += n as u64;
+    }
+    if size != 0 && got != size {
+        return Err(format!("скачалось {got} байт из {size}"));
+    }
+    Ok(())
 }
 
 /// Checks for a new release now and then, so the page can show it.

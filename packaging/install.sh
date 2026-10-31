@@ -9,6 +9,7 @@ DIR=/data/opt/soundya
 
 mkdir -p "$DIR"
 cp "$SRC/soundya" "$SRC/run.sh" "$SRC/guard.sh" "$DIR/"
+[ -f "$SRC/uninstall.sh" ] && cp "$SRC/uninstall.sh" "$DIR/" && chmod 755 "$DIR/uninstall.sh"
 # AirPlay receiver; the old one may still be running until soundya restarts.
 if [ -f "$SRC/shairport-sync" ]; then
     killall shairport-sync 2>/dev/null || true

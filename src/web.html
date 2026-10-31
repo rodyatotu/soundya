@@ -110,6 +110,9 @@
   .updbanner { display: none; width: 100%; margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; border: 0;
     background: var(--accent); color: #fff; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
   .updbanner.on { display: block; }
+  details.danger { margin-top: 16px; font-size: 14px; }
+  details.danger summary { cursor: pointer; color: var(--muted); }
+  .dangerbtn { margin-top: 8px; background: transparent; color: var(--err); border: 1px solid var(--err); }
   .notes { white-space: pre-wrap; font-family: inherit; font-size: 13px; color: var(--muted); margin: 8px 0 0; max-height: 160px; overflow: auto; }
   .msg.ok { color: var(--ok); } .msg.err { color: var(--err); }
   ul.list { list-style: none; margin: 0; padding: 0; }
@@ -327,6 +330,13 @@
       <button class="primary" onclick="installUpdate()" id="updinstall" hidden>Установить обновление</button>
     </div>
     <div class="msg" id="updmsg"></div>
+    <details class="danger">
+      <summary>Удалить soundya с колонки</summary>
+      <p class="hint">Удалит программу, приёмник AirPlay и все настройки (вход в SoundCloud, ключ компьютера).
+        Root и отключённые обновления останутся, колонка станет обычной Алисой. Вернуть — установить заново.</p>
+      <button class="dangerbtn" onclick="uninstallSoundya()">Удалить soundya</button>
+      <div class="msg" id="uninstmsg"></div>
+    </details>
 
     <h2 class="section">AirPlay</h2>
     <p class="hint">Колонка видна в списке AirPlay на iPhone, iPad и Mac: Пункт управления → значок AirPlay
@@ -1016,6 +1026,12 @@ function renderUpdate(u) {
     updWaitFor = null;
     show($('updmsg'), `OK: обновлено до ${u.current}`);
   }
+}
+
+async function uninstallSoundya() {
+  if (!confirm('Удалить soundya с колонки вместе с настройками? SoundCloud и AirPlay перестанут работать.')) return;
+  busy($('uninstmsg'), 'Удаляю…');
+  show($('uninstmsg'), await post('/api/cmd', 'uninstall'));
 }
 
 async function checkUpdate() {
