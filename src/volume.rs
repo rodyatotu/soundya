@@ -33,7 +33,13 @@ pub fn level() -> Option<i32> {
 }
 
 fn nudge(by: i32) {
-    let _ = LEVEL.fetch_update(Ordering::AcqRel, Ordering::Acquire, |l| (l >= 0).then(|| (l + by).clamp(0, MAX)));
+    let mut l = LEVEL.load(Ordering::Acquire);
+    while l >= 0 {
+        match LEVEL.compare_exchange(l, (l + by).clamp(0, MAX), Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break,
+            Err(now) => l = now,
+        }
+    }
 }
 
 /// A key event seen on the button device (src/buttons.rs).

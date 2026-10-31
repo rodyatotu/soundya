@@ -1177,9 +1177,10 @@ impl Controller {
             "volume" => {
                 let (what, n) = arg.split_once(' ').unwrap_or((arg.as_str(), "1"));
                 let n: i32 = n.trim().parse().unwrap_or(1);
+                let what = what.to_owned();
                 // Up to ten presses with pauses: not on the controller thread.
                 thread::spawn(move || {
-                    let r = match what {
+                    let r = match what.as_str() {
                         "set" => volume::set(n).map(|l| format!("OK: громкость {l}")),
                         "up" | "down" => volume::press(what == "up", n.max(1) as u32).map(|()| "OK".to_owned()),
                         _ => Err("volume set N | up | down".to_owned()),
