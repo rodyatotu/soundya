@@ -56,6 +56,8 @@ pub const DEFAULT_NAME: &str = "Яндекс Станция";
 pub struct AirPlay {
     enabled: AtomicBool,
     name: Mutex<String>,
+    /// Which picture iPhones draw next to the name (see [`model_for`]).
+    icon: Mutex<String>,
     /// Sound is coming in right now.
     active: AtomicBool,
     /// shairport-sync is running and announced.
@@ -68,10 +70,11 @@ pub struct AirPlay {
 }
 
 impl AirPlay {
-    pub fn new(enabled: bool, name: &str) -> Self {
+    pub fn new(enabled: bool, name: &str, icon: &str) -> Self {
         Self {
             enabled: AtomicBool::new(enabled),
             name: Mutex::new(clean_name(name)),
+            icon: Mutex::new(icon.to_owned()),
             active: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             kick: AtomicBool::new(false),
@@ -85,10 +88,11 @@ impl AirPlay {
     }
 
     /// Settings changed on the page.
-    pub fn configure(&self, enabled: bool, name: &str) {
+    pub fn configure(&self, enabled: bool, name: &str, icon: &str) {
         let name = clean_name(name);
         let changed = self.enabled.swap(enabled, Ordering::AcqRel) != enabled
-            || std::mem::replace(&mut *self.name.lock().unwrap(), name.clone()) != name;
+            || std::mem::replace(&mut *self.name.lock().unwrap(), name.clone()) != name
+            || std::mem::replace(&mut *self.icon.lock().unwrap(), icon.to_owned()) != icon;
         if changed {
             self.config.fetch_add(1, Ordering::AcqRel);
         }
@@ -111,6 +115,27 @@ impl AirPlay {
             "error": *self.error.lock().unwrap(),
         })
     }
+}
+
+/// iPhones and Macs draw a picture next to each AirPlay receiver from the model it
+/// announces (`am=` in its TXT record); a picture of one's own cannot be sent.
+/// "speaker": the plain AirPlay speaker; the others borrow an Apple device's picture.
+pub fn model_for(icon: &str) -> Option<&'static str> {
+    match icon {
+        "homepod" => Some("AudioAccessory5,1"), // HomePod mini
+        "homepod-big" => Some("AudioAccessory1,1"), // HomePod
+        "airport" => Some("AirPort10,115"),     // AirPort Express
+        "appletv" => Some("AppleTV3,2"),
+        _ => None,
+    }
+}
+
+fn with_icon(mut service: mdns::Service, icon: &str) -> mdns::Service {
+    if let Some(model) = model_for(icon) {
+        service.txt.retain(|t| !t.starts_with("am="));
+        service.txt.push(format!("am={model}"));
+    }
+    service
 }
 
 /// The name shown on the iPhone: one line, at most 50 characters (shairport-sync's limit).
@@ -343,6 +368,7 @@ fn session(
     let result = loop {
         if !announced {
             if let Some(service) = crate::fsx::read_string(Path::new(ANNOUNCE)).and_then(|t| parse_announce(&t)) {
+                let service = with_icon(service, &air.icon.lock().unwrap());
                 eprintln!("airplay: announcing «{}» on port {}", service.instance, service.port);
                 mdns::publish(service);
                 air.ready.store(true, Ordering::Release);
@@ -713,6 +739,14 @@ mod tests {
     fn reads_card_rate() {
         // No /proc/asound here: falls back to 48 kHz.
         assert!(card_rate() >= 8_000);
+    }
+
+    #[test]
+    fn icon_sets_the_model() {
+        let s = mdns::Service { instance: "x@y".into(), kind: "_raop._tcp".into(), port: 5000, txt: vec!["am=ShairportSync".into(), "ch=2".into()] };
+        let h = with_icon(s.clone(), "homepod");
+        assert!(h.txt.contains(&"am=AudioAccessory5,1".to_owned()) && !h.txt.contains(&"am=ShairportSync".to_owned()));
+        assert_eq!(with_icon(s.clone(), "speaker").txt, s.txt);
     }
 
     #[test]

@@ -313,6 +313,7 @@ impl Controller {
                 "pc_contacts": self.settings.pc_contacts,
                 "airplay": self.settings.airplay,
                 "airplay_name": self.settings.airplay_name,
+                "airplay_icon": self.settings.airplay_icon,
                 "stats": self.settings.stats,
                 "tv_host": self.settings.tv_host,
             },
@@ -479,7 +480,7 @@ impl Controller {
         self.shared.keyword_only.store(new.keyword_only, Ordering::Release);
         self.shared.ring.store(new.ring, Ordering::Release);
         new.airplay_name = new.airplay_name.trim().to_owned();
-        self.shared.airplay.configure(new.airplay, &new.airplay_name);
+        self.shared.airplay.configure(new.airplay, &new.airplay_name, &new.airplay_icon);
         self.shared.stats.store(new.stats, Ordering::Release);
         *self.shared.proxy.lock().unwrap() = new.proxy.clone();
         new.tv_host = new.tv_host.trim().to_owned();
@@ -1471,7 +1472,7 @@ fn daemon() {
         queue: AtomicBool::new(false),
         status: Mutex::new("stopped".into()),
         status_json: Mutex::new(String::new()),
-        airplay: airplay::AirPlay::new(settings.airplay, &settings.airplay_name),
+        airplay: airplay::AirPlay::new(settings.airplay, &settings.airplay_name, &settings.airplay_icon),
         stats: AtomicBool::new(settings.stats),
         updates: update::Updates::default(),
         proxy: Mutex::new(settings.proxy.clone()),

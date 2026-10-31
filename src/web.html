@@ -83,11 +83,12 @@
   }
   .heart.on { color: var(--accent); }
   .heart:hover { color: var(--accent); }
-  input[type=text], input[type=password] {
+  input[type=text], input[type=password], label.field select {
     width: 100%; font: inherit; color: var(--ink); background: var(--bg);
     border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; outline: none;
   }
-  input:focus { border-color: var(--accent); }
+  input:focus, label.field select:focus { border-color: var(--accent); }
+  label.field select { display: block; margin-top: 5px; color: var(--ink); appearance: auto; }
   .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   .row button { flex: 1; }
   .search { display: flex; gap: 8px; }
@@ -350,6 +351,17 @@
     <label class="field">Название в списке AirPlay
       <input type="text" id="airplayname" placeholder="Яндекс Станция" maxlength="50" autocomplete="off">
     </label>
+    <label class="field">Значок в списке AirPlay
+      <select id="airplayicon">
+        <option value="speaker">Обычная колонка AirPlay</option>
+        <option value="homepod">HomePod mini</option>
+        <option value="homepod-big">HomePod</option>
+        <option value="airport">AirPort Express</option>
+        <option value="appletv">Apple TV</option>
+      </select>
+    </label>
+    <p class="hint">Картинку рисует сам iPhone: свою загрузить нельзя, можно выбрать из значков Apple.
+      После смены выключите и включите Wi-Fi на телефоне, чтобы он обновил список.</p>
     <p class="hint" id="airplaystate"></p>
     <div class="row">
       <button class="primary" onclick="saveSettings('airplaymsg')">Сохранить</button>
@@ -892,6 +904,7 @@ async function refresh() {
     $('stats').checked = settings.stats !== false;
     $('tvhost').value = settings.tv_host || '';
     $('airplayname').value = settings.airplay_name || '';
+    $('airplayicon').value = settings.airplay_icon || 'speaker';
     settingsLoaded = true;
   }
 }
@@ -992,7 +1005,8 @@ function settingsBody(extra) {
     proxy: $('proxy').value, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
     pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value,
     pc_contacts: readContacts(),
-    airplay: $('airplay').checked, airplay_name: $('airplayname').value, stats: $('stats').checked,
+    airplay: $('airplay').checked, airplay_name: $('airplayname').value, airplay_icon: $('airplayicon').value,
+    stats: $('stats').checked,
     tv_host: $('tvhost').value
   }, extra));
 }

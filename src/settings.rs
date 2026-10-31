@@ -36,6 +36,9 @@ pub struct Settings {
     /// Name in the AirPlay list on the iPhone; "" = «Яндекс Станция».
     #[serde(default)]
     pub airplay_name: String,
+    /// Picture next to the name: "speaker", "homepod", "homepod-big", "airport", "appletv".
+    #[serde(default = "speaker")]
+    pub airplay_icon: String,
     /// Anonymous daily «I'm running» ping for the speaker count (src/stats.rs).
     #[serde(default = "yes")]
     pub stats: bool,
@@ -58,6 +61,10 @@ fn yes() -> bool {
     true
 }
 
+fn speaker() -> String {
+    "speaker".into()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -71,6 +78,7 @@ impl Default for Settings {
             pc_contacts: Vec::new(),
             airplay: true,
             airplay_name: String::new(),
+            airplay_icon: speaker(),
             stats: true,
             tv_host: String::new(),
         }
