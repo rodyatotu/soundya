@@ -923,14 +923,36 @@ $('seek').addEventListener('pointercancel', () => { seeking = false; $('seek').c
 
 // ---- status ----
 let stall = { pos: -1, id: null, since: 0 };
+// The position between two status answers runs on the page's own clock, so the
+// time and the bar move smoothly and stay right even when answers come late.
+let playClock = { pos: 0, at: 0, dur: 0, running: false };
+function drawPosition() {
+  if (seeking) return;
+  const c = playClock;
+  let pos = c.pos + (c.running ? Math.min(Date.now() - c.at, 3000) : 0);
+  if (c.dur) pos = Math.min(pos, c.dur);
+  $('pos').textContent = mmss(pos);
+  const pct = c.dur ? Math.min(100, 100 * pos / c.dur) : 0;
+  $('progress').style.width = pct + '%';
+  $('seekdot').style.left = pct + '%';
+}
+setInterval(drawPosition, 250);
+// A tab in the background gets its timers slowed down: catch up at once on return.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+window.addEventListener('pageshow', () => refresh());
+let refreshSeq = 0, refreshShown = 0;
 async function refresh() {
   let s;
+  const seq = ++refreshSeq;
   try {
-    s = await (await fetch('/api/status')).json();
+    s = await (await fetch('/api/status', { cache: 'no-store' })).json();
   } catch (e) {
-    $('state').textContent = 'нет связи с колонкой';
+    if (seq > refreshShown) $('state').textContent = 'нет связи с колонкой';
     return;
   }
+  // A slow answer that arrives after a newer one would move the player back.
+  if (seq < refreshShown) return;
+  refreshShown = seq;
   const names = { playing: 'играет', paused: 'пауза', stopped: 'остановлено' };
   // Something is in progress: say so, so it doesn't look frozen.
   // A playing track whose time has not moved for 1.5 s is still loading.
@@ -954,14 +976,10 @@ async function refresh() {
   renderUpdate(s.update);
   document.querySelector('.bar').classList.toggle('busy', !!busyText);
   $('track').textContent = s.track || (s.loading ? 'Загружаю: ' + s.loading : '—');
-  if (!seeking) $('pos').textContent = mmss(s.position_ms);
   $('dur').textContent = mmss(s.duration_ms);
   seekState = { duration: s.duration_ms || 0, playing: s.state !== 'stopped' };
-  if (!seeking) {
-    const pct = s.duration_ms ? Math.min(100, 100 * s.position_ms / s.duration_ms) : 0;
-    $('progress').style.width = pct + '%';
-    $('seekdot').style.left = pct + '%';
-  }
+  playClock = { pos: s.position_ms || 0, at: Date.now(), dur: s.duration_ms || 0, running: s.state === 'playing' && !stuck };
+  drawPosition();
   const want = s.state === 'playing' ? 'pause' : 'play';
   if ($('toggle').dataset.icon !== want) {
     $('toggle').dataset.icon = want;
