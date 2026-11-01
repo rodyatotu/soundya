@@ -51,6 +51,17 @@ pub struct Settings {
     pub proxy_on: bool,
     #[serde(default = "yes")]
     pub bypass_on: bool,
+    /// «Подсветка»: "solid" (ровный свет), "pulse" (дышит в такт), "eq"
+    /// (эквалайзер по зонам кольца); two colours #rrggbb (quiet → loud) and
+    /// brightness 10..=100 %.
+    #[serde(default = "light_mode")]
+    pub light_mode: String,
+    #[serde(default = "light_color")]
+    pub light_color: String,
+    #[serde(default = "light_color2")]
+    pub light_color2: String,
+    #[serde(default = "light_bright")]
+    pub light_bright: u8,
     /// Parts switched off at install («что поставить») or later on the page:
     /// SoundCloud by voice, the PC and the TV. AirPlay has `airplay`, the
     /// bypass `bypass_on`.
@@ -82,6 +93,19 @@ fn yes() -> bool {
     true
 }
 
+fn light_mode() -> String {
+    "solid".into()
+}
+fn light_color() -> String {
+    "#ff7a00".into()
+}
+fn light_color2() -> String {
+    "#ffd000".into()
+}
+fn light_bright() -> u8 {
+    100
+}
+
 fn speaker() -> String {
     "speaker".into()
 }
@@ -106,6 +130,10 @@ impl Default for Settings {
             proxy_on: true,
             bypass_on: true,
             zapret_args: String::new(),
+            light_mode: light_mode(),
+            light_color: light_color(),
+            light_color2: light_color2(),
+            light_bright: light_bright(),
             soundcloud: true,
             pc_on: true,
             tv_on: true,

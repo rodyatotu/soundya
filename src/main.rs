@@ -20,6 +20,7 @@ mod settings;
 mod stats;
 mod tv;
 mod update;
+mod vis;
 mod volume;
 mod zapret;
 mod web;
@@ -120,6 +121,8 @@ pub struct Shared {
     pub alice_music: AtomicBool,
     /// SoundCloud by voice (off: music requests stay Alice's, PC and TV still work).
     pub soundcloud: AtomicBool,
+    /// «Подсветка»: mode, colours, brightness.
+    pub light: Mutex<led::Light>,
 }
 
 impl Shared {
@@ -356,6 +359,10 @@ impl Controller {
                 "zapret_args": self.settings.zapret_args,
                 "proxy_on": self.settings.proxy_on,
                 "soundcloud": self.settings.soundcloud,
+                "light_mode": self.settings.light_mode,
+                "light_color": self.settings.light_color,
+                "light_color2": self.settings.light_color2,
+                "light_bright": self.settings.light_bright,
                 "pc_on": self.settings.pc_on,
                 "tv_on": self.settings.tv_on,
             },
@@ -478,6 +485,16 @@ impl Controller {
     }
 
     fn apply_settings(&mut self, mut new: Settings) -> String {
+        if !["solid", "pulse", "eq"].contains(&new.light_mode.as_str()) {
+            new.light_mode = "solid".into();
+        }
+        for c in [&mut new.light_color, &mut new.light_color2] {
+            if led::led_colour(c).is_none() {
+                return "error: цвет вида #ff7a00".into();
+            }
+            *c = c.trim().to_lowercase();
+        }
+        new.light_bright = new.light_bright.clamp(10, 100);
         if new.token.contains('•') && new.token == self.settings.masked_token() {
             new.token = self.settings.token.clone();
         }
@@ -533,6 +550,7 @@ impl Controller {
         }
         self.shared.keyword_only.store(new.keyword_only, Ordering::Release);
         self.shared.ring.store(new.ring, Ordering::Release);
+        *self.shared.light.lock().unwrap() = led::Light::from_settings(&new);
         new.airplay_name = new.airplay_name.trim().to_owned();
         self.shared.airplay.configure(new.airplay, &new.airplay_name, &new.airplay_icon);
         self.shared.stats.store(new.stats, Ordering::Release);
@@ -1714,6 +1732,7 @@ fn daemon() {
         proxy: Mutex::new(settings.use_proxy().to_owned()),
         tv: AtomicBool::new(settings.tv_configured()),
         soundcloud: AtomicBool::new(settings.soundcloud),
+        light: Mutex::new(led::Light::from_settings(&settings)),
     });
     let (tx, rx) = mpsc::channel();
     led::run(shared.clone());

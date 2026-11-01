@@ -264,6 +264,9 @@ fn run(
             }
             return Err(format!("alsa write: {e}"));
         }
+        if crate::vis::ON.load(Ordering::Relaxed) {
+            crate::vis::feed(samples, channels, spec.rate, out.as_ref().and_then(|o| o.queued()));
+        }
         frames_played += (samples.len() / channels.max(1)) as u64;
         flags
             .position_ms

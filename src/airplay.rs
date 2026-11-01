@@ -423,13 +423,19 @@ fn session(
                 gain.apply(&mut samples, CHANNELS, RATE, shared.duck.active());
                 if let Some(o) = output.as_mut() {
                     let queued = o.queued();
+                    let out_rate = rate.out_rate;
                     let corrected = rate.process(&samples, queued, Instant::now());
                     written += (corrected.len() / CHANNELS) as u64;
                     if let Err(e) = o.write(corrected) {
                         eprintln!("airplay: sound card: {e}; reopening");
                         output = None;
-                    } else if o.queued().is_some_and(|q| q >= rate.target_frames()) {
-                        o.start();
+                    } else {
+                        if crate::vis::ON.load(Ordering::Relaxed) {
+                            crate::vis::feed(corrected, CHANNELS, out_rate, o.queued());
+                        }
+                        if o.queued().is_some_and(|q| q >= rate.target_frames()) {
+                            o.start();
+                        }
                     }
                 }
                 if stats_at.elapsed() > Duration::from_secs(30) {
