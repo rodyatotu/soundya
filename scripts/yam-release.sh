@@ -18,7 +18,15 @@ set -eu
 cd "$(dirname "$0")/.."
 NS=${YAM_NS:-rodyatotu}
 ID="$NS.soundya"
-YAM_SRC=${YAM_SRC:-../yam}
+# Defaults, so a release is just «sh scripts/yam-release.sh»:
+#   ~/yam                 YAM sources with yam-publish built
+#   ~/Keys/yam-key.pem    the namespace key
+#   ~/Keys/yam-token      the publish token (one line, chmod 600)
+if [ -z "${YAM_SRC:-}" ]; then
+    if [ -d ../yam ]; then YAM_SRC=../yam; else YAM_SRC="$HOME/yam"; fi
+fi
+[ -n "${YAM_AUTHOR_KEY_FILE:-}" ] || [ ! -f "$HOME/Keys/yam-key.pem" ] || YAM_AUTHOR_KEY_FILE="$HOME/Keys/yam-key.pem"
+[ -n "${YAM_PUBLISH_TOKEN:-}" ] || [ ! -f "$HOME/Keys/yam-token" ] || YAM_PUBLISH_TOKEN=$(tr -d ' \r\n' < "$HOME/Keys/yam-token")
 PUBLISH="$YAM_SRC/target/release/yam-publish"
 # Station Lite, Mini 1, Mini 2, Station 2: the models soundya runs on.
 TARGETS=${YAM_TARGETS:-"yandexmicro yandexmini yandexmini_2 yandexmidi"}
