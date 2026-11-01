@@ -242,6 +242,8 @@ fn works(agent: &ureq::Agent, strategy: Strategy) -> Result<(), String> {
                 }
                 Err(e) => {
                     eprintln!("bypass: {} on {url} (try {}): {e}", strategy.id(), attempt + 1);
+                    // The second try goes to another of the host's servers.
+                    crate::dns::failed(url);
                     std::thread::sleep(Duration::from_millis(700));
                 }
             }

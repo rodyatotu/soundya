@@ -55,13 +55,46 @@ impl Resolver {
     }
 }
 
+// SoundCloud's names point at several servers, and a provider may let some of
+// them through and not others (the bypass then «works, then does not» as the
+// DNS answer rotates). A server that failed is put last for a while, so the
+// next try goes to another one.
+const BAD_FOR: Duration = Duration::from_secs(600);
+static BAD: Mutex<Option<HashMap<IpAddr, Instant>>> = Mutex::new(None);
+/// The address handed out first for each host (ureq connects to it first).
+static FIRST: Mutex<Option<HashMap<String, IpAddr>>> = Mutex::new(None);
+
+/// The server last used for `host` did not answer: try the others first.
+pub fn failed(host: &str) {
+    let host = host.trim_start_matches("https://").trim_start_matches("http://");
+    let host = host.split(['/', ':']).next().unwrap_or(host);
+    let Some(ip) = FIRST.lock().unwrap().as_ref().and_then(|m| m.get(host).copied()) else { return };
+    BAD.lock().unwrap().get_or_insert_with(HashMap::new).insert(ip, Instant::now());
+    eprintln!("dns: {host} at {ip} did not answer; trying its other servers first");
+}
+
+/// Good servers first, recently failed ones last; remembers which comes first.
+fn order(host: &str, mut addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    {
+        let mut bad = BAD.lock().unwrap();
+        let bad = bad.get_or_insert_with(HashMap::new);
+        bad.retain(|_, at| at.elapsed() < BAD_FOR);
+        addrs.sort_by_key(|a| bad.contains_key(&a.ip()));
+    }
+    if let Some(first) = addrs.first() {
+        FIRST.lock().unwrap().get_or_insert_with(HashMap::new).insert(host.to_owned(), first.ip());
+    }
+    addrs
+}
+
 impl ureq::Resolver for Resolver {
     fn resolve(&self, netloc: &str) -> io::Result<Vec<SocketAddr>> {
+        let name = netloc.rsplit_once(':').map_or(netloc, |(h, _)| h).trim_start_matches('[').trim_end_matches(']');
         // System resolver first (fails fast when 127.0.0.1:53 refuses).
         if let Ok(addrs) = netloc.to_socket_addrs() {
             let v: Vec<SocketAddr> = addrs.collect();
             if !v.is_empty() {
-                return Ok(v);
+                return Ok(order(name, v));
             }
         }
         let (host, port) = netloc
@@ -69,7 +102,7 @@ impl ureq::Resolver for Resolver {
             .ok_or_else(|| io::Error::other(format!("bad address {netloc}")))?;
         let port: u16 = port.parse().map_err(io::Error::other)?;
         let host = host.trim_start_matches('[').trim_end_matches(']');
-        Ok(self.lookup(host)?.into_iter().map(|ip| SocketAddr::new(ip, port)).collect())
+        Ok(order(host, self.lookup(host)?.into_iter().map(|ip| SocketAddr::new(ip, port)).collect()))
     }
 }
 
@@ -158,6 +191,18 @@ fn query(host: &str, server: &str) -> io::Result<Vec<IpAddr>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_server_goes_last() {
+        let a: SocketAddr = "1.1.1.1:443".parse().unwrap();
+        let b: SocketAddr = "2.2.2.2:443".parse().unwrap();
+        assert_eq!(order("x.test", vec![a, b])[0], a);
+        failed("https://x.test/path");
+        assert_eq!(order("x.test", vec![a, b]), vec![b, a]);
+        // Now b is first: if it fails too, both are bad and the order stays stable.
+        failed("x.test");
+        assert_eq!(order("x.test", vec![a, b]).len(), 2);
+    }
 
     #[test]
     fn query_and_response_round_trip() {

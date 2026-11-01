@@ -430,7 +430,9 @@ impl Client {
                 // Keep tokens out of messages and logs.
                 Err(ureq::Error::Status(code, _)) => return Err(format!("HTTP {code} на {short}").into()),
                 Err(ureq::Error::Transport(t)) if !retried => {
-                    // Proxies drop connections now and then: one quiet retry.
+                    // Proxies drop connections now and then: one quiet retry,
+                    // on another of SoundCloud's servers.
+                    crate::dns::failed(&short);
                     eprintln!("soundcloud: {}: {}; retrying", t.kind(), t.message().unwrap_or(""));
                     retried = true;
                     thread::sleep(Duration::from_millis(500));
