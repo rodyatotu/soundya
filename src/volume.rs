@@ -116,12 +116,33 @@ fn parse_mixer(out: &str) -> Option<u32> {
 }
 
 fn read_mixer() -> Option<u32> {
-    let out = std::process::Command::new("amixer").args(["cget", CONTROL]).output().ok()?;
+    let out = amixer()?.args(["cget", CONTROL]).output().ok()?;
     parse_mixer(&String::from_utf8_lossy(&out.stdout))
 }
 
+/// The firmware's amixer: in PATH, or — on Station Mini 1, where it is not —
+/// /system/workdir/bin/amixer with the firmware's ALSA libraries (as Luna runs it).
+fn amixer() -> Option<std::process::Command> {
+    const SYSTEM: &str = "/system/workdir/bin/amixer";
+    const LIBS: &str = "/bkupgrade/data/bundle/ap2/libs:/system/workdir/lib";
+    let in_path = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).map(|d| d.join("amixer")).collect::<Vec<_>>())
+        .find(|p| crate::fsx::exists(p));
+    if let Some(p) = in_path {
+        return Some(std::process::Command::new(p));
+    }
+    if !crate::fsx::exists(std::path::Path::new(SYSTEM)) {
+        return None;
+    }
+    let mut c = std::process::Command::new(SYSTEM);
+    let inherited = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+    c.env("LD_LIBRARY_PATH", if inherited.is_empty() { LIBS.to_owned() } else { format!("{LIBS}:{inherited}") });
+    Some(c)
+}
+
 fn write_mixer(value: u32) -> bool {
-    let amixer = |args: &[&str]| std::process::Command::new("amixer").args(args).status().is_ok_and(|s| s.success());
+    let amixer = |args: &[&str]| amixer().is_some_and(|mut c| c.args(args).status().is_ok_and(|s| s.success()));
     // The control by its full name; on firmwares that name it differently,
     // the simple control «Master» as set_volume.sh does.
     amixer(&["-q", "cset", CONTROL, &format!("{value},{value}")])
