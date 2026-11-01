@@ -1076,6 +1076,13 @@ fn read_frames(
                 continue;
             }
             let playing = shared.playing.load(std::sync::atomic::Ordering::Acquire);
+            // SoundCloud switched off in the settings: only the PC, the TV and
+            // messages are ours; all music stays Alice's.
+            let music = !matches!(intent, Intent::Pc(_) | Intent::Tv(_));
+            if music && !shared.soundcloud() {
+                eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
+                continue;
+            }
             // Transport commands are ours only while SoundCloud owns the speaker.
             let ours = match intent {
                 // On pause Alice's own music may be playing: «что играет», «стоп» are about hers.

@@ -10,6 +10,7 @@ mod bypass;
 mod clock;
 mod dns;
 mod fsx;
+mod history;
 mod led;
 mod mdns;
 mod pc;
@@ -117,6 +118,8 @@ pub struct Shared {
     /// The last music started was Alice's own (Yandex Music, radio…), not
     /// SoundCloud: «продолжи» then belongs to her.
     pub alice_music: AtomicBool,
+    /// SoundCloud by voice (off: music requests stay Alice's, PC and TV still work).
+    pub soundcloud: AtomicBool,
 }
 
 impl Shared {
@@ -125,6 +128,9 @@ impl Shared {
     }
     pub fn has_queue(&self) -> bool {
         self.queue.load(Ordering::Acquire)
+    }
+    pub fn soundcloud(&self) -> bool {
+        self.soundcloud.load(Ordering::Acquire)
     }
     pub fn alice_music(&self) -> bool {
         self.alice_music.load(Ordering::Acquire)
@@ -177,6 +183,11 @@ struct Controller {
     retries: u32,
     /// What is being fetched from SoundCloud right now, for the page's spinner.
     loading: Mutex<Option<String>>,
+    /// «Недавно играло» on the page.
+    history: history::History,
+    /// What the running fetch was asked for, as the page shows it, and the
+    /// command that asks for it again: goes to the history once it plays.
+    asked: Option<(String, String)>,
 }
 
 fn fmt_ms(ms: u64) -> String {
@@ -344,6 +355,9 @@ impl Controller {
                 "bypass_name": bypass::name_of(&self.settings.bypass),
                 "zapret_args": self.settings.zapret_args,
                 "proxy_on": self.settings.proxy_on,
+                "soundcloud": self.settings.soundcloud,
+                "pc_on": self.settings.pc_on,
+                "tv_on": self.settings.tv_on,
             },
             "user": self.user,
             "loading": self.loading.lock().unwrap().clone(),
@@ -524,7 +538,8 @@ impl Controller {
         self.shared.stats.store(new.stats, Ordering::Release);
         *self.shared.proxy.lock().unwrap() = new.use_proxy().to_owned();
         new.tv_host = new.tv_host.trim().to_owned();
-        self.shared.tv.store(!new.tv_host.is_empty(), Ordering::Release);
+        self.shared.tv.store(new.tv_configured(), Ordering::Release);
+        self.shared.soundcloud.store(new.soundcloud, Ordering::Release);
         let proxy_changed = new.use_proxy() != self.settings.use_proxy();
         self.settings = new;
         let mut msg = match self.settings.save(&self.dir) {
@@ -583,6 +598,9 @@ impl Controller {
 
     fn on_loaded(&mut self, what: String, result: sc::Res<Vec<Track>>, reply: Option<Sender<String>>) {
         *self.loading.lock().unwrap() = None;
+        if result.as_ref().map_or(true, |t| t.is_empty()) {
+            self.asked = None;
+        }
         self.publish();
         match result {
             Ok(mut tracks) if !tracks.is_empty() => {
@@ -595,6 +613,9 @@ impl Controller {
                 alice::pause_native();
                 self.queue = tracks;
                 self.failures = 0;
+                if let Some((name, cmd)) = self.asked.take() {
+                    self.history.set(name, cmd);
+                }
                 self.start(0);
                 respond(reply, &format!("OK {}", self.status()), None);
             }
@@ -684,6 +705,10 @@ impl Controller {
         let device = self.device.clone();
         let prefetch = self.client.prefetch.clone();
         eprintln!("play: {}", track.name());
+        // Not again for a resume after a broken download.
+        if skip_ms == 0 {
+            self.history.track(track.name(), track.permalink_url.as_deref());
+        }
         let duration_ms = track.duration.unwrap_or(0);
         thread::spawn(move || {
             if delay_ms > 0 {
@@ -868,16 +893,22 @@ impl Controller {
 
     fn intent(&mut self, intent: Intent, reply: Option<Sender<String>>) {
         match intent {
-            Intent::Likes => self.fetch("лайки".into(), reply, |c| c.likes()),
+            Intent::Likes => {
+                self.asked = Some(("Мои лайки".into(), "likes".into()));
+                self.fetch("лайки".into(), reply, |c| c.likes())
+            }
             Intent::MyPlaylist(name) => {
+                self.asked = Some((format!("Мой плейлист «{name}»"), format!("myplaylist {name}")));
                 let n = name.clone();
                 self.fetch(name, reply, move |c| my_playlist(c, &n));
             }
             Intent::Play(q) => {
+                self.asked = Some((format!("Поиск «{q}»"), format!("play {q}")));
                 let query = q.clone();
                 self.fetch(q, reply, move |c| c.search_tracks(&query));
             }
             Intent::Album(q) => {
+                self.asked = Some((format!("Альбом «{q}»"), format!("album {q}")));
                 let query = q.clone();
                 self.fetch(q, reply, move |c| c.search_album(&query));
             }
@@ -887,6 +918,7 @@ impl Controller {
             }
             Intent::Playlist(q) => {
                 // «Включи плейлист X»: the account's own playlists first, then SoundCloud search.
+                self.asked = Some((format!("Плейлист «{q}»"), format!("playlist {q}")));
                 let query = q.clone();
                 let mine = self.client.has_token();
                 self.fetch(q, reply, move |c| {
@@ -905,6 +937,7 @@ impl Controller {
                     alice::say("Подбираю рекомендации, секунду".into());
                 }
                 let seed = self.current().map(|t| t.id);
+                self.asked = Some(("Рекомендации".into(), "recs".into()));
                 self.fetch("рекомендации".into(), reply, move |c| c.recommendations(seed));
             }
             Intent::Default => {
@@ -1055,6 +1088,8 @@ impl Controller {
         let on_off = |a: &str| !matches!(a, "off" | "0" | "false" | "выкл");
         match cmd {
             "play" if arg.starts_with("https://") => {
+                let name = arg.trim_end_matches('/').rsplit('/').next().unwrap_or("").replace('-', " ");
+                self.asked = Some((format!("Ссылка: {name}"), format!("play {arg}")));
                 let link = arg.clone();
                 self.fetch(arg, Some(reply), move |c| c.resolve(&link));
             }
@@ -1100,6 +1135,19 @@ impl Controller {
             }
             "similar" => self.intent(Intent::Similar, Some(reply)),
             "likes" => self.intent(Intent::Likes, Some(reply)),
+            // A track from «Недавно играло»: plays again without a new history line for the link.
+            "replay" if arg.starts_with("https://") => {
+                let link = arg.clone();
+                self.fetch(arg, Some(reply), move |c| c.resolve(&link));
+            }
+            "myplaylist" if !arg.is_empty() => self.intent(Intent::MyPlaylist(arg), Some(reply)),
+            // «Недавно играло» on the page; «history clear» empties it.
+            "history" => {
+                if arg == "clear" {
+                    self.history.clear();
+                }
+                send_to(&reply, self.history.json().to_string());
+            }
             "recs" => self.intent(Intent::Recommend, Some(reply)),
             // seek 95 | seek 1:35 (to that point) | seek +30 | seek -10 (by seconds)
             "seek" => {
@@ -1305,6 +1353,10 @@ impl Controller {
                 let (id, link) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
                 let (id, link) = (id.to_owned(), link.trim().to_owned());
                 let label = id.clone();
+                if !link.is_empty() {
+                    let name = link.trim_end_matches('/').rsplit('/').next().unwrap_or("").replace('-', " ");
+                    self.asked = Some((format!("Плейлист «{name}»"), format!("openpl {id} {link}")));
+                }
                 self.fetch(label, Some(reply), move |c| c.open_playlist(&id, &link));
             }
             "goto" => match arg.parse::<usize>() {
@@ -1334,6 +1386,7 @@ impl Controller {
                 self.check_net(None);
             }
             let Ok(cmd) = rx.recv_timeout(Duration::from_secs(1)) else {
+                self.history.flush(false);
                 self.share_status();
                 continue;
             };
@@ -1627,7 +1680,18 @@ fn daemon() {
     });
     let dir = state_dir();
     fsx::ensure_dir(&dir);
-    let settings = Settings::load(&dir);
+    let mut settings = Settings::load(&dir);
+    // What the installer was told to set up («что поставить»): taken once.
+    let features = dir.join("features");
+    if let Some(text) = fsx::read_string(&features) {
+        if settings.apply_features(&text) {
+            eprintln!("install choice: {}", text.trim().replace('\n', ", "));
+            if let Err(e) = settings.save(&dir) {
+                eprintln!("install choice: settings not saved: {e}");
+            }
+        }
+        let _ = std::fs::remove_file(&features);
+    }
     let shared = Arc::new(Shared {
         duck: Duck::new(),
         ring: AtomicBool::new(settings.ring),
@@ -1648,7 +1712,8 @@ fn daemon() {
         stats: AtomicBool::new(settings.stats),
         updates: update::Updates::default(),
         proxy: Mutex::new(settings.use_proxy().to_owned()),
-        tv: AtomicBool::new(!settings.tv_host.trim().is_empty()),
+        tv: AtomicBool::new(settings.tv_configured()),
+        soundcloud: AtomicBool::new(settings.soundcloud),
     });
     let (tx, rx) = mpsc::channel();
     led::run(shared.clone());
@@ -1717,6 +1782,8 @@ fn daemon() {
         liked: HashSet::new(),
         retries: 0,
         loading: Mutex::new(None),
+        history: history::History::load(&state_dir()),
+        asked: None,
         rng: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)

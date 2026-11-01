@@ -298,6 +298,13 @@
       <ul class="list" id="mylists"></ul>
       <div class="empty" id="mylistsempty">Загружаю…</div>
     </div>
+    <div id="history">
+      <h3 class="split">Недавно включали <button class="link" onclick="loadHistory()">обновить</button></h3>
+      <ul class="list" id="histsets"></ul>
+      <h3 class="split">Недавно играло <button class="link" onclick="clearHistory()">очистить</button></h3>
+      <ul class="list" id="histtracks"></ul>
+      <div class="empty" id="histempty">Здесь появится то, что вы слушали.</div>
+    </div>
     <p class="hint">Голосом: «Алиса, включи рекомендации», «включи мои лайки», «включи мой плейлист …».</p>
   </section>
 
@@ -397,6 +404,24 @@
 
     </div>
     <div class="sub" data-sub="speaker">
+    <h2 class="section">Что включено</h2>
+    <p class="hint">Выключенное просто не работает и не мешает Алисе; включить обратно можно в любой момент.</p>
+    <label class="check">
+      <input type="checkbox" id="fsc" onchange="saveSettings('featmsg')">
+      <span>SoundCloud голосом<br>
+        <span class="hint">«Алиса, включи …». Выключено — вся музыка остаётся Алисе.</span></span>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="fpc" onchange="saveSettings('featmsg')">
+      <span>Компьютер и сообщения в Telegram</span>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="ftv" onchange="saveSettings('featmsg')">
+      <span>Телевизор / проектор</span>
+    </label>
+    <p class="hint">AirPlay и обход блокировок включаются в своих разделах.</p>
+    <div class="msg" id="featmsg"></div>
+
     <h2 class="section">Колонка</h2>
     <label class="check">
       <input type="checkbox" id="keyword">
@@ -880,6 +905,40 @@ async function netCheck() {
   $('netbtn').disabled = false;
 }
 
+// ---- «Недавно играло» ----
+function ago(at) {
+  const s = Math.max(0, Date.now() / 1000 - at);
+  if (s < 60) return 'только что';
+  if (s < 3600) return Math.floor(s / 60) + ' мин назад';
+  if (s < 86400) return Math.floor(s / 3600) + ' ч назад';
+  const d = Math.floor(s / 86400);
+  return d === 1 ? 'вчера' : d + ' дн назад';
+}
+
+async function loadHistory() {
+  const h = await postJSON('history');
+  if (h.error) return;
+  const sets = $('histsets'), tracks = $('histtracks');
+  sets.innerHTML = '';
+  tracks.innerHTML = '';
+  const play = e => async () => {
+    busy($('minemsg'), 'Включаю: ' + e.name);
+    show($('minemsg'), await post('/api/cmd', e.cmd));
+    refresh();
+    loadHistory();
+  };
+  (h.sets || []).slice(0, 10).forEach(e => sets.appendChild(item(e.name, '', ago(e.at), play(e))));
+  (h.tracks || []).slice(0, 50).forEach(e => tracks.appendChild(item(e.name, '', ago(e.at), play(e))));
+  sets.previousElementSibling.hidden = !sets.children.length;
+  $('histempty').hidden = !!(h.tracks || []).length;
+}
+
+async function clearHistory() {
+  if (!confirm('Очистить историю прослушивания?')) return;
+  await post('/api/cmd', 'history clear');
+  loadHistory();
+}
+
 // ---- tabs ----
 document.querySelectorAll('nav button').forEach(b => {
   b.onclick = () => {
@@ -887,6 +946,7 @@ document.querySelectorAll('nav button').forEach(b => {
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.id === 'tab-' + b.dataset.tab));
     try { localStorage.setItem('tab', b.dataset.tab); } catch (e) {}
     if (b.dataset.tab === 'mine' && settings.token && !$('mylists').children.length) library();
+    if (b.dataset.tab === 'mine') loadHistory();
     if (b.dataset.tab === 'settings') post('/api/cmd', 'netcheck').then(refresh);
   };
 });
@@ -1049,6 +1109,9 @@ async function refresh() {
     $('airplay').checked = settings.airplay !== false;
     $('stats').checked = settings.stats !== false;
     $('tvhost').value = settings.tv_host || '';
+    $('fsc').checked = settings.soundcloud !== false;
+    $('fpc').checked = settings.pc_on !== false;
+    $('ftv').checked = settings.tv_on !== false;
     $('proxyon').checked = settings.proxy_on !== false;
     $('bypasson').checked = !!settings.bypass && settings.bypass_on !== false;
     renderStrategies(s.zapret_presets || [], settings.bypass, settings.zapret_args || '');
@@ -1157,7 +1220,8 @@ function settingsBody(extra) {
     pc_contacts: readContacts(),
     airplay: $('airplay').checked, airplay_name: $('airplayname').value, airplay_icon: $('airplayicon').value,
     stats: $('stats').checked,
-    tv_host: $('tvhost').value
+    tv_host: $('tvhost').value,
+    soundcloud: $('fsc').checked, pc_on: $('fpc').checked, tv_on: $('ftv').checked
   }, extra));
 }
 

@@ -51,6 +51,15 @@ pub struct Settings {
     pub proxy_on: bool,
     #[serde(default = "yes")]
     pub bypass_on: bool,
+    /// Parts switched off at install («что поставить») or later on the page:
+    /// SoundCloud by voice, the PC and the TV. AirPlay has `airplay`, the
+    /// bypass `bypass_on`.
+    #[serde(default = "yes")]
+    pub soundcloud: bool,
+    #[serde(default = "yes")]
+    pub pc_on: bool,
+    #[serde(default = "yes")]
+    pub tv_on: bool,
     /// zapret arguments pasted from a Windows .bat (strategy "nfqc").
     #[serde(default)]
     pub zapret_args: String,
@@ -97,6 +106,9 @@ impl Default for Settings {
             proxy_on: true,
             bypass_on: true,
             zapret_args: String::new(),
+            soundcloud: true,
+            pc_on: true,
+            tv_on: true,
         }
     }
 }
@@ -145,7 +157,35 @@ impl Settings {
 
     /// Commands can go to the PC (switching on needs only the MAC address).
     pub fn pc_configured(&self) -> bool {
-        !self.pc_host.trim().is_empty() || !self.pc_mac.trim().is_empty()
+        self.pc_on && (!self.pc_host.trim().is_empty() || !self.pc_mac.trim().is_empty())
+    }
+
+    pub fn tv_configured(&self) -> bool {
+        self.tv_on && !self.tv_host.trim().is_empty()
+    }
+
+    /// The installer's choice (/data/opt/soundya/features, «airplay=0» per line),
+    /// taken once: true when something was applied.
+    pub fn apply_features(&mut self, text: &str) -> bool {
+        let mut any = false;
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let on = v.trim() == "1";
+            match k.trim() {
+                "soundcloud" => self.soundcloud = on,
+                "airplay" => self.airplay = on,
+                "pc" => self.pc_on = on,
+                "tv" => self.tv_on = on,
+                "bypass" => {
+                    if !on {
+                        self.bypass_on = false;
+                    }
+                }
+                _ => continue,
+            }
+            any = true;
+        }
+        any
     }
 
     /// Proxy with the password hidden, for showing on the page.
@@ -177,6 +217,16 @@ fn mask(secret: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installer_choice() {
+        let mut s = Settings::default();
+        assert!(s.apply_features("soundcloud=1\nairplay=0\npc=0\ntv=1\nbypass=0\n"));
+        assert!(s.soundcloud && !s.airplay && !s.pc_on && s.tv_on && !s.bypass_on);
+        s.pc_host = "192.168.0.10".into();
+        assert!(!s.pc_configured());
+        assert!(!Settings::default().apply_features("junk"));
+    }
 
     #[test]
     fn masks_password_only() {

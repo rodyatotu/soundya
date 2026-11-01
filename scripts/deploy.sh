@@ -2,6 +2,10 @@
 # Installs (or updates) soundya on the speaker:
 #   sh scripts/deploy.sh soundya.local      (once soundya runs on it)
 #   sh scripts/deploy.sh 192.168.0.112      (first install, by IP)
+#   sh scripts/deploy.sh 192.168.0.112 --choose   (ask again what to set up)
+#
+# On the first install it asks what to set up: SoundCloud, AirPlay, PC, TV,
+# bypass. Everything can be switched later on the settings page.
 #
 # Survives a flaky Wi-Fi: the upload is retried, and the installer runs on the
 # speaker on its own, so a dropped adb connection cannot leave it half-done.
@@ -48,8 +52,38 @@ installed() {
     printf '%s' "$LOGTEXT" | grep -q "Installed"
 }
 
+# «Что поставить?» — on the first install (or with --choose), when someone is at the keyboard.
+ask() {
+    printf '  %s [Д/н] ' "$1" >&2
+    read -r a || a=
+    case "$a" in н*|Н*|n*|N*) echo 0 ;; *) echo 1 ;; esac
+}
+choose_features() {
+    echo "Что поставить на колонку? (Enter — да)"
+    SC=$(ask "SoundCloud голосом («Алиса, включи …»)")
+    AP=$(ask "AirPlay (звук с iPhone и Mac)")
+    PC=$(ask "Управление компьютером и сообщения в Telegram")
+    TV=$(ask "Управление телевизором / проектором (Android TV)")
+    BP=$(ask "Обход блокировок (zapret)")
+    FEATURES="soundcloud=$SC\\nairplay=$AP\\npc=$PC\\ntv=$TV\\nbypass=$BP\\n"
+}
+FEATURES=""
+if [ -t 0 ]; then
+    connect || true
+    # Old adb does not pass the exit code back: ask for an answer instead.
+    if [ "${2:-}" = "--choose" ] || ! adb -s "$DEV" shell "[ -f /data/opt/soundya/config.json ] && echo installed" 2>/dev/null | grep -q installed; then
+        choose_features
+    fi
+fi
+put_features() {
+    [ -n "$FEATURES" ] || return 0
+    # Only digits and names: safe inside the remote command.
+    adb -s "$DEV" shell "printf '$FEATURES' > /tmp/soundya-features && echo ok" 2>/dev/null | grep -q ok
+}
+
 echo "Загружаю на колонку ${IP}…"
 retry upload || { echo "Не удалось загрузить: колонка недоступна по сети." >&2; exit 1; }
+retry put_features || echo "Не удалось передать выбор: всё будет включено, выключите лишнее в настройках." >&2
 echo "Устанавливаю…"
 retry start_install || { echo "Не удалось запустить установку." >&2; exit 1; }
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

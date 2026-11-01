@@ -27,6 +27,8 @@ if [ -f "$SRC/shairport-sync" ]; then
     chmod 755 "$DIR/shairport-sync"
 fi
 [ -f "$DIR/soundya.env" ] || cp "$SRC/soundya.env" "$DIR/"
+# «Что поставить» from deploy.sh: soundya takes it on start (see settings.rs).
+[ -f /tmp/soundya-features ] && mv /tmp/soundya-features "$DIR/features"
 chmod 755 "$DIR/soundya" "$DIR/run.sh" "$DIR/guard.sh"
 
 # Root filesystem is read-only: open it just for the init script and the command link.
