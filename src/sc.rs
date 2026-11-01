@@ -161,6 +161,21 @@ impl Track {
         self.candidates().into_iter().next()
     }
 
+    /// Why the speaker cannot play it, in words for the page and the log.
+    pub fn why_not_playable(&self) -> String {
+        match self.policy.as_deref() {
+            Some("BLOCK") => {
+                return "SoundCloud не отдаёт этот трек в вашей стране (ограничение правообладателя): поможет прокси или VPN другой страны".into()
+            }
+            Some("SNIP") => return "SoundCloud отдаёт только 30-секундное превью: трек доступен лишь по подписке Go+".into(),
+            _ => {}
+        }
+        if self.media.as_ref().map_or(true, |m| m.transcodings.is_empty()) {
+            return "SoundCloud не прислал ни одного звукового потока".into();
+        }
+        format!("у трека только форматы, которые колонка пока не умеет: {}", self.formats())
+    }
+
     /// All formats SoundCloud lists for the track, for error messages.
     pub fn formats(&self) -> String {
         let Some(media) = self.media.as_ref() else { return "нет данных".into() };
@@ -431,7 +446,11 @@ impl Client {
     pub fn search_tracks(&self, q: &str) -> Res<Vec<Track>> {
         let v = self.api("/search/tracks", &[("q", q), ("limit", "30"), ("offset", "0")])?;
         let c: Collection<Track> = serde_json::from_value(v)?;
-        Ok(c.collection.into_iter().filter(|t| t.transcoding().is_some()).collect())
+        let (ok, skipped): (Vec<Track>, Vec<Track>) = c.collection.into_iter().partition(|t| t.transcoding().is_some());
+        for t in skipped.iter().take(5) {
+            eprintln!("search: skipped {}: {}", t.name(), t.why_not_playable());
+        }
+        Ok(ok)
     }
 
     /// Tracks and playlists for the web page.
@@ -868,11 +887,15 @@ impl Client {
     pub fn resolve(&self, link: &str) -> Res<Vec<Track>> {
         let v = self.api("/resolve", &[("url", link)])?;
         match v.get("kind").and_then(Value::as_str) {
-            Some("track") => Ok(serde_json::from_value::<Track>(v)
-                .map(|t| vec![t])?
-                .into_iter()
-                .filter(|t| t.transcoding().is_some())
-                .collect()),
+            Some("track") => {
+                let t = serde_json::from_value::<Track>(v)?;
+                if t.transcoding().is_none() {
+                    // Say why instead of «nothing found».
+                    eprintln!("resolve: {} not playable: {}", t.name(), t.why_not_playable());
+                    return Err(format!("«{}» не включить: {}", t.name(), t.why_not_playable()).into());
+                }
+                Ok(vec![t])
+            }
             Some("playlist" | "system-playlist") => self.tracks_of(&v),
             Some("user") => {
                 let id = v.get("id").and_then(Value::as_u64).ok_or("user without id")?;
