@@ -51,6 +51,10 @@ pub struct Settings {
     pub proxy_on: bool,
     #[serde(default = "yes")]
     pub bypass_on: bool,
+    /// The strategy was chosen by hand («Включить без проверки»): soundya does
+    /// not replace it with one it picks itself.
+    #[serde(default)]
+    pub bypass_manual: bool,
     /// «Подсветка»: "solid" (ровный свет), "pulse" (дышит в такт), "eq"
     /// (эквалайзер по зонам кольца); two colours #rrggbb (quiet → loud) and
     /// brightness 10..=100 %.
@@ -145,6 +149,7 @@ impl Default for Settings {
             bypass: String::new(),
             proxy_on: true,
             bypass_on: true,
+            bypass_manual: false,
             zapret_args: String::new(),
             light_mode: light_mode(),
             light_color: light_color(),

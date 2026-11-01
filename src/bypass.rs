@@ -232,7 +232,7 @@ fn works(agent: &ureq::Agent, strategy: Strategy) -> Result<(), String> {
         let mut ok = false;
         for attempt in 0..2 {
             if CANCEL.load(Ordering::Acquire) {
-                return Err("отменено".into());
+                return Err("проверка отменена".into());
             }
             match agent.get(url).call() {
                 Ok(_) | Err(ureq::Error::Status(..)) => {
@@ -318,6 +318,9 @@ pub fn measure(
     log(format!("{}: проверяю…", name_of(id)));
     let agent = agent_for(s);
     if let Err(host) = works(&agent, s) {
+        if host == "проверка отменена" {
+            return None;
+        }
         log(format!("{}: SoundCloud не открывается (нет ответа от {host})", name_of(id)));
         return None;
     }
