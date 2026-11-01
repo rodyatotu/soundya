@@ -202,7 +202,9 @@ pub fn publisher_main(args: &[String]) -> i32 {
 
 extern "C" {
     fn getppid() -> i32;
-    fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32;
+    // unsigned long: 32 bits on the speaker. Declared as u64 the arguments
+    // landed in the wrong registers and the death signal was never set.
+    fn prctl(option: i32, arg2: std::os::raw::c_ulong, arg3: std::os::raw::c_ulong, arg4: std::os::raw::c_ulong, arg5: std::os::raw::c_ulong) -> i32;
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
@@ -317,7 +319,7 @@ fn session(
     // Dies with soundya (this thread lives as long as soundya does).
     unsafe {
         command.pre_exec(|| {
-            prctl(PR_SET_PDEATHSIG, SIGKILL as u64, 0, 0, 0);
+            prctl(PR_SET_PDEATHSIG, SIGKILL as std::os::raw::c_ulong, 0, 0, 0);
             Ok(())
         });
     }
