@@ -4,8 +4,11 @@
 #     /data/opt/soundya/last.log (this boot) and previous.log (the boot before).
 #  2. Watches the sound card. When it hangs in PREPARED (opened but never
 #     started) nothing can play, Alice included, and the speaker looks dead.
-#     After 90 s the guard restarts Alice's media service; if the card is still
-#     stuck 2 minutes later it reboots the speaker (at most once an hour).
+#     It acts only when soundya itself could not play (audio-errors.log was
+#     written in the last 3 minutes): on some models and firmwares Alice keeps
+#     the card PREPARED while idle, and that is not a hang. Then after 90 s it
+#     restarts Alice's media service; if the card is still stuck 2 minutes
+#     later it reboots the speaker (at most once an hour).
 DIR=/data/opt/soundya
 LOG=/tmp/soundya.log
 STATUS=/proc/asound/card0/pcm0p/sub0/status
@@ -36,7 +39,8 @@ while [ ! -f /run/soundya.stop ]; do
     [ $((tick % 30)) -eq 0 ] && save_log    # every 5 minutes
 
     state=$(sed -n 's/^state: *//p' "$STATUS" 2>/dev/null)
-    if [ "$state" = PREPARED ]; then stuck=$((stuck + 1)); else stuck=0; fi
+    failing=$(find "$DIR/audio-errors.log" -mmin -3 2>/dev/null)
+    if [ "$state" = PREPARED ] && [ -n "$failing" ]; then stuck=$((stuck + 1)); else stuck=0; fi
 
     if [ "$stuck" -eq 9 ]; then
         note "sound card stuck in PREPARED for 90 s; restarting Alice's media service"
