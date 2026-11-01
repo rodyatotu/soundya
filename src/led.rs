@@ -148,18 +148,22 @@ fn write(path: &Path, value: u8) {
     let _ = fs::write(path, value.to_string());
 }
 
-/// The ring: its LEDs in sysfs, or — when soundya runs as a Luna package —
-/// Luna's LED API (`zones` colours, spread by Luna over the real LEDs).
-struct Ring(Vec<Zone>, Option<usize>);
+/// The ring: its LEDs in sysfs (Lite, Mini 2), the LED chip of the Station
+/// Mini 1 on I2C, or — when soundya runs as a Luna package — Luna's LED API.
+enum Ring {
+    Sysfs(Vec<Zone>),
+    Mini1(mini1::Chip),
+    /// Six logical zones; Luna maps them onto whatever ring the Station has.
+    Luna,
+}
 
 impl Ring {
     fn detect() -> Option<Self> {
-        // Station Lite: micro:red:ring1..3; Mini 2: mini2:red:ring1..6.
         if crate::luna::active() {
-            // Six logical zones; Luna maps them onto whatever ring the Station has.
-            return Some(Ring(Vec::new(), Some(6)));
+            return Some(Ring::Luna);
         }
-        ["micro", "mini2"].into_iter().find_map(|board| {
+        // Station Lite: micro:red:ring1..3; Mini 2: mini2:red:ring1..6.
+        let sysfs = ["micro", "mini2"].into_iter().find_map(|board| {
             let zones: Vec<Zone> = (1..=6)
                 .map(|z| {
                     let p = |c: &str| PathBuf::from(format!("/sys/class/leds/{board}:{c}:ring{z}/brightness"));
@@ -167,65 +171,188 @@ impl Ring {
                 })
                 .filter(|z| crate::fsx::exists(&z.r) && crate::fsx::exists(&z.g) && crate::fsx::exists(&z.b))
                 .collect();
-            (!zones.is_empty()).then_some(Ring(zones, None))
-        })
+            (!zones.is_empty()).then_some(Ring::Sysfs(zones))
+        });
+        sysfs.or_else(|| mini1::Chip::open().map(Ring::Mini1))
     }
 
     fn zones(&self) -> usize {
-        self.1.unwrap_or(self.0.len())
+        match self {
+            Ring::Sysfs(z) => z.len(),
+            Ring::Mini1(_) => mini1::LEDS,
+            Ring::Luna => 6,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Ring::Sysfs(_) => "",
+            Ring::Mini1(_) => ", Station Mini 1 LED chip",
+            Ring::Luna => ", through Luna",
+        }
     }
 
     fn is(&self, (r, g, b): (u8, u8, u8)) -> bool {
-        if self.1.is_some() {
-            // Luna's ring cannot be read back.
-            return false;
+        match self {
+            Ring::Sysfs(zones) => zones.iter().all(|z| {
+                brightness(&z.r) == Some(r) && brightness(&z.g) == Some(g) && brightness(&z.b) == Some(b)
+            }),
+            // Neither can be read back.
+            _ => false,
         }
-        self.0.iter().all(|z| {
-            brightness(&z.r) == Some(r) && brightness(&z.g) == Some(g) && brightness(&z.b) == Some(b)
-        })
     }
 
     /// The ring shows exactly `frame` (one colour per zone)?
     fn shows(&self, frame: &[Rgb]) -> bool {
-        if self.1.is_some() {
-            // Luna arbitrates the ring: what we drew last is assumed to be shown.
-            return true;
+        match self {
+            Ring::Sysfs(zones) => zones.iter().zip(frame.iter().cycle()).all(|(z, &(r, g, b))| {
+                brightness(&z.r) == Some(r) && brightness(&z.g) == Some(g) && brightness(&z.b) == Some(b)
+            }),
+            // Write-only: what we drew last is assumed to be shown (after
+            // Alice's animations the loop draws again anyway).
+            _ => true,
         }
-        self.0.iter().zip(frame.iter().cycle()).all(|(z, &(r, g, b))| {
-            brightness(&z.r) == Some(r) && brightness(&z.g) == Some(g) && brightness(&z.b) == Some(b)
-        })
     }
 
-    /// Writes only the zones that change.
+    /// Writes only what changes.
     fn draw(&self, frame: &[Rgb], before: Option<&[Rgb]>) {
-        if self.1.is_some() {
-            if before != Some(frame) {
-                if let Err(e) = crate::luna::ring(frame) {
-                    eprintln!("led: luna: {e}");
+        match self {
+            Ring::Sysfs(zones) => {
+                for (i, (z, &(r, g, b))) in zones.iter().zip(frame.iter().cycle()).enumerate() {
+                    if before.and_then(|p| p.get(i)) == Some(&(r, g, b)) {
+                        continue;
+                    }
+                    write(&z.r, r);
+                    write(&z.g, g);
+                    write(&z.b, b);
                 }
             }
-            return;
-        }
-        for (i, (z, &(r, g, b))) in self.0.iter().zip(frame.iter().cycle()).enumerate() {
-            if before.and_then(|p| p.get(i)) == Some(&(r, g, b)) {
-                continue;
+            Ring::Mini1(chip) => {
+                if before != Some(frame) {
+                    if let Err(e) = chip.show(frame) {
+                        eprintln!("led: mini 1: {e}");
+                    }
+                }
             }
-            write(&z.r, r);
-            write(&z.g, g);
-            write(&z.b, b);
+            Ring::Luna => {
+                if before != Some(frame) {
+                    if let Err(e) = crate::luna::ring(frame) {
+                        eprintln!("led: luna: {e}");
+                    }
+                }
+            }
         }
     }
 
-    fn set(&self, (r, g, b): (u8, u8, u8)) {
-        if self.1.is_some() {
-            let _ = if (r, g, b) == (0, 0, 0) { crate::luna::ring_off() } else { crate::luna::ring(&[(r, g, b)]) };
-            return;
+    fn set(&self, c: (u8, u8, u8)) {
+        match self {
+            Ring::Sysfs(zones) => {
+                for z in zones {
+                    write(&z.r, c.0);
+                    write(&z.g, c.1);
+                    write(&z.b, c.2);
+                }
+            }
+            Ring::Mini1(chip) => {
+                let _ = chip.show(&[c]);
+            }
+            Ring::Luna => {
+                let _ = if c == (0, 0, 0) { crate::luna::ring_off() } else { crate::luna::ring(&[c]) };
+            }
         }
-        for z in &self.0 {
-            write(&z.r, r);
-            write(&z.g, g);
-            write(&z.b, b);
+    }
+}
+
+/// The Station Mini 1 (YNDX-0004) has no LEDs in sysfs: its six RGB LEDs sit
+/// on a PWM chip at I2C bus 0, address 0x3c, colours in B, G, R order.
+/// Register layout as in Luna's station crate for this model
+/// (github.com/nyakokitsu/luna, stations/yandexmini, MIT).
+mod mini1 {
+    use std::{fs::File, os::fd::AsRawFd};
+
+    pub const LEDS: usize = 6;
+    const DEVICE: &str = "/dev/i2c-0";
+    const ADDRESS: u16 = 0x3c;
+    const REG_ENABLE: u8 = 0x00;
+    const REG_PWM: u8 = 0x01;
+    const REG_UPDATE: u8 = 0x25;
+    const REG_MODE: u8 = 0x26;
+    const REG_FREQ: u8 = 0x4b;
+    const I2C_RDWR: u32 = 0x0707;
+
+    #[repr(C)]
+    struct Message {
+        address: u16,
+        flags: u16,
+        length: u16,
+        buffer: *mut u8,
+    }
+
+    #[repr(C)]
+    struct Request {
+        messages: *mut Message,
+        count: u32,
+    }
+
+    extern "C" {
+        fn ioctl(fd: i32, request: u32, ...) -> i32;
+    }
+
+    pub struct Chip(File);
+
+    /// Only on a Station Mini 1: its model name in Alice's config and the bus.
+    fn is_mini1() -> bool {
+        let cfg = crate::fsx::read_string(std::path::Path::new("/system/vendor/quasar/quasar.cfg")).unwrap_or_default();
+        cfg.contains("\"yandexmini\"") && crate::fsx::exists(std::path::Path::new(DEVICE))
+    }
+
+    impl Chip {
+        pub fn open() -> Option<Chip> {
+            if !is_mini1() {
+                return None;
+            }
+            let file = File::options().read(true).write(true).open(DEVICE).ok()?;
+            let chip = Chip(file);
+            let ok = chip.write(REG_ENABLE, &[0x01]).is_ok()
+                && chip.write(REG_MODE, &[0x03; LEDS * 3]).is_ok()
+                && chip.write(REG_FREQ, &[0x01]).is_ok();
+            if !ok {
+                eprintln!("led: mini 1: the LED chip does not answer");
+                return None;
+            }
+            Some(chip)
         }
+
+        fn write(&self, register: u8, data: &[u8]) -> std::io::Result<()> {
+            let mut bytes = Vec::with_capacity(data.len() + 1);
+            bytes.push(register);
+            bytes.extend_from_slice(data);
+            let mut message = Message { address: ADDRESS, flags: 0, length: bytes.len() as u16, buffer: bytes.as_mut_ptr() };
+            let mut request = Request { messages: &mut message, count: 1 };
+            if unsafe { ioctl(self.0.as_raw_fd(), I2C_RDWR, &mut request) } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        /// One colour per LED (repeated if fewer are given).
+        pub fn show(&self, frame: &[super::Rgb]) -> std::io::Result<()> {
+            self.write(REG_PWM, &pwm(frame))?;
+            self.write(REG_UPDATE, &[0xaa])
+        }
+    }
+
+    /// The chip's 18 PWM bytes: B, G, R for each of the six LEDs.
+    pub fn pwm(frame: &[super::Rgb]) -> [u8; LEDS * 3] {
+        let mut out = [0u8; LEDS * 3];
+        if frame.is_empty() {
+            return out;
+        }
+        for i in 0..LEDS {
+            let (r, g, b) = frame[i * frame.len() / LEDS];
+            out[i * 3..i * 3 + 3].copy_from_slice(&[b, g, r]);
+        }
+        out
     }
 }
 
@@ -234,7 +361,7 @@ pub fn run(shared: Arc<Shared>) {
         eprintln!("led: no ring found, light disabled");
         return;
     };
-    eprintln!("led: ring found ({} zones{})", ring.zones(), if ring.1.is_some() { ", through Luna" } else { "" });
+    eprintln!("led: ring found ({} zones{})", ring.zones(), ring.name());
     // Left lit by a previous run that was stopped or crashed.
     let light = *shared.light.lock().unwrap();
     if ring.is(ORANGE) || ring.is(scale(light.quiet, light.bright)) {
@@ -318,6 +445,14 @@ pub fn run(shared: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mini1_frame_is_bgr() {
+        let p = mini1::pwm(&[(10, 20, 30)]);
+        assert_eq!(&p[..6], &[30, 20, 10, 30, 20, 10]);
+        let p = mini1::pwm(&[(1, 0, 0), (0, 1, 0), (0, 0, 1)]);
+        assert_eq!(&p[..], &[0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0]);
+    }
 
     #[test]
     fn colours_and_frames() {
