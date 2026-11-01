@@ -253,7 +253,7 @@
     <div class="volpop" id="volpop" hidden>
       <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/></svg>
       <input type="range" id="volrange" min="1" max="10" step="1" value="5" aria-label="Громкость Алисы, 1–10"
-        oninput="$('volval').textContent = this.value" onchange="setVolume(this.value)">
+        oninput="setVolume(this.value)" onchange="setVolume(this.value)">
       <b id="volval">–</b>
     </div>
     <div id="picker" class="picker" style="display:none">
@@ -1359,9 +1359,13 @@ function renderBypassLog(lines, running) {
 
 // Alice's volume: the level soundya follows (null until known), the slider shows it.
 let volumeKnown = null, volumeMoving = false;
+// The level just set from the slider: the status may still carry the old one
+// for a second, and the slider must not jump back to it.
+let volumeHold = null;
 function renderVolume(v) {
   volumeKnown = v ?? null;
-  if (volumeMoving || document.activeElement === $('volrange')) return;
+  if (volumeHold && (volumeKnown === volumeHold.v || Date.now() > volumeHold.until)) volumeHold = null;
+  if (volumeMoving || volumeHold) return;
   if (volumeKnown !== null) $('volrange').value = Math.max(1, volumeKnown);
   $('volval').textContent = volumeKnown === null ? '?' : volumeKnown;
   $('volbtn').title = 'Громкость Алисы' + (volumeKnown === null ? '' : ': ' + volumeKnown);
@@ -1373,12 +1377,20 @@ function toggleVolume() {
   $('volbtn').classList.toggle('on', !pop.hidden);
 }
 
+// While the slider is dragged the volume follows it (one request in flight,
+// the latest position wins), so it changes under the finger, not after release.
+let volumeSending = false, volumeNext = null;
 async function setVolume(v) {
-  volumeMoving = true;
+  v = Number(v);
   $('volval').textContent = v;
+  volumeHold = { v, until: Date.now() + 3000 };
+  if (volumeSending) { volumeNext = v; return; }
+  volumeSending = volumeMoving = true;
   const r = await post('/api/cmd', 'volume set ' + v);
-  volumeMoving = false;
-  if (r.startsWith('error')) show($('actmsg'), r);
+  volumeSending = volumeMoving = false;
+  if (r.startsWith('error')) { show($('actmsg'), r); volumeHold = null; return; }
+  if (volumeNext !== null && volumeNext !== v) { const n = volumeNext; volumeNext = null; setVolume(n); }
+  else volumeNext = null;
 }
 
 async function bypassTry() {
