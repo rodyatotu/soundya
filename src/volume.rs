@@ -197,12 +197,20 @@ pub fn set(target: i32) -> Result<i32, String> {
     }
     // Best: Alice's own volume manager — she knows the new level, her buttons
     // and «громче» go on from it.
-    match maind::set(target) {
-        Ok(()) => {
-            LEVEL.store(target, Ordering::Release);
-            return Ok(target);
+    // Firmwares without the service (Station Mini 1) refuse the connection:
+    // said once, then straight to the mixer.
+    static NO_MAIND: AtomicBool = AtomicBool::new(false);
+    if !NO_MAIND.load(Ordering::Acquire) {
+        match maind::set(target) {
+            Ok(()) => {
+                LEVEL.store(target, Ordering::Release);
+                return Ok(target);
+            }
+            Err(e) => {
+                NO_MAIND.store(true, Ordering::Release);
+                eprintln!("volume: Alice's volume manager is not available ({e}); using the mixer");
+            }
         }
-        Err(e) => eprintln!("volume: Alice's volume manager: {e}; writing the mixer"),
     }
     if write_mixer(mixer_value(target, &learnt())) {
         LEVEL.store(target, Ordering::Release);
