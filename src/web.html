@@ -1217,7 +1217,7 @@ function renderUpdate(u) {
     : u.error ? `Установлена версия ${u.current}. GitHub не ответил: ${u.error}`
     : `Установлена версия ${u.current}.`;
   $('updnotes').hidden = !(u.available && u.notes);
-  $('updnotes').textContent = u.notes || '';
+  $('updnotes').textContent = (u.notes || '').replace(/\*\*|`/g, '').replace(/^#+\s*/gm, '').trim();
   $('updinstall').hidden = !u.available || u.installing || !!updWaitFor;
   if (u.available && !u.installing && !updWaitFor && !updModalShown && !laterFor(u.latest)) {
     updModalShown = true;
