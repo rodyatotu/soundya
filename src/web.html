@@ -478,7 +478,7 @@
       </label>
       <p class="hint">Как zapret на ПК, только на самой колонке. Выберите стратегию и нажмите «Включить и проверить» — колонка
         включит её, скачает кусок музыки с SoundCloud и скажет, работает ли и с какой скоростью. «Подобрать автоматически»
-        переберёт всё по очереди и оставит самую быструю. Помогает, когда SoundCloud режут по имени сайта; если заблокированы
+        переберёт стратегии по очереди (сначала zapret, потом встроенные) и оставит первую рабочую; его можно отменить. Помогает, когда SoundCloud режут по имени сайта; если заблокированы
         сами адреса — нужен прокси. Пока обход включён, прокси не используется.</p>
       <p class="hint" id="bypassstate"></p>
       <label class="field">Стратегия
@@ -493,6 +493,7 @@
       <div class="row">
         <button class="primary" onclick="bypassTry()" id="bypassbtn">Включить и проверить</button>
         <button onclick="bypass('off')" id="bypassoff">Выключить обход</button>
+        <button onclick="bypassCancel()" id="bypasscancel" hidden>Отменить подбор</button>
       </div>
       <pre class="bypasslog" id="bypasslog" hidden></pre>
       <div class="msg" id="bypassmsg"></div>
@@ -1669,6 +1670,8 @@ function renderBypass(id, on, name) {
 
 function renderBypassLog(lines, running) {
   if (running) $('bypassbtn').disabled = true;
+  $('bypasscancel').hidden = !running;
+  if (running) $('bypassoff').hidden = true;
   const el = $('bypasslog');
   if (!lines.length) { el.hidden = true; return; }
   el.hidden = false;
@@ -1710,6 +1713,12 @@ async function setVolume(v) {
   if (r.startsWith('error')) { show($('actmsg'), r); volumeHold = null; return; }
   if (volumeNext !== null && volumeNext !== v) { const n = volumeNext; volumeNext = null; setVolume(n); }
   else volumeNext = null;
+}
+
+async function bypassCancel() {
+  $('bypasscancel').disabled = true;
+  show($('bypassmsg'), (await post('/api/cmd', 'bypass cancel')).replace(/^OK:\s*/, ''), false);
+  setTimeout(() => { $('bypasscancel').disabled = false; }, 3000);
 }
 
 async function bypassTry() {

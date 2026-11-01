@@ -1281,6 +1281,15 @@ impl Controller {
             // fastest on, «bypass try nfq2» (or «bypass try nfqc <args from a .bat>»)
             // checks the chosen one and switches it on if it works, «bypass off».
             "bypass" => {
+                if arg == "cancel" {
+                    if self.shared.bypass_busy.load(Ordering::Acquire) {
+                        bypass::CANCEL.store(true, Ordering::Release);
+                        send_to(&reply, "OK: останавливаю подбор…".into());
+                    } else {
+                        send_to(&reply, "OK: подбор не идёт".into());
+                    }
+                    return;
+                }
                 if arg == "off" {
                     let _ = self.tx.send(Cmd::Bypass(String::new()));
                     send_to(&reply, "OK: обход выключен, снова через прокси (если задан) или напрямую".into());
@@ -1312,6 +1321,7 @@ impl Controller {
                 let dir = self.dir.clone();
                 let shared = self.shared.clone();
                 shared.bypass_log.lock().unwrap().clear();
+                bypass::CANCEL.store(false, Ordering::Release);
                 thread::spawn(move || {
                     let log = |line: String| {
                         eprintln!("bypass: {line}");
@@ -1321,7 +1331,12 @@ impl Controller {
                         Some(id) => bypass::measure(&dir, id, &custom, &mut None, &log).map(|k| (id.clone(), k)),
                         None => bypass::pick(&dir, &custom, &log),
                     };
+                    let cancelled = bypass::CANCEL.swap(false, Ordering::AcqRel);
                     let r = match found {
+                        _ if cancelled => {
+                            zapret::restore(&dir, &was, &custom);
+                            "error: подбор отменён — оставлен прежний способ".to_owned()
+                        }
                         Some((id, kbps)) if kbps >= bypass::ENOUGH_KBPS => {
                             let _ = tx.send(Cmd::Bypass(id.clone()));
                             if id == "direct" {
