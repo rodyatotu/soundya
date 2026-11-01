@@ -67,14 +67,36 @@ pub fn hex((r, g, b): (u8, u8, u8)) -> String {
     format!("#{r:02X}{g:02X}{b:02X}")
 }
 
+/// The Station's light as Luna names it: "ring", or "logo" on models whose
+/// only light is the top one (Station Mini 1). Found on the first frame.
+static ZONE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn zone() -> &'static str {
+    if ZONE.load(Ordering::Relaxed) == 2 { "logo" } else { "ring" }
+}
+
 /// One ring frame; Luna spreads the colours over the physical LEDs.
 pub fn ring(colours: &[(u8, u8, u8)]) -> Result<(), String> {
     let colours: Vec<String> = colours.iter().copied().map(hex).collect();
-    post("/led/ring", &json!({ "colors": colours })).map(|_| ())
+    let body = json!({ "colors": colours });
+    match post(&format!("/led/{}", zone()), &body) {
+        Ok(_) => {
+            ZONE.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).ok();
+            Ok(())
+        }
+        // No ring here: the logo light (Mini 1), from now on.
+        Err(e) if ZONE.load(Ordering::Relaxed) == 0 => {
+            post("/led/logo", &body).map_err(|l| format!("ring: {e}; logo: {l}"))?;
+            ZONE.store(2, Ordering::Relaxed);
+            eprintln!("led: luna: no ring on this Station, using its logo light");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub fn ring_off() -> Result<(), String> {
-    post("/led/off/ring", &json!({})).map(|_| ())
+    post(&format!("/led/off/{}", zone()), &json!({})).map(|_| ())
 }
 
 /// What Luna is told: "playing", "paused" or "unknown". Stopped counts as

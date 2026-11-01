@@ -153,6 +153,7 @@ fn write(path: &Path, value: u8) {
 enum Ring {
     Sysfs(Vec<Zone>),
     Mini1(mini1::Chip),
+    Mini3(mini3::Fb),
     /// Six logical zones; Luna maps them onto whatever ring the Station has.
     Luna,
 }
@@ -173,13 +174,16 @@ impl Ring {
                 .collect();
             (!zones.is_empty()).then_some(Ring::Sysfs(zones))
         });
-        sysfs.or_else(|| mini1::Chip::open().map(Ring::Mini1))
+        sysfs
+            .or_else(|| mini3::Fb::open().map(Ring::Mini3))
+            .or_else(|| mini1::Chip::open().map(Ring::Mini1))
     }
 
     fn zones(&self) -> usize {
         match self {
             Ring::Sysfs(z) => z.len(),
             Ring::Mini1(_) => mini1::LEDS,
+            Ring::Mini3(_) => mini3::LEDS,
             Ring::Luna => 6,
         }
     }
@@ -188,6 +192,7 @@ impl Ring {
         match self {
             Ring::Sysfs(_) => "",
             Ring::Mini1(_) => ", Station Mini 1 LED chip",
+            Ring::Mini3(_) => ", Station Mini 3 LED framebuffer",
             Ring::Luna => ", through Luna",
         }
     }
@@ -234,6 +239,13 @@ impl Ring {
                     }
                 }
             }
+            Ring::Mini3(fb) => {
+                if before != Some(frame) {
+                    if let Err(e) = fb.show(frame) {
+                        eprintln!("led: mini 3: {e}");
+                    }
+                }
+            }
             Ring::Luna => {
                 if before != Some(frame) {
                     if let Err(e) = crate::luna::ring(frame) {
@@ -256,10 +268,57 @@ impl Ring {
             Ring::Mini1(chip) => {
                 let _ = chip.show(&[c]);
             }
+            Ring::Mini3(fb) => {
+                let _ = fb.show(&[c]);
+            }
             Ring::Luna => {
                 let _ = if c == (0, 0, 0) { crate::luna::ring_off() } else { crate::luna::ring(&[c]) };
             }
         }
+    }
+}
+
+/// The Station Mini 3 shows its six-zone ring as a 6×1 framebuffer, 24 bits
+/// per pixel in B, G, R order; the zones are stored as alternating opposite
+/// LEDs, and the chip shows a frame one write late, so each frame is written
+/// twice. As in Luna's station crate for this model (stations/yandexmini3, MIT).
+mod mini3 {
+    use std::{fs::File, os::unix::fs::FileExt, path::Path};
+
+    pub const LEDS: usize = 6;
+    /// Framebuffer slot → ring position.
+    const ORDER: [usize; LEDS] = [0, 3, 1, 4, 2, 5];
+
+    pub struct Fb(File);
+
+    impl Fb {
+        pub fn open() -> Option<Fb> {
+            let sys = Path::new("/sys/class/graphics/fb0");
+            let size = crate::fsx::read_string(&sys.join("virtual_size"))?;
+            let depth = crate::fsx::read_string(&sys.join("bits_per_pixel"))?;
+            if size.trim() != "6,1" || depth.trim() != "24" {
+                return None;
+            }
+            File::options().write(true).open("/dev/fb0").ok().map(Fb)
+        }
+
+        pub fn show(&self, frame: &[super::Rgb]) -> std::io::Result<()> {
+            let data = pixels(frame);
+            self.0.write_all_at(&data, 0)?;
+            self.0.write_all_at(&data, 0)
+        }
+    }
+
+    pub fn pixels(frame: &[super::Rgb]) -> [u8; LEDS * 3] {
+        let mut out = [0u8; LEDS * 3];
+        if frame.is_empty() {
+            return out;
+        }
+        for (slot, &pos) in ORDER.iter().enumerate() {
+            let (r, g, b) = frame[pos * frame.len() / LEDS];
+            out[slot * 3..slot * 3 + 3].copy_from_slice(&[b, g, r]);
+        }
+        out
     }
 }
 
@@ -300,10 +359,26 @@ mod mini1 {
 
     pub struct Chip(File);
 
-    /// Only on a Station Mini 1: its model name in Alice's config and the bus.
+    /// Only on a Station Mini 1 (with the bus): «yandexmini» as the device type
+    /// in Alice's config, or YNDX-0004 / yandexmini in the device tree.
     fn is_mini1() -> bool {
+        if !crate::fsx::exists(std::path::Path::new(DEVICE)) {
+            return false;
+        }
         let cfg = crate::fsx::read_string(std::path::Path::new("/system/vendor/quasar/quasar.cfg")).unwrap_or_default();
-        cfg.contains("\"yandexmini\"") && crate::fsx::exists(std::path::Path::new(DEVICE))
+        let in_cfg = serde_json::from_str::<serde_json::Value>(&cfg).ok().is_some_and(|v| {
+            let t = v.get("common").and_then(|c| c.get("deviceType")).or_else(|| v.get("deviceType"));
+            t.and_then(|t| t.as_str()) == Some("yandexmini")
+        }) || cfg.contains("\"yandexmini\"");
+        let tree = ["/proc/device-tree/model", "/proc/device-tree/compatible"]
+            .iter()
+            .filter_map(|p| crate::fsx::read_string(std::path::Path::new(p)))
+            .collect::<String>()
+            .to_lowercase()
+            .replace('\0', " ");
+        let in_tree = tree.contains("yndx-0004")
+            || tree.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == "yandexmini" || w == "yandexstationmini");
+        in_cfg || in_tree
     }
 
     impl Chip {
@@ -445,6 +520,14 @@ pub fn run(shared: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mini3_frame_order() {
+        let f: Vec<Rgb> = (0..6).map(|i| (i as u8, 0, 0)).collect();
+        let p = mini3::pixels(&f);
+        let reds: Vec<u8> = p.chunks(3).map(|c| c[2]).collect();
+        assert_eq!(reds, vec![0, 3, 1, 4, 2, 5]);
+    }
 
     #[test]
     fn mini1_frame_is_bgr() {

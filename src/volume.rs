@@ -162,6 +162,15 @@ fn learn_later(n: i32) {
 pub fn set(target: i32) -> Result<i32, String> {
     let _one = BUSY.lock().unwrap();
     let target = target.clamp(0, MAX);
+    // Best: Alice's own volume manager — she knows the new level, her buttons
+    // and «громче» go on from it.
+    match maind::set(target) {
+        Ok(()) => {
+            LEVEL.store(target, Ordering::Release);
+            return Ok(target);
+        }
+        Err(e) => eprintln!("volume: Alice's volume manager: {e}; writing the mixer"),
+    }
     if write_mixer(mixer_value(target, &learnt())) {
         LEVEL.store(target, Ordering::Release);
         return Ok(target);
@@ -179,6 +188,67 @@ pub fn set(target: i32) -> Result<i32, String> {
     }
     LEVEL.store(target, Ordering::Release);
     Ok(target)
+}
+
+/// Alice's volume manager (quasar's `volume_manager` IPC service, the port is in
+/// quasar.cfg): a SetVolumeSignal sets her level exactly as her buttons do, so
+/// she and the page share one volume. Message layout as in Luna
+/// (github.com/nyakokitsu/luna, gateway.rs, MIT).
+mod maind {
+    use std::{
+        io::Write,
+        net::{SocketAddr, TcpStream},
+        time::Duration,
+    };
+
+    const CONFIG: &str = "/system/vendor/quasar/quasar.cfg";
+
+    fn port() -> Option<u16> {
+        let text = crate::fsx::read_string(std::path::Path::new(CONFIG))?;
+        let cfg: serde_json::Value = serde_json::from_str(&text).ok()?;
+        cfg.get("volume_manager")?.get("port")?.as_u64().and_then(|p| u16::try_from(p).ok())
+    }
+
+    fn var(out: &mut Vec<u8>, mut v: u64) {
+        while v >= 0x80 {
+            out.push((v as u8 & 0x7f) | 0x80);
+            v >>= 7;
+        }
+        out.push(v as u8);
+    }
+
+    fn bytes(out: &mut Vec<u8>, field: u64, data: &[u8]) {
+        var(out, field << 3 | 2);
+        var(out, data.len() as u64);
+        out.extend_from_slice(data);
+    }
+
+    /// QuasarMessage { volume_manager_message (200): VolumeManager {
+    /// set_volume_signal (2): { platform_volume (1): 0..10000, muted (3), source (4) } } }
+    pub fn message(level: i32) -> Vec<u8> {
+        let mut signal = Vec::new();
+        var(&mut signal, 1 << 3);
+        var(&mut signal, (level.clamp(0, 10) as u64) * 1000);
+        var(&mut signal, 3 << 3);
+        var(&mut signal, 0);
+        bytes(&mut signal, 4, b"soundya");
+        let mut manager = Vec::new();
+        bytes(&mut manager, 2, &signal);
+        let mut message = Vec::new();
+        bytes(&mut message, 200, &manager);
+        message
+    }
+
+    pub fn set(level: i32) -> Result<(), String> {
+        let port = port().ok_or("no volume_manager port in quasar.cfg")?;
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(700)).map_err(|e| e.to_string())?;
+        s.set_write_timeout(Some(Duration::from_millis(700))).ok();
+        let msg = message(level);
+        s.write_all(&(msg.len() as i32).to_le_bytes()).map_err(|e| e.to_string())?;
+        s.write_all(&msg).map_err(|e| e.to_string())?;
+        s.flush().map_err(|e| e.to_string())
+    }
 }
 
 const EV_SYN: u16 = 0;
@@ -316,6 +386,15 @@ mod tests {
         assert_eq!(level(), Some(10));
         heard("громкость на максимум");
         assert_eq!(level(), None);
+    }
+
+    #[test]
+    fn volume_manager_message() {
+        // Same bytes Luna sends for 60 % (platform_volume 6000), source differs.
+        let m = maind::message(6);
+        assert_eq!(&m[..3], &[0xc2, 0x0c, (m.len() - 3) as u8]);
+        assert!(m.windows(3).any(|w| w == [0x08, 0xf0, 0x2e]), "{m:x?}");
+        assert!(m.ends_with(b"soundya"));
     }
 
     #[test]
