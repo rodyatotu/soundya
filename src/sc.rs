@@ -107,6 +107,20 @@ pub struct Track {
 }
 
 impl Track {
+    /// A track known only by id, filled in by `hydrate`.
+    pub fn from_id(id: u64) -> Track {
+        Track {
+            id,
+            title: String::new(),
+            user: None,
+            policy: None,
+            track_authorization: None,
+            media: None,
+            duration: None,
+            permalink_url: None,
+        }
+    }
+
     pub fn name(&self) -> String {
         match &self.user {
             Some(u) if !u.username.is_empty() => format!("{} — {}", u.username, self.title),
@@ -552,6 +566,28 @@ impl Client {
             rng ^= rng << 17;
             rng
         };
+        // What soundcloud.com itself offers on the home page («More of what you
+        // like», then the daily/weekly mixes): the same picks as in the browser.
+        if self.has_token() {
+            match self.personalized() {
+                Ok(ids) if ids.len() >= 10 => {
+                    let liked: std::collections::HashSet<u64> = liked.iter().copied().collect();
+                    let mut ids: Vec<u64> = ids.into_iter().filter(|id| !liked.contains(id)).collect();
+                    for i in (1..ids.len()).rev() {
+                        let j = (next() % (i as u64 + 1)) as usize;
+                        ids.swap(i, j);
+                    }
+                    ids.truncate(150);
+                    let tracks = self.hydrate(ids.into_iter().map(Track::from_id).collect())?;
+                    if !tracks.is_empty() {
+                        eprintln!("recommendations: {} tracks from soundcloud.com's own picks", tracks.len());
+                        return Ok(tracks);
+                    }
+                }
+                Ok(ids) => eprintln!("recommendations: soundcloud.com offered only {} tracks, using related", ids.len()),
+                Err(e) => eprintln!("recommendations: home page picks: {e}"),
+            }
+        }
         let mut seeds: Vec<u64> = seed.into_iter().collect();
         // Recent likes say most about current taste: pick from the newest 50.
         let mut pool: Vec<u64> = liked.iter().take(50).copied().collect();
@@ -784,6 +820,44 @@ impl Client {
             .collect())
     }
 
+    /// Track ids from the logged-in home page of soundcloud.com (/mixed-selections):
+    /// «More of what you like» first; without it, the daily and weekly mixes.
+    fn personalized(&self) -> Res<Vec<u64>> {
+        let v = self.api("/mixed-selections", &[("limit", "20")])?;
+        let selections = v.get("collection").and_then(Value::as_array).cloned().unwrap_or_default();
+        let text = |s: &Value, k: &str| s.get(k).and_then(Value::as_str).unwrap_or("").to_lowercase();
+        let names: Vec<String> = selections.iter().map(|s| text(s, "title")).collect();
+        eprintln!("recommendations: home page has {names:?}");
+        let wanted = |s: &Value| {
+            let all = format!("{} {} {}", text(s, "title"), text(s, "id"), text(s, "urn"));
+            all.contains("more of what you like") || all.contains("personalized") || all.contains("больше того")
+        };
+        let mixes = |s: &Value| {
+            let all = format!("{} {} {}", text(s, "title"), text(s, "id"), text(s, "urn"));
+            all.contains("mix") || all.contains("микс") || all.contains("daily") || all.contains("weekly")
+        };
+        let mut ids = Vec::new();
+        let picks: [&dyn Fn(&Value) -> bool; 2] = [&wanted, &mixes];
+        for pick in picks {
+            let mut urns = Vec::new();
+            for s in selections.iter().filter(|s| pick(s)) {
+                collect_picks(s, &mut ids, &mut urns);
+            }
+            for urn in urns.into_iter().take(12) {
+                match self.api(&format!("/system-playlists/{urn}"), &[]) {
+                    Ok(p) => collect_picks(&p, &mut ids, &mut Vec::new()),
+                    Err(e) => eprintln!("recommendations: {urn}: {e}"),
+                }
+            }
+            if ids.len() >= 10 {
+                break;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        ids.retain(|id| seen.insert(*id));
+        Ok(ids)
+    }
+
     pub fn related(&self, id: u64) -> Res<Vec<Track>> {
         let v = self.api(&format!("/tracks/{id}/related"), &[("limit", "20")])?;
         let c: Collection<Track> = serde_json::from_value(v)?;
@@ -913,6 +987,35 @@ pub fn test_proxy(proxy: &str) -> Res<String> {
 }
 
 type Refresh = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// Track ids and system playlists («soundcloud:system-playlists:…») anywhere in
+/// a home page selection or a playlist.
+fn collect_picks(v: &Value, ids: &mut Vec<u64>, urns: &mut Vec<String>) {
+    match v {
+        Value::Array(items) => items.iter().for_each(|i| collect_picks(i, ids, urns)),
+        Value::Object(o) => {
+            let kind = o.get("kind").and_then(Value::as_str).unwrap_or("");
+            if kind == "track" {
+                if let Some(id) = o.get("id").and_then(Value::as_u64) {
+                    ids.push(id);
+                }
+                return;
+            }
+            if let Some(urn) = o.get("urn").and_then(Value::as_str) {
+                // A mix whose tracks are not inside: fetched by urn.
+                if urn.starts_with("soundcloud:system-playlists:") && !o.contains_key("tracks") {
+                    urns.push(urn.to_owned());
+                }
+            }
+            for (k, child) in o {
+                if k != "user" {
+                    collect_picks(child, ids, urns);
+                }
+            }
+        }
+        _ => {}
+    }
+}
 
 pub(crate) fn script_urls(html: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -1166,6 +1269,17 @@ impl Read for Hls {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_home_page_picks() {
+        let v: Value = serde_json::from_str(r#"{"title":"More of what you like","urn":"soundcloud:selections:personalized-tracks","items":{"collection":[
+            {"kind":"system-playlist","urn":"soundcloud:system-playlists:personalized-tracks:1:2","tracks":[{"id":11,"kind":"track"},{"id":12,"kind":"track","user":{"kind":"user","id":5}}]},
+            {"kind":"system-playlist","urn":"soundcloud:system-playlists:weekly:99"}]}}"#).unwrap();
+        let (mut ids, mut urns) = (Vec::new(), Vec::new());
+        collect_picks(&v, &mut ids, &mut urns);
+        assert_eq!(ids, vec![11, 12]);
+        assert_eq!(urns, vec!["soundcloud:system-playlists:weekly:99"]);
+    }
 
     #[test]
     fn finds_client_id_and_scripts() {
