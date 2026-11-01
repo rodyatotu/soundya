@@ -1983,6 +1983,18 @@ fn main() {
     if all.first().is_some_and(|a| a.rsplit('/').next() == Some("avahi-publish-service")) {
         std::process::exit(airplay::publisher_main(&all[1..]));
     }
+    // Ctrl+C and kill stop soundya even when it was started from a shell or a
+    // supervisor that ignores them (they are inherited as «ignored»).
+    {
+        extern "C" {
+            fn signal(sig: i32, handler: usize) -> usize;
+        }
+        const SIG_DFL: usize = 0;
+        unsafe {
+            signal(2, SIG_DFL); // SIGINT
+            signal(15, SIG_DFL); // SIGTERM
+        }
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (cmd, rest) = match args.split_first() {
         Some((c, r)) => (c.as_str(), r.join(" ")),
