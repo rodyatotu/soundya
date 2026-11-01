@@ -997,7 +997,20 @@ impl Controller {
                 self.intent(Intent::Default, reply);
             }
             Intent::Resume => {
+                // «Продолжи» reaches Alice's own player too: her paused Yandex
+                // Music would quietly start under SoundCloud. Pause it now and
+                // once more when her own answer to the phrase has arrived.
+                alice::pause_native();
                 self.set_paused(false);
+                let shared = self.shared.clone();
+                thread::spawn(move || {
+                    for wait in [800, 1500, 2500] {
+                        thread::sleep(Duration::from_millis(wait));
+                        if shared.playing.load(Ordering::Acquire) {
+                            alice::pause_native();
+                        }
+                    }
+                });
                 respond(reply, "OK", None);
             }
             Intent::Next => {
