@@ -119,6 +119,11 @@ impl Updates {
     /// Downloads the latest release and starts its installer. Returns at once
     /// with the installer running; it restarts soundya when done.
     pub fn install(&self, proxy: &str) -> Result<String, String> {
+        // A Luna package is YAM's to update: our own installer would put a
+        // second, standalone copy next to it.
+        if crate::luna::active() {
+            return Err("soundya стоит как пакет Luna: обновите его через YAM — yam install rodyatotu/soundya".into());
+        }
         if self.installing.swap(true, Ordering::AcqRel) {
             return Err("обновление уже устанавливается".into());
         }

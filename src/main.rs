@@ -12,6 +12,7 @@ mod dns;
 mod fsx;
 mod history;
 mod led;
+mod luna;
 mod mdns;
 mod pc;
 mod player;
@@ -1262,7 +1263,11 @@ impl Controller {
             "netcheck" => self.check_net(Some(reply)),
             // «Удалить soundya» on the settings page: the speaker becomes plain Alice again.
             "uninstall" => {
-                let r = uninstall();
+                let r = if luna::active() {
+                    "error: soundya стоит как пакет Luna: удалите его через YAM — yam remove rodyatotu/soundya".into()
+                } else {
+                    uninstall()
+                };
                 send_to(&reply, r);
             }
             // «Обход блокировок»: «bypass auto» tries every way and switches the
@@ -1749,6 +1754,8 @@ fn daemon() {
     airplay::run(dir.clone(), device(), tx.clone(), shared.clone());
     // Counts running speakers for the README badge (anonymous, can be switched off).
     stats::run(dir.clone(), shared.clone());
+    // Started by Luna: its media provider (pause/resume/next from Luna).
+    luna::run(tx.clone(), shared.clone());
     // zapret (nfqws) with the saved strategy, before anything talks to SoundCloud.
     zapret::restore(&dir, settings.active_bypass(), &settings.zapret_args);
     // Looks for a newer soundya on GitHub; the page offers to install it.

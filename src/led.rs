@@ -148,11 +148,17 @@ fn write(path: &Path, value: u8) {
     let _ = fs::write(path, value.to_string());
 }
 
-struct Ring(Vec<Zone>);
+/// The ring: its LEDs in sysfs, or — when soundya runs as a Luna package —
+/// Luna's LED API (`zones` colours, spread by Luna over the real LEDs).
+struct Ring(Vec<Zone>, Option<usize>);
 
 impl Ring {
     fn detect() -> Option<Self> {
         // Station Lite: micro:red:ring1..3; Mini 2: mini2:red:ring1..6.
+        if crate::luna::active() {
+            // Six logical zones; Luna maps them onto whatever ring the Station has.
+            return Some(Ring(Vec::new(), Some(6)));
+        }
         ["micro", "mini2"].into_iter().find_map(|board| {
             let zones: Vec<Zone> = (1..=6)
                 .map(|z| {
@@ -161,11 +167,19 @@ impl Ring {
                 })
                 .filter(|z| crate::fsx::exists(&z.r) && crate::fsx::exists(&z.g) && crate::fsx::exists(&z.b))
                 .collect();
-            (!zones.is_empty()).then_some(Ring(zones))
+            (!zones.is_empty()).then_some(Ring(zones, None))
         })
     }
 
+    fn zones(&self) -> usize {
+        self.1.unwrap_or(self.0.len())
+    }
+
     fn is(&self, (r, g, b): (u8, u8, u8)) -> bool {
+        if self.1.is_some() {
+            // Luna's ring cannot be read back.
+            return false;
+        }
         self.0.iter().all(|z| {
             brightness(&z.r) == Some(r) && brightness(&z.g) == Some(g) && brightness(&z.b) == Some(b)
         })
@@ -173,6 +187,10 @@ impl Ring {
 
     /// The ring shows exactly `frame` (one colour per zone)?
     fn shows(&self, frame: &[Rgb]) -> bool {
+        if self.1.is_some() {
+            // Luna arbitrates the ring: what we drew last is assumed to be shown.
+            return true;
+        }
         self.0.iter().zip(frame.iter().cycle()).all(|(z, &(r, g, b))| {
             brightness(&z.r) == Some(r) && brightness(&z.g) == Some(g) && brightness(&z.b) == Some(b)
         })
@@ -180,6 +198,14 @@ impl Ring {
 
     /// Writes only the zones that change.
     fn draw(&self, frame: &[Rgb], before: Option<&[Rgb]>) {
+        if self.1.is_some() {
+            if before != Some(frame) {
+                if let Err(e) = crate::luna::ring(frame) {
+                    eprintln!("led: luna: {e}");
+                }
+            }
+            return;
+        }
         for (i, (z, &(r, g, b))) in self.0.iter().zip(frame.iter().cycle()).enumerate() {
             if before.and_then(|p| p.get(i)) == Some(&(r, g, b)) {
                 continue;
@@ -191,6 +217,10 @@ impl Ring {
     }
 
     fn set(&self, (r, g, b): (u8, u8, u8)) {
+        if self.1.is_some() {
+            let _ = if (r, g, b) == (0, 0, 0) { crate::luna::ring_off() } else { crate::luna::ring(&[(r, g, b)]) };
+            return;
+        }
         for z in &self.0 {
             write(&z.r, r);
             write(&z.g, g);
@@ -204,7 +234,7 @@ pub fn run(shared: Arc<Shared>) {
         eprintln!("led: no ring found, light disabled");
         return;
     };
-    eprintln!("led: ring found ({} zones)", ring.0.len());
+    eprintln!("led: ring found ({} zones{})", ring.zones(), if ring.1.is_some() { ", through Luna" } else { "" });
     // Left lit by a previous run that was stopped or crashed.
     let light = *shared.light.lock().unwrap();
     if ring.is(ORANGE) || ring.is(scale(light.quiet, light.bright)) {
@@ -216,7 +246,7 @@ pub fn run(shared: Arc<Shared>) {
         let mut idle_ms = 0u64;
         let mut clock = 0u64;
         let mut smooth = [0f32; 3];
-        let zones = ring.0.len();
+        let zones = ring.zones();
         // Position of the current track and how long it has not moved.
         let mut last_pos = u64::MAX;
         let mut still_ms = 0u64;

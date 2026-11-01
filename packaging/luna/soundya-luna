@@ -1,0 +1,28 @@
+#!/bin/sh
+# Started by Luna (binary plugin, service) from the package's plugin directory.
+# soundya keeps its settings in Luna's state directory for the package; the
+# helper programs stay in the (read-only) package and are linked from there.
+PAYLOAD=$(pwd)
+STATE=${LUNA_PLUGIN_STATE:-/data/opt/soundya-luna}
+mkdir -p "$STATE"
+
+# The standalone soundya (GitHub release, deploy.sh) runs on its own: two
+# copies would both answer Alice and play over each other.
+if [ -x /etc/init.d/S99soundya ]; then
+    echo "soundya: a standalone soundya is installed on this speaker (/data/opt/soundya)."
+    echo "soundya: remove it (settings page → «Удалить soundya») to run it from Luna."
+    while :; do sleep 3600; done
+fi
+
+for f in shairport-sync nfqws; do
+    [ -f "$PAYLOAD/$f" ] && ln -sf "$PAYLOAD/$f" "$STATE/$f"
+done
+[ -d "$PAYLOAD/fake" ] && ln -sfn "$PAYLOAD/fake" "$STATE/fake"
+# Settings that used to be in soundya.env.
+export SOUNDYA_DIR="$STATE"
+export SOUNDYA_WEB_PORT="${SOUNDYA_WEB_PORT:-8765}" SOUNDYA_NAME="${SOUNDYA_NAME:-soundya}" SOUNDYA_DEVICE="${SOUNDYA_DEVICE:-default}"
+# Station Mini 1 plays through Alice's own libasound (see run.sh).
+if [ ! -f /etc/asound.conf ] && [ -d /system/vendor/quasar/libs ]; then
+    export LD_LIBRARY_PATH="/system/vendor/quasar/libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+exec "$PAYLOAD/soundya" daemon

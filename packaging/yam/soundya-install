@@ -1,9 +1,0 @@
-#!/bin/sh
-# YAM postinstall for rodyatotu/soundya: installs soundya the usual way
-# (packaging/install.sh) from the files YAM unpacked next to it. Runs as root,
-# from the installed package version's directory.
-set -eu
-SRC=$(ls -d "$(pwd)"/share/*.soundya 2>/dev/null | head -1)
-[ -n "$SRC" ] && [ -f "$SRC/install.sh" ] || { echo "soundya: $SRC/install.sh not found" >&2; exit 1; }
-# The same files the GitHub release installs; the speaker picks them up from there.
-sh "$SRC/install.sh"
