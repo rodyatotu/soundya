@@ -63,22 +63,56 @@ fn post(path: &str, body: &Value) -> Result<Option<Value>, String> {
 }
 
 /// Luna's own API (`…/api`), from the runtime URL `…/api/runtime/<id>`.
+/// Luna's API: from the runtime URL when Luna started soundya, otherwise Luna
+/// found running on this speaker (127.0.0.1:8099 or 8100, looked up again
+/// every minute while it is not there).
 fn main_api() -> Option<String> {
-    let url = &api()?.url;
-    url.find("/api/runtime/").map(|i| url[..i + 4].to_owned())
+    if let Some(url) = api().map(|a| &a.url) {
+        return url.find("/api/runtime/").map(|i| url[..i + 4].to_owned());
+    }
+    static FOUND: std::sync::Mutex<Option<(Option<String>, Instant)>> = std::sync::Mutex::new(None);
+    let mut found = FOUND.lock().unwrap();
+    if let Some((base, at)) = found.as_ref() {
+        if base.is_some() || at.elapsed() < Duration::from_secs(60) {
+            return base.clone();
+        }
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_millis(300))
+        .timeout(Duration::from_secs(2))
+        .build();
+    let base = [8099u16, 8100].into_iter().map(|p| format!("http://127.0.0.1:{p}/api")).find(|b| {
+        agent.get(&format!("{b}/device")).call().is_ok_and(|r| r.status() == 200)
+    });
+    if let Some(b) = &base {
+        eprintln!("luna: found Luna at {b}; its volume and LED APIs are used");
+    }
+    *found = Some((base.clone(), Instant::now()));
+    base
+}
+
+/// Luna runs on this speaker (whether or not it started soundya).
+pub fn present() -> bool {
+    main_api().is_some()
+}
+
+/// A call to Luna's own API (the runtime token when there is one).
+fn post_main(path: &str, body: &Value) -> Result<(), String> {
+    let base = main_api().ok_or("no Luna on this speaker")?;
+    let agent = match api() {
+        Some(a) => a.agent.clone(),
+        None => ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(1)).timeout(Duration::from_secs(5)).build(),
+    };
+    let mut req = agent.post(&format!("{base}{path}")).set("Content-Type", "application/json");
+    if let Some(a) = api() {
+        req = req.set("X-Luna-Token", &a.token);
+    }
+    req.send_string(&body.to_string()).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Alice's volume, 0..=100 %, through Luna (`POST /api/volume/set`).
 pub fn volume(percent: i32) -> Result<(), String> {
-    let base = main_api().ok_or("not under Luna")?;
-    let api = api().ok_or("not under Luna")?;
-    api.agent
-        .post(&format!("{base}/volume/set"))
-        .set("X-Luna-Token", &api.token)
-        .set("Content-Type", "application/json")
-        .send_string(&json!({ "percent": percent.clamp(0, 100) }).to_string())
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    post_main("/volume/set", &json!({ "percent": percent.clamp(0, 100) }))
 }
 
 /// "#rrggbb" for Luna's LED API.
@@ -98,14 +132,17 @@ fn zone() -> &'static str {
 pub fn ring(colours: &[(u8, u8, u8)]) -> Result<(), String> {
     let colours: Vec<String> = colours.iter().copied().map(hex).collect();
     let body = json!({ "colors": colours });
-    match post(&format!("/led/{}", zone()), &body) {
+    let send = |path: &str, body: &Value| -> Result<(), String> {
+        if active() { post(path, body).map(|_| ()) } else { post_main(path, body) }
+    };
+    match send(&format!("/led/{}", zone()), &body) {
         Ok(_) => {
             ZONE.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).ok();
             Ok(())
         }
         // No ring here: the logo light (Mini 1), from now on.
         Err(e) if ZONE.load(Ordering::Relaxed) == 0 => {
-            post("/led/logo", &body).map_err(|l| format!("ring: {e}; logo: {l}"))?;
+            send("/led/logo", &body).map_err(|l| format!("ring: {e}; logo: {l}"))?;
             ZONE.store(2, Ordering::Relaxed);
             eprintln!("led: luna: no ring on this Station, using its logo light");
             Ok(())
@@ -115,7 +152,8 @@ pub fn ring(colours: &[(u8, u8, u8)]) -> Result<(), String> {
 }
 
 pub fn ring_off() -> Result<(), String> {
-    post(&format!("/led/off/{}", zone()), &json!({})).map(|_| ())
+    let path = format!("/led/off/{}", zone());
+    if active() { post(&path, &json!({})).map(|_| ()) } else { post_main(&path, &json!({})) }
 }
 
 /// What Luna is told: "playing", "paused" or "unknown". Stopped counts as

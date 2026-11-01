@@ -186,7 +186,7 @@ pub fn set(target: i32) -> Result<i32, String> {
     let target = target.clamp(0, MAX);
     // Under Luna: its volume API (Alice's volume manager, else the mixer, done
     // the way Luna knows works on this model).
-    if crate::luna::active() {
+    if crate::luna::present() {
         match crate::luna::volume(target * 10) {
             Ok(()) => {
                 LEVEL.store(target, Ordering::Release);
