@@ -1,8 +1,10 @@
 #!/bin/sh
-# Started by Luna (binary plugin, service) from the package's plugin directory.
-# soundya keeps its settings in Luna's state directory for the package; the
-# helper programs stay in the (read-only) package and are linked from there.
-PAYLOAD=$(pwd)
+# Started by Luna (binary plugin, service). soundya keeps its settings in
+# Luna's state directory for the package; the helper programs stay in the
+# (read-only) package and are linked from there.
+# The package files sit next to this script, wherever it is started from
+# (Luna starts it from the plugin directory, a person may not).
+PAYLOAD=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 STATE=${LUNA_PLUGIN_STATE:-/data/opt/soundya-luna}
 mkdir -p "$STATE"
 
