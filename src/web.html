@@ -309,8 +309,15 @@
   .ambi-ring[data-mode=eq] i { animation: ambieq .9s ease-in-out infinite alternate; }
   .ambi-ring[data-mode=eq] i:nth-child(2n) { animation-duration: .6s; } .ambi-ring[data-mode=eq] i:nth-child(3n) { animation-duration: .75s; }
   .ambi-ring.off i { opacity: .08; animation: none; filter: none; }
+  .ambi-ring[data-mode=eq] i { background: conic-gradient(from calc(var(--n) * 60deg), var(--zc) 0 52deg, transparent 52deg 360deg);
+    filter: drop-shadow(0 0 10px var(--zc)); }
+  .ambi-ring i:nth-child(1), .ambi-ring i:nth-child(6) { --zc: var(--z0); }
+  .ambi-ring i:nth-child(2), .ambi-ring i:nth-child(5) { --zc: var(--z1); }
+  .ambi-ring i:nth-child(3), .ambi-ring i:nth-child(4) { --zc: var(--z2); }
+  .colors[hidden] { display: none; }
+  .colors.three label { padding: 8px 10px; gap: 8px; font-size: 13px; }
   @keyframes ambipulse { 50% { opacity: calc(var(--b) * .35); background: conic-gradient(from calc(var(--n) * 60deg), var(--c2) 0 52deg, transparent 52deg 360deg); } }
-  @keyframes ambieq { to { opacity: calc(var(--b) * .25); } 0% { background: conic-gradient(from calc(var(--n) * 60deg), var(--c2) 0 52deg, transparent 52deg 360deg); } }
+  @keyframes ambieq { from { opacity: var(--b); } to { opacity: calc(var(--b) * .2); } }
   .seg { display: flex; gap: 4px; padding: 4px; margin-top: 6px; border-radius: 16px; background: var(--bg); border: 1px solid var(--glass-edge); }
   .seg button { flex: 1; border: 0; background: transparent; padding: 9px 6px; border-radius: 12px; }
   .seg button.on { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); color: #fff; box-shadow: 0 4px 14px rgba(255, 80, 40, .3); }
@@ -597,9 +604,14 @@
     <p class="hint" id="lightmodehint"></p>
     <div class="field">Палитра</div>
     <div class="presets" id="lightpresets"></div>
-    <div class="colors">
+    <div class="colors" id="lightpair">
       <label><input type="color" id="lightc1" oninput="lightPreview()" onchange="saveLight()"><span>Тихо</span></label>
       <label><input type="color" id="lightc2" oninput="lightPreview()" onchange="saveLight()"><span>Громко</span></label>
+    </div>
+    <div class="colors three" id="lighteq" hidden>
+      <label><input type="color" id="lightbass" oninput="lightPreview()" onchange="saveLight()"><span>Бас</span></label>
+      <label><input type="color" id="lightmid" oninput="lightPreview()" onchange="saveLight()"><span>Середина</span></label>
+      <label><input type="color" id="lighthigh" oninput="lightPreview()" onchange="saveLight()"><span>Верха</span></label>
     </div>
     <label class="field">Яркость <b id="lightbval"></b>
       <input type="range" id="lightbright" min="10" max="100" step="5" class="range"
@@ -1040,14 +1052,20 @@ async function netCheck() {
 }
 
 // ---- Ambilight ----
+// name, quiet, loud, then the equaliser's bass, middle, treble.
 const LIGHT_PRESETS = [
-  ['SoundCloud', '#ff7a00', '#ffd000'], ['Закат', '#ff3d00', '#ff2fa8'], ['Океан', '#0077ff', '#00ffd5'],
-  ['Неон', '#8a2bff', '#00e5ff'], ['Лава', '#ff1a1a', '#ffb000'], ['Мята', '#00c46a', '#c6ff3d'],
+  ['SoundCloud', '#ff7a00', '#ffd000', '#ff3d00', '#ff9a00', '#ffe14d'],
+  ['Закат', '#ff3d00', '#ff2fa8', '#ff2a00', '#ff2f7a', '#b14dff'],
+  ['Океан', '#0077ff', '#00ffd5', '#0040ff', '#00a2ff', '#00ffd5'],
+  ['Неон', '#8a2bff', '#00e5ff', '#ff00c8', '#8a2bff', '#00e5ff'],
+  ['Лава', '#ff1a1a', '#ffb000', '#ff0000', '#ff5a00', '#ffb000'],
+  ['Мята', '#00c46a', '#c6ff3d', '#00a86b', '#00e08a', '#c6ff3d'],
+  ['Радуга', '#ff2a2a', '#2aff6a', '#ff2a2a', '#2aff6a', '#2a7bff'],
 ];
 const LIGHT_HINTS = {
   solid: 'Ровный цвет «Тихо», пока играет музыка.',
   pulse: 'Всё кольцо дышит в такт: громче — ярче и ближе к цвету «Громко».',
-  eq: 'Бас, середина и верха — на разных частях кольца, как эквалайзер.',
+  eq: 'Бас, середина и верха — на разных частях кольца, каждая полоса своим цветом.',
 };
 let lightMode = 'solid';
 function renderLight(s) {
@@ -1055,15 +1073,22 @@ function renderLight(s) {
   $('lightc1').value = s.light_color || '#ff7a00';
   $('lightc2').value = s.light_color2 || '#ffd000';
   $('lightbright').value = s.light_bright || 100;
+  $('lightbass').value = s.light_bass || '#ff3d00';
+  $('lightmid').value = s.light_mid || '#ff9a00';
+  $('lighthigh').value = s.light_high || '#ffe14d';
   $('lightbval').textContent = $('lightbright').value + '%';
   if (!$('lightpresets').children.length) {
-    for (const [name, a, b] of LIGHT_PRESETS) {
+    for (const [name, a, b, lo, mi, hi] of LIGHT_PRESETS) {
       const p = document.createElement('button');
       p.className = 'preset';
       p.innerHTML = '<i></i>';
       p.append(name);
-      p.querySelector('i').style.background = `linear-gradient(135deg, ${a}, ${b})`;
-      p.onclick = () => { $('lightc1').value = a; $('lightc2').value = b; saveLight(); };
+      p.querySelector('i').style.background = `conic-gradient(${lo}, ${mi}, ${hi}, ${lo})`;
+      p.onclick = () => {
+        $('lightc1').value = a; $('lightc2').value = b;
+        $('lightbass').value = lo; $('lightmid').value = mi; $('lighthigh').value = hi;
+        saveLight();
+      };
       $('lightpresets').appendChild(p);
     }
     document.querySelectorAll('#lightmode button').forEach(b => b.onclick = () => { lightMode = b.dataset.mode; saveLight(); });
@@ -1081,9 +1106,16 @@ function lightPreview() {
   ring.style.setProperty('--c2', $('lightc2').value);
   ring.style.setProperty('--b', $('lightbright').value / 100);
   ring.dataset.mode = lightMode;
+  ring.style.setProperty('--z0', $('lightbass').value);
+  ring.style.setProperty('--z1', $('lightmid').value);
+  ring.style.setProperty('--z2', $('lighthigh').value);
+  $('lighteq').hidden = lightMode !== 'eq';
+  $('lightpair').hidden = lightMode === 'eq';
   ring.classList.toggle('off', !$('ring').checked);
   document.querySelectorAll('#lightpresets .preset').forEach((p, i) =>
-    p.classList.toggle('on', LIGHT_PRESETS[i][1] === $('lightc1').value && LIGHT_PRESETS[i][2] === $('lightc2').value));
+    p.classList.toggle('on', lightMode === 'eq'
+      ? LIGHT_PRESETS[i][3] === $('lightbass').value && LIGHT_PRESETS[i][4] === $('lightmid').value && LIGHT_PRESETS[i][5] === $('lighthigh').value
+      : LIGHT_PRESETS[i][1] === $('lightc1').value && LIGHT_PRESETS[i][2] === $('lightc2').value));
 }
 let lightSaving = null;
 function saveLight() {
@@ -1408,6 +1440,7 @@ function settingsBody(extra) {
   return JSON.stringify(Object.assign({
     proxy: $('proxy').value, proxy_on: $('proxyon').checked, bypass_on: $('bypasson').checked, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
     light_mode: lightMode, light_color: $('lightc1').value, light_color2: $('lightc2').value, light_bright: Number($('lightbright').value),
+    light_bass: $('lightbass').value, light_mid: $('lightmid').value, light_high: $('lighthigh').value,
     pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value,
     pc_contacts: readContacts(),
     airplay: $('airplay').checked, airplay_name: $('airplayname').value, airplay_icon: $('airplayicon').value,

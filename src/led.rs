@@ -75,6 +75,8 @@ pub struct Light {
     pub mode: Mode,
     pub quiet: Rgb,
     pub loud: Rgb,
+    /// Equaliser: bass, middle, treble.
+    pub bands: [Rgb; 3],
     pub bright: f32,
 }
 
@@ -88,6 +90,11 @@ impl Light {
             },
             quiet: led_colour(&s.light_color).unwrap_or(ORANGE),
             loud: led_colour(&s.light_color2).unwrap_or((255, 160, 0)),
+            bands: [
+                led_colour(&s.light_bass).unwrap_or((255, 12, 0)),
+                led_colour(&s.light_mid).unwrap_or((255, 80, 0)),
+                led_colour(&s.light_high).unwrap_or((255, 190, 18)),
+            ],
             bright: (s.light_bright.clamp(10, 100) as f32) / 100.0,
         }
     }
@@ -114,7 +121,8 @@ fn music_frame(light: &Light, zones: usize, heard: Option<[f32; 3]>, smooth: &mu
                     0..=3 => z.min(2),
                     _ => [0, 1, 2, 2, 1, 0][z % 6],
                 };
-                base(smooth[band].powf(1.3))
+                let level = smooth[band].powf(1.3);
+                scale(light.bands[band], light.bright * (0.1 + 0.9 * level))
             })
             .collect(),
     }
@@ -286,16 +294,24 @@ mod tests {
         assert_eq!(led_colour("#ffffff"), Some((255, 255, 255)));
         assert_eq!(led_colour("ff7a00"), Some((255, 50, 0)));
         assert_eq!(led_colour("#xyz"), None);
-        let light = Light { mode: Mode::Eq, quiet: (255, 0, 0), loud: (0, 0, 255), bright: 1.0 };
+        let light = Light {
+            mode: Mode::Eq,
+            quiet: (255, 0, 0),
+            loud: (0, 0, 255),
+            bands: [(0, 0, 255), (0, 255, 0), (255, 0, 0)],
+            bright: 1.0,
+        };
         let mut smooth = [0.0; 3];
         let f = music_frame(&light, 3, Some([1.0, 0.0, 0.0]), &mut smooth);
-        assert_eq!(f[0], (0, 0, 255), "loud bass: full «loud» colour");
-        assert!(f[2].0 < 40 && f[2].2 == 0, "quiet treble: dim «quiet» colour {:?}", f[2]);
+        assert_eq!(f[0], (0, 0, 255), "loud bass: full bass colour");
+        assert!(f[2].0 < 40 && f[2].1 == 0 && f[2].2 == 0, "quiet treble: dim treble colour {:?}", f[2]);
         let f6 = music_frame(&light, 6, Some([1.0, 0.0, 0.0]), &mut [0.0; 3]);
         assert_eq!(f6[0], f6[5]);
         // Falls slowly, not at once.
         let after = music_frame(&light, 3, Some([0.0; 3]), &mut smooth);
         assert!(after[0].2 > 150, "{:?}", after[0]);
+        let pulse = Light { mode: Mode::Pulse, ..light };
+        assert_eq!(music_frame(&pulse, 3, Some([1.0; 3]), &mut [0.0; 3])[0], (0, 0, 255), "pulse: loud colour");
         let solid = Light { mode: Mode::Solid, bright: 0.5, ..light };
         assert_eq!(music_frame(&solid, 3, None, &mut [0.0; 3]), vec![(128, 0, 0); 3]);
     }

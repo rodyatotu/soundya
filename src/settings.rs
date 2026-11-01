@@ -62,6 +62,13 @@ pub struct Settings {
     pub light_color2: String,
     #[serde(default = "light_bright")]
     pub light_bright: u8,
+    /// Equaliser colours: bass, middle, treble.
+    #[serde(default = "light_bass")]
+    pub light_bass: String,
+    #[serde(default = "light_mid")]
+    pub light_mid: String,
+    #[serde(default = "light_high")]
+    pub light_high: String,
     /// Parts switched off at install («что поставить») or later on the page:
     /// SoundCloud by voice, the PC and the TV. AirPlay has `airplay`, the
     /// bypass `bypass_on`.
@@ -105,6 +112,15 @@ fn light_color2() -> String {
 fn light_bright() -> u8 {
     100
 }
+fn light_bass() -> String {
+    "#ff3d00".into()
+}
+fn light_mid() -> String {
+    "#ff9a00".into()
+}
+fn light_high() -> String {
+    "#ffe14d".into()
+}
 
 fn speaker() -> String {
     "speaker".into()
@@ -134,6 +150,9 @@ impl Default for Settings {
             light_color: light_color(),
             light_color2: light_color2(),
             light_bright: light_bright(),
+            light_bass: light_bass(),
+            light_mid: light_mid(),
+            light_high: light_high(),
             soundcloud: true,
             pc_on: true,
             tv_on: true,

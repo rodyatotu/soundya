@@ -363,6 +363,9 @@ impl Controller {
                 "light_color": self.settings.light_color,
                 "light_color2": self.settings.light_color2,
                 "light_bright": self.settings.light_bright,
+                "light_bass": self.settings.light_bass,
+                "light_mid": self.settings.light_mid,
+                "light_high": self.settings.light_high,
                 "pc_on": self.settings.pc_on,
                 "tv_on": self.settings.tv_on,
             },
@@ -488,7 +491,7 @@ impl Controller {
         if !["solid", "pulse", "eq"].contains(&new.light_mode.as_str()) {
             new.light_mode = "solid".into();
         }
-        for c in [&mut new.light_color, &mut new.light_color2] {
+        for c in [&mut new.light_color, &mut new.light_color2, &mut new.light_bass, &mut new.light_mid, &mut new.light_high] {
             if led::led_colour(c).is_none() {
                 return "error: цвет вида #ff7a00".into();
             }
