@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://www.donationalerts.com/r/rodyatotu"><img src="https://img.shields.io/badge/Поддержать-DonationAlerts-ff5500?style=for-the-badge" alt="Поддержать через DonationAlerts"></a>
   <a href="#поддержать-проект"><img src="https://img.shields.io/badge/USDT-TRC--20-26a17b?style=for-the-badge&logo=tether&logoColor=white" alt="USDT TRC-20"></a>
+  <a href="https://t.me/rodyatotu"><img src="https://img.shields.io/badge/Telegram-@rodyatotu-26a5e4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram разработчика: @rodyatotu"></a>
 </p>
 
 <p align="center">
@@ -441,6 +442,10 @@ soundya — неофициальный проект и никак не связ�
 
 <h3 align="center">USDT · TRC-20</h3>
 <p align="center"><code>TSEJPa8FefWd8u8mo4USu8muSJr7589gWg</code><br><sub>Только сеть Tron (TRC-20). Перевод в другой сети потеряется.</sub></p>
+
+## Связь
+
+По всем вопросам и пожеланиям пишите в Telegram: [@rodyatotu](https://t.me/rodyatotu).
 
 ## Лицензия
 
