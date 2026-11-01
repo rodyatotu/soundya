@@ -31,6 +31,7 @@ const BREATH_MIN: f32 = 0.06;
 const PAUSED: f32 = 0.15;
 
 /// Orange at `level` (0..1) of full brightness.
+#[cfg(test)]
 fn orange(level: f32) -> (u8, u8, u8) {
     scale(ORANGE, level)
 }
