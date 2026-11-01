@@ -271,7 +271,10 @@
   .seg button.on:hover:not(:disabled), .subnav button.on:hover:not(:disabled) { background: linear-gradient(135deg, #ff8a30, #ff4f6a); color: #fff; }
   button.link, button.link:hover:not(:disabled), .heart { background: none; border: 0; box-shadow: none;
     -webkit-backdrop-filter: none; backdrop-filter: none; }
-  .subnav button { border-radius: 999px; }
+  /* Six equal pills, three in a row. */
+  .subnav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .subnav button { border-radius: 999px; width: 100%; padding: 8px 4px; text-align: center;
+    overflow: hidden; text-overflow: ellipsis; }
   .subnav button.on { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); border-color: transparent; color: #fff; }
   input[type=text], input[type=password], label.field select, .bypassbox select, .bypassbox textarea, .wallet input, .crypto input {
     background: var(--field); border: 1px solid var(--glass-edge); border-radius: 14px;
@@ -420,7 +423,7 @@
     <div class="subnav" role="tablist" aria-label="Разделы настроек">
       <button data-sub="net" class="on">Соединение</button>
       <button data-sub="account">Аккаунт</button>
-      <button data-sub="speaker">Колонка и AirPlay</button>
+      <button data-sub="speaker">Колонка</button>
       <button data-sub="light">Ambilight</button>
       <button data-sub="devices">Устройства</button>
       <button data-sub="about">Обновления</button>
