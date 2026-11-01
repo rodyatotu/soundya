@@ -189,6 +189,10 @@ struct Controller {
     loading: Mutex<Option<String>>,
     /// «Недавно играло» on the page.
     history: history::History,
+    /// Connection checks failed in a row while a bypass was on, and when the
+    /// bypass was last re-picked by itself.
+    net_fails: u32,
+    repicked: Option<std::time::Instant>,
     /// What the running fetch was asked for, as the page shows it, and the
     /// command that asks for it again: goes to the history once it plays.
     asked: Option<(String, String)>,
@@ -1540,6 +1544,23 @@ impl Controller {
                 }
                 Cmd::Results(tracks) => self.results = tracks,
                 Cmd::Net(result) => {
+                    // The provider's DPI changes and a strategy that worked stops
+                    // getting through: after two failed checks in a row (about two
+                    // minutes) soundya picks a working one by itself, at most every
+                    // 10 minutes.
+                    if result.is_ok() || self.settings.active_bypass().is_empty() {
+                        self.net_fails = 0;
+                    } else {
+                        self.net_fails += 1;
+                        let due = self.repicked.is_none_or(|t| t.elapsed() > Duration::from_secs(600));
+                        if self.net_fails >= 2 && due && !self.shared.bypass_busy.load(Ordering::Acquire) {
+                            eprintln!("bypass: {} stopped getting through; picking again", self.settings.active_bypass());
+                            self.repicked = Some(std::time::Instant::now());
+                            self.net_fails = 0;
+                            let (otx, _orx) = mpsc::channel();
+                            self.control("bypass auto", otx);
+                        }
+                    }
                     // SoundCloud answers again (bypass or proxy fixed): a login
                     // check that failed while it did not is done again.
                     if result.is_ok() && self.user.is_none() && self.client.has_token() {
@@ -1850,6 +1871,8 @@ fn daemon() {
         retries: 0,
         loading: Mutex::new(None),
         history: history::History::load(&state_dir()),
+        net_fails: 0,
+        repicked: None,
         asked: None,
         rng: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
