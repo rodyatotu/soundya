@@ -67,7 +67,10 @@ pub fn heard(text: &str) {
             w.parse::<i32>().ok().or_else(|| WORDS.iter().position(|x| *x == w).map(|i| i as i32))
         });
         match n {
-            Some(n) if (0..=MAX).contains(&n) => LEVEL.store(n, Ordering::Release),
+            Some(n) if (0..=MAX).contains(&n) => {
+                LEVEL.store(n, Ordering::Release);
+                learn_later(n);
+            }
             // «громкость на максимум», «громкость 50 процентов»: not followed.
             _ => LEVEL.store(-1, Ordering::Release),
         }
@@ -78,10 +81,91 @@ pub fn heard(text: &str) {
     }
 }
 
-/// The slider: Alice's volume to `target` (0..=10).
+// ---- straight into the mixer ----
+//
+// Alice sets her volume with set_volume.sh = `amixer set Master N%`, the
+// «Master Playback Volume» control (0–255). The slider writes the same control:
+// instantly, with no presses and no tick. Which value Alice uses for each of her
+// levels is learnt from her own «громкость N» (kept in volume-levels.txt);
+// until then level N is N×10 %.
+
+const CONTROL: &str = "name=Master Playback Volume";
+
+fn state_file() -> PathBuf {
+    PathBuf::from(std::env::var("SOUNDYA_DIR").unwrap_or_else(|_| "/data/opt/soundya".into())).join("volume-levels.txt")
+}
+
+/// The mixer value for each level that Alice has been seen to use.
+fn learnt() -> [Option<u32>; 11] {
+    let mut out = [None; 11];
+    for line in crate::fsx::read_string(&state_file()).unwrap_or_default().lines() {
+        if let Some((l, v)) = line.split_once('=') {
+            if let (Ok(l), Ok(v)) = (l.trim().parse::<usize>(), v.trim().parse::<u32>()) {
+                if l <= 10 && v <= 255 {
+                    out[l] = Some(v);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// «: values=140,140» → 140.
+fn parse_mixer(out: &str) -> Option<u32> {
+    out.lines().find_map(|l| l.trim().strip_prefix(": values=")).and_then(|v| v.split(',').next()?.trim().parse().ok())
+}
+
+fn read_mixer() -> Option<u32> {
+    let out = std::process::Command::new("amixer").args(["cget", CONTROL]).output().ok()?;
+    parse_mixer(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn write_mixer(value: u32) -> bool {
+    std::process::Command::new("amixer")
+        .args(["-q", "cset", CONTROL, &format!("{value},{value}")])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// The value for `level`: learnt, or level×10 % of 255 as set_volume.sh would.
+fn mixer_value(level: i32, learnt: &[Option<u32>; 11]) -> u32 {
+    let level = level.clamp(0, MAX) as usize;
+    learnt[level].unwrap_or(((level as u32 * 10 * 255) + 50) / 100)
+}
+
+/// After Alice's own «громкость N»: note which value she set.
+fn learn_later(n: i32) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let Some(value) = read_mixer() else { return };
+        // Only if nothing else changed it meanwhile.
+        if level() != Some(n) {
+            return;
+        }
+        let mut table = learnt();
+        if table[n as usize] == Some(value) {
+            return;
+        }
+        table[n as usize] = Some(value);
+        let text: String = table
+            .iter()
+            .enumerate()
+            .filter_map(|(l, v)| v.map(|v| format!("{l}={v}\n")))
+            .collect();
+        let _ = std::fs::write(state_file(), text);
+        eprintln!("volume: Alice's level {n} is {value}/255");
+    });
+}
+
+/// The slider: Alice's volume to `target` (0..=10), straight into the mixer;
+/// with no amixer on the speaker, by pressing her buttons.
 pub fn set(target: i32) -> Result<i32, String> {
     let _one = BUSY.lock().unwrap();
     let target = target.clamp(0, MAX);
+    if write_mixer(mixer_value(target, &learnt())) {
+        LEVEL.store(target, Ordering::Release);
+        return Ok(target);
+    }
     let from = match level() {
         Some(l) => l,
         None => {
@@ -232,6 +316,18 @@ mod tests {
         assert_eq!(level(), Some(10));
         heard("громкость на максимум");
         assert_eq!(level(), None);
+    }
+
+    #[test]
+    fn mixer_values() {
+        let out = "numid=178,iface=MIXER,name='Master Playback Volume'\n  ; type=INTEGER,access=rw---RW-,values=2,min=0,max=255,step=0\n  : values=140,140\n";
+        assert_eq!(parse_mixer(out), Some(140));
+        let mut t = [None; 11];
+        assert_eq!(mixer_value(5, &t), 128);
+        assert_eq!(mixer_value(10, &t), 255);
+        assert_eq!(mixer_value(0, &t), 0);
+        t[5] = Some(140);
+        assert_eq!(mixer_value(5, &t), 140);
     }
 
     #[test]
