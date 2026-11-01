@@ -121,10 +121,11 @@ fn read_mixer() -> Option<u32> {
 }
 
 fn write_mixer(value: u32) -> bool {
-    std::process::Command::new("amixer")
-        .args(["-q", "cset", CONTROL, &format!("{value},{value}")])
-        .status()
-        .is_ok_and(|s| s.success())
+    let amixer = |args: &[&str]| std::process::Command::new("amixer").args(args).status().is_ok_and(|s| s.success());
+    // The control by its full name; on firmwares that name it differently,
+    // the simple control «Master» as set_volume.sh does.
+    amixer(&["-q", "cset", CONTROL, &format!("{value},{value}")])
+        || amixer(&["-q", "set", "Master", &format!("{}%", (value * 100 + 127) / 255)])
 }
 
 /// The value for `level`: learnt, or level×10 % of 255 as set_volume.sh would.
@@ -162,6 +163,17 @@ fn learn_later(n: i32) {
 pub fn set(target: i32) -> Result<i32, String> {
     let _one = BUSY.lock().unwrap();
     let target = target.clamp(0, MAX);
+    // Under Luna: its volume API (Alice's volume manager, else the mixer, done
+    // the way Luna knows works on this model).
+    if crate::luna::active() {
+        match crate::luna::volume(target * 10) {
+            Ok(()) => {
+                LEVEL.store(target, Ordering::Release);
+                return Ok(target);
+            }
+            Err(e) => eprintln!("volume: luna: {e}"),
+        }
+    }
     // Best: Alice's own volume manager — she knows the new level, her buttons
     // and «громче» go on from it.
     match maind::set(target) {

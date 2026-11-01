@@ -62,6 +62,25 @@ fn post(path: &str, body: &Value) -> Result<Option<Value>, String> {
     Ok(serde_json::from_str(&text).ok())
 }
 
+/// Luna's own API (`…/api`), from the runtime URL `…/api/runtime/<id>`.
+fn main_api() -> Option<String> {
+    let url = &api()?.url;
+    url.find("/api/runtime/").map(|i| url[..i + 4].to_owned())
+}
+
+/// Alice's volume, 0..=100 %, through Luna (`POST /api/volume/set`).
+pub fn volume(percent: i32) -> Result<(), String> {
+    let base = main_api().ok_or("not under Luna")?;
+    let api = api().ok_or("not under Luna")?;
+    api.agent
+        .post(&format!("{base}/volume/set"))
+        .set("X-Luna-Token", &api.token)
+        .set("Content-Type", "application/json")
+        .send_string(&json!({ "percent": percent.clamp(0, 100) }).to_string())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// "#rrggbb" for Luna's LED API.
 pub fn hex((r, g, b): (u8, u8, u8)) -> String {
     format!("#{r:02X}{g:02X}{b:02X}")
