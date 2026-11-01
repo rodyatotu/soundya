@@ -266,7 +266,8 @@
   nav { gap: 4px; padding: 5px; border-radius: 18px; background: var(--card); border: 1px solid var(--glass-edge);
     -webkit-backdrop-filter: blur(22px) saturate(170%); backdrop-filter: blur(22px) saturate(170%); box-shadow: var(--glass-shadow); }
   nav button { border: 0; background: transparent; border-radius: 13px; -webkit-backdrop-filter: none; backdrop-filter: none; }
-  nav button { white-space: nowrap; padding: 9px 4px; }
+  nav button { white-space: nowrap; padding: 9px 6px; flex: 1 1 auto; font-size: 14px; }
+  @media (max-width: 400px) { nav button { font-size: 13px; padding: 9px 4px; } }
   nav button.on, nav button.on:hover:not(:disabled) { background: var(--ink); color: var(--solid); box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
   .seg button.on:hover:not(:disabled), .subnav button.on:hover:not(:disabled) { background: linear-gradient(135deg, #ff8a30, #ff4f6a); color: #fff; }
   button.link, button.link:hover:not(:disabled), .heart { background: none; border: 0; box-shadow: none;
@@ -315,7 +316,9 @@
   .ambi-ring i:nth-child(2), .ambi-ring i:nth-child(5) { --zc: var(--z1); }
   .ambi-ring i:nth-child(3), .ambi-ring i:nth-child(4) { --zc: var(--z2); }
   .colors[hidden] { display: none; }
-  .colors.three label { padding: 8px 10px; gap: 8px; font-size: 13px; }
+  .colors.three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .colors.three label { padding: 8px; gap: 6px; font-size: 13px; min-width: 0; }
+  .colors.three input[type=color] { width: 28px; height: 28px; flex: none; }
   @keyframes ambipulse { 50% { opacity: calc(var(--b) * .35); background: conic-gradient(from calc(var(--n) * 60deg), var(--c2) 0 52deg, transparent 52deg 360deg); } }
   @keyframes ambieq { from { opacity: var(--b); } to { opacity: calc(var(--b) * .2); } }
   .seg { display: flex; gap: 4px; padding: 4px; margin-top: 6px; border-radius: 16px; background: var(--bg); border: 1px solid var(--glass-edge); }
