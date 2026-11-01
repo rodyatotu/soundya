@@ -1540,6 +1540,11 @@ impl Controller {
                 }
                 Cmd::Results(tracks) => self.results = tracks,
                 Cmd::Net(result) => {
+                    // SoundCloud answers again (bypass or proxy fixed): a login
+                    // check that failed while it did not is done again.
+                    if result.is_ok() && self.user.is_none() && self.client.has_token() {
+                        self.check_login();
+                    }
                     self.net = Some(result);
                     self.net_checking = false;
                     self.net_checked = Some(std::time::Instant::now());
@@ -1569,6 +1574,9 @@ impl Controller {
                     }
                     // New connections with (or without) the trick from now on.
                     let _ = self.client.set_proxy(self.settings.use_proxy());
+                    if self.user.is_none() && self.client.has_token() {
+                        self.check_login();
+                    }
                     if let Err(e) = self.settings.save(&self.dir) {
                         eprintln!("bypass: settings not saved: {e}");
                     }
