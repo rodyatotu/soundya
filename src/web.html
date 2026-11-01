@@ -39,6 +39,11 @@
   .devcontact { margin-top: 14px; }
   .devcontact a { color: var(--accent); text-decoration: none; }
   .state { font-size: 13px; color: var(--muted); text-align: right; display: inline-flex; align-items: center; gap: 6px; }
+  /* A long «загружаю …» stays on one line in the header. */
+  .state { min-width: 0; max-width: 46vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+  .state .spin { vertical-align: -2px; margin-right: 6px; }
+  .headright { min-width: 0; }
+  .track { overflow-wrap: anywhere; }
   .state.busy { color: var(--accent); }
   .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent;
     display: inline-block; animation: spin .7s linear infinite; flex: none; }

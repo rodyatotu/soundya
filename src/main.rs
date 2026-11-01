@@ -649,7 +649,7 @@ impl Controller {
                 Some(format!("Не нашла «{what}» на SoundCloud")),
             ),
             Err(e) => {
-                let e = e.to_string();
+                let e = blocked_hint(&e.to_string());
                 let speech = if e.contains("плейлистах нет") {
                     e.clone()
                 } else if e.contains("токен") {
@@ -1112,10 +1112,12 @@ impl Controller {
         let on_off = |a: &str| !matches!(a, "off" | "0" | "false" | "выкл");
         match cmd {
             "play" if arg.starts_with("https://") => {
-                let name = arg.trim_end_matches('/').rsplit('/').next().unwrap_or("").replace('-', " ");
-                self.asked = Some((format!("Ссылка: {name}"), format!("play {arg}")));
-                let link = arg.clone();
-                self.fetch(arg, Some(reply), move |c| c.resolve(&link));
+                // «Поделиться» adds ?utm_source=…: not part of the link.
+                let link = clean_link(&arg);
+                let name = link_name(&link);
+                self.asked = Some((format!("Ссылка: {name}"), format!("play {link}")));
+                let l = link.clone();
+                self.fetch(format!("ссылку «{name}»"), Some(reply), move |c| c.resolve(&l));
             }
             "play" if !arg.is_empty() => self.intent(Intent::Play(arg), Some(reply)),
             "play" | "resume" => self.intent(Intent::Resume, Some(reply)),
@@ -1161,8 +1163,9 @@ impl Controller {
             "likes" => self.intent(Intent::Likes, Some(reply)),
             // A track from «Недавно играло»: plays again without a new history line for the link.
             "replay" if arg.starts_with("https://") => {
-                let link = arg.clone();
-                self.fetch(arg, Some(reply), move |c| c.resolve(&link));
+                let link = clean_link(&arg);
+                let l = link.clone();
+                self.fetch(format!("«{}»", link_name(&link)), Some(reply), move |c| c.resolve(&l));
             }
             "myplaylist" if !arg.is_empty() => self.intent(Intent::MyPlaylist(arg), Some(reply)),
             // «Недавно играло» on the page; «history clear» empties it.
@@ -1663,6 +1666,31 @@ fn note_audio_error(dir: &std::path::Path, device: &str, e: &str) {
 
 /// soundya's own HTTPS behaviour for a stored bypass id: zapret (nfqws) works
 /// below soundya, so soundya itself then just goes straight, without the proxy.
+/// A connection that dies in the TLS handshake or times out is the
+/// provider's block, not a soundya bug: say what helps.
+fn blocked_hint(e: &str) -> String {
+    let l = e.to_lowercase();
+    if ["tls connection init failed", "os error 11", "timed out", "connection reset", "os error 104"].iter().any(|p| l.contains(p)) {
+        format!(
+            "SoundCloud не отвечает — похоже, провайдер его блокирует. Включите «Обход блокировок» \
+             (Настройки → Соединение → «Подобрать автоматически») или прокси. Подробно: {e}"
+        )
+    } else {
+        e.to_owned()
+    }
+}
+
+/// A soundcloud.com link without the share tracking (?utm_source=… #…).
+fn clean_link(link: &str) -> String {
+    link.trim().split(['?', '#']).next().unwrap_or("").trim_end_matches('/').to_owned()
+}
+
+/// «chvrsi/adabiat» → «chvrsi — adabiat», for the page.
+fn link_name(link: &str) -> String {
+    let path = link.split("soundcloud.com/").nth(1).unwrap_or(link);
+    path.split('/').filter(|p| !p.is_empty()).map(|p| p.replace('-', " ")).collect::<Vec<_>>().join(" — ")
+}
+
 fn mbit(kbps: f64) -> String {
     format!("{:.1} Мбит/с", kbps / 1000.0)
 }
