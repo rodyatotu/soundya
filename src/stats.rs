@@ -41,32 +41,11 @@ fn install_id(dir: &Path) -> Option<String> {
 /// The speaker model: "yandexmicro" (Lite), "yandexmini", "yandexstation_2"…
 fn model() -> String {
     let read = |p: &str| crate::fsx::read_string(Path::new(p)).map(|t| t.trim_matches(|c: char| c.is_whitespace() || c == '\0').to_owned());
-    // Alice's own name for the model; the device tree often names only the
-    // chip maker («Amlogic …»).
-    if let Some(t) = read("/system/vendor/quasar/quasar.cfg").and_then(|c| device_type(&c)) {
-        return clean(&t);
-    }
     let hostname = read("/proc/sys/kernel/hostname").unwrap_or_default();
     if hostname.starts_with("yandex") {
         return clean(&hostname);
     }
     read("/proc/device-tree/model").map(|m| clean(&m)).filter(|m| !m.is_empty()).unwrap_or_else(|| clean(&hostname))
-}
-
-/// `"deviceType": "yandexmini_2"` anywhere in quasar.cfg.
-fn device_type(cfg: &str) -> Option<String> {
-    fn find(v: &serde_json::Value) -> Option<String> {
-        match v {
-            serde_json::Value::Object(o) => o
-                .get("deviceType")
-                .and_then(|t| t.as_str())
-                .map(str::to_owned)
-                .or_else(|| o.values().find_map(find)),
-            serde_json::Value::Array(a) => a.iter().find_map(find),
-            _ => None,
-        }
-    }
-    find(&serde_json::from_str(cfg).ok()?).filter(|t| !t.is_empty())
 }
 
 /// Only what the server accepts: letters, digits, `.`, `-`, `_`, space; 40 characters.
@@ -121,13 +100,6 @@ pub fn run(dir: PathBuf, shared: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn model_from_alice_config() {
-        assert_eq!(device_type(r#"{"common":{"deviceType":"yandexmini"}}"#).as_deref(), Some("yandexmini"));
-        assert_eq!(device_type(r#"{"deviceType":"yandexmicro","x":1}"#).as_deref(), Some("yandexmicro"));
-        assert_eq!(device_type("not json"), None);
-    }
 
     #[test]
     fn cleans_model_names() {
