@@ -87,10 +87,53 @@ pub fn find_package(spoken: &str, packages: &[String]) -> Option<String> {
                 return Some(p.clone());
             }
         }
+        // A known app that is not installed: not some other app with a similar name.
+        return None;
     }
-    // Anything else: the transliterated name inside the package name.
-    let t = translit(&spoken);
-    (t.len() >= 3).then(|| packages.iter().find(|p| p.replace(['.', '_'], "").contains(&t)).cloned())?
+    // Anything else: the name, in Latin letters, inside the package name.
+    // Within one part of the package name: «com.amazon.avod» joined up would
+    // contain «zona».
+    for t in spellings(&spoken) {
+        if let Some(p) = packages.iter().find(|p| p.split(['.', '_', '-']).any(|part| part.contains(&t))) {
+            return Some(p.clone());
+        }
+    }
+    None
+}
+
+/// How a spoken app name may appear in a package name, best first: as said
+/// («zona»), back from the case Alice heard («зону» → zona), with
+/// other spellings of the sounds (кс → x, ю → iu/u, й → y…), and the stem.
+fn spellings(spoken: &str) -> Vec<String> {
+    let words: String = spoken.split_whitespace().collect::<Vec<_>>().join("");
+    let mut bases = vec![words.clone()];
+    // «Открой зону / кинопоиск / тиви»: accusative and similar endings back to the name.
+    for (end, base) in [("у", "а"), ("ю", "я"), ("ом", ""), ("е", "а")] {
+        if let Some(stem) = words.strip_suffix(end) {
+            bases.push(format!("{stem}{base}"));
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |s: String| {
+        if s.len() >= 3 && !out.contains(&s) {
+            out.push(s);
+        }
+    };
+    for b in &bases {
+        let t = translit(b);
+        add(t.clone());
+        add(t.replace("ks", "x").replace("yu", "u").replace("ya", "ia").replace("ts", "z").replace("kh", "h"));
+        add(t.replace("yu", "iu").replace("zh", "j").replace('c', "ts"));
+        add(t.replace("i", "y"));
+    }
+    // The stem without its last vowel («zon» for «зона»), only when long enough
+    // not to match everything.
+    let t = translit(&words);
+    let stem = t.trim_end_matches(['a', 'e', 'i', 'o', 'u', 'y']);
+    if stem.len() >= 4 {
+        add(stem.to_owned());
+    }
+    out
 }
 
 fn percent_encode(s: &str) -> String {
@@ -216,6 +259,16 @@ mod tests {
         assert!(script.contains("LEANBACK_LAUNCHER com.google.android.youtube.tv"));
         let ok = std::process::Command::new("sh").arg("-n").arg("-c").arg(&script).status().unwrap().success();
         assert!(ok, "{script}");
+    }
+
+    #[test]
+    fn latin_names_said_in_russian() {
+        let pk = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let installed = pk(&["ru.zona.tv", "com.mxtech.videoplayer.ad", "tv.twitch.android.app", "com.amazon.avod"]);
+        assert_eq!(find_package("зону", &installed).as_deref(), Some("ru.zona.tv"));
+        assert_eq!(find_package("zona", &installed).as_deref(), Some("ru.zona.tv"));
+        assert_eq!(find_package("зона", &installed).as_deref(), Some("ru.zona.tv"));
+        assert_eq!(find_package("зону", &pk(&["com.amazon.avod"])), None, "«zon» must not match amazon");
     }
 
     #[test]

@@ -94,8 +94,20 @@ pub fn from_bat(text: &str, dir: &Path) -> Vec<String> {
             Some((k, v)) if v.ends_with(".bin") => {
                 let file = v.trim_start_matches('@').replace('\\', "/");
                 let name = file.rsplit('/').next().unwrap_or(&file).replace("%BIN%", "");
-                format!("{k}=@{}", dir.join("fake").join(name).display())
+                // Packs for Windows ship their own fake files (4pda, max.ru…):
+                // one the speaker does not have becomes zapret's Google hello,
+                // otherwise nfqws stops at once.
+                let path = dir.join("fake").join(&name);
+                let path = if crate::fsx::exists(&path) {
+                    path
+                } else {
+                    eprintln!("zapret: no fake/{name} on the speaker; using tls_clienthello_www_google_com.bin");
+                    dir.join("fake").join("tls_clienthello_www_google_com.bin")
+                };
+                format!("{k}=@{}", path.display())
             }
+            // Other Windows variables (%GameFilter%…) mean nothing here.
+            _ if t.contains('%') => continue,
             _ => t.to_owned(),
         };
         out.push(t);
@@ -124,15 +136,38 @@ pub fn installed(dir: &Path) -> bool {
     crate::fsx::exists(&binary(dir))
 }
 
+/// Runs iptables; Err carries what it said. `-w`: waits for the xtables lock
+/// instead of failing when the firmware changes its rules at the same moment.
+fn iptables_run(args: &[&str]) -> Result<(), String> {
+    let bin = ["/usr/sbin/iptables", "/sbin/iptables", "/system/bin/iptables"]
+        .into_iter()
+        .find(|p| crate::fsx::exists(Path::new(p)))
+        .unwrap_or("iptables");
+    let run = |wait: bool| {
+        let mut c = Command::new(bin);
+        if wait {
+            c.arg("-w");
+        }
+        c.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output()
+    };
+    let out = run(true).map_err(|e| format!("{bin}: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+    // An old iptables without -w.
+    if said.contains("unrecognized option") || said.contains("invalid option") {
+        let out = run(false).map_err(|e| format!("{bin}: {e}"))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
+    }
+    Err(said)
+}
+
 fn iptables(args: &[&str]) -> bool {
-    let bin = if crate::fsx::exists(Path::new("/usr/sbin/iptables")) { "/usr/sbin/iptables" } else { "iptables" };
-    Command::new(bin)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    iptables_run(args).is_ok()
 }
 
 /// Removes soundya's rules (also ones left by a crash).
@@ -145,8 +180,12 @@ fn remove_rules() {
 /// Sends the first packets of HTTPS connections to nfqws.
 fn add_rules() -> Result<(), String> {
     remove_rules();
-    if !iptables(&["-t", "mangle", "-N", CHAIN]) {
-        return Err("iptables не создал цепочку".into());
+    if let Err(e) = iptables_run(&["-t", "mangle", "-N", CHAIN]) {
+        // Left over and still in use: empty it and go on.
+        if !(e.contains("exists") && iptables(&["-t", "mangle", "-F", CHAIN])) {
+            eprintln!("zapret: iptables -N {CHAIN}: {e}");
+            return Err(format!("iptables не создал цепочку: {}", if e.is_empty() { "без объяснений" } else { e.as_str() }));
+        }
     }
     // Only the first few packets of a connection (the TLS hello is there): almost
     // no extra work for the speaker. nfqws marks its own packets: they skip the queue.
@@ -210,17 +249,27 @@ pub fn start(dir: &Path, id: &str, custom: &str) -> Result<(), String> {
         });
     }
     let mut child = cmd.spawn().map_err(|e| format!("nfqws не запустился: {e}"))?;
+    // Its last words, for the page when it stops at once.
+    let said = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     if let Some(err) = child.stderr.take() {
+        let said = said.clone();
         std::thread::spawn(move || {
             use std::io::BufRead;
             for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
                 eprintln!("nfqws: {line}");
+                *said.lock().unwrap() = line;
             }
         });
     }
     std::thread::sleep(Duration::from_millis(400));
     if let Ok(Some(status)) = child.try_wait() {
-        return Err(format!("nfqws сразу остановился ({status}): проверьте аргументы"));
+        std::thread::sleep(Duration::from_millis(100));
+        let last = said.lock().unwrap().clone();
+        return Err(if last.is_empty() {
+            format!("nfqws сразу остановился ({status}): проверьте аргументы")
+        } else {
+            format!("nfqws не принял аргументы: {last}")
+        });
     }
     *RUNNING.lock().unwrap() = Some(child);
     if let Err(e) = add_rules() {
