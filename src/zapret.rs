@@ -174,7 +174,7 @@ fn binary(dir: &Path, engine: u8) -> PathBuf {
 
 /// nfqws or nfqws2 is on the speaker.
 pub fn installed(dir: &Path) -> bool {
-    crate::fsx::exists(&binary(dir, 1)) || crate::fsx::exists(&binary(dir, 2))
+    (crate::fsx::exists(&binary(dir, 1)) || crate::fsx::exists(&binary(dir, 2))) && has_iptables()
 }
 
 /// What nfqws2 needs before a strategy: zapret2's Lua library, Google's hello
@@ -195,15 +195,50 @@ fn lua_base(dir: &Path) -> Vec<String> {
     ]
 }
 
+/// Where iptables is on this speaker: the program and what goes before the
+/// arguments («xtables-multi iptables …» when there is no iptables link).
+/// Firmwares put it in different places, and soundya started by Luna or an
+/// init script may have a short PATH.
+fn iptables_bin() -> Option<(String, Option<&'static str>)> {
+    static FOUND: std::sync::OnceLock<Option<(String, Option<&'static str>)>> = std::sync::OnceLock::new();
+    FOUND
+        .get_or_init(|| {
+            let mut dirs: Vec<String> = ["/usr/sbin", "/sbin", "/usr/bin", "/bin", "/system/bin", "/system/xbin", "/system/workdir/bin", "/usr/local/sbin", "/usr/local/bin"]
+                .iter()
+                .map(|d| d.to_string())
+                .collect();
+            if let Ok(path) = std::env::var("PATH") {
+                dirs.extend(path.split(':').filter(|d| !d.is_empty()).map(str::to_owned));
+            }
+            for (name, pre) in [("iptables", None), ("iptables-legacy", None), ("xtables-legacy-multi", Some("iptables")), ("xtables-multi", Some("iptables"))] {
+                for d in &dirs {
+                    let p = format!("{d}/{name}");
+                    if crate::fsx::exists(Path::new(&p)) {
+                        eprintln!("zapret: iptables: {p}");
+                        return Some((p, pre));
+                    }
+                }
+            }
+            None
+        })
+        .clone()
+}
+
+/// iptables is on the speaker (nfqws gets nothing without it).
+pub fn has_iptables() -> bool {
+    iptables_bin().is_some()
+}
+
 /// Runs iptables; Err carries what it said. `-w`: waits for the xtables lock
 /// instead of failing when the firmware changes its rules at the same moment.
 fn iptables_run(args: &[&str]) -> Result<(), String> {
-    let bin = ["/usr/sbin/iptables", "/sbin/iptables", "/system/bin/iptables"]
-        .into_iter()
-        .find(|p| crate::fsx::exists(Path::new(p)))
-        .unwrap_or("iptables");
+    let Some((bin, pre)) = iptables_bin() else {
+        return Err("на колонке не нашёлся iptables".into());
+    };
+    let bin = bin.as_str();
     let run = |wait: bool| {
         let mut c = Command::new(bin);
+        c.args(pre);
         if wait {
             c.arg("-w");
         }
@@ -290,6 +325,9 @@ pub fn start(dir: &Path, id: &str, custom: &str) -> Result<(), String> {
     let (bin, prog) = if lua { (binary(dir, 2), "nfqws2") } else { (binary(dir, 1), "nfqws") };
     if !crate::fsx::exists(&bin) {
         return Err(format!("на колонке нет {prog}: обновите soundya"));
+    }
+    if !has_iptables() {
+        return Err("на колонке не нашёлся iptables: без него zapret не работает, остаются встроенные стратегии".into());
     }
     if !lua && !args.iter().any(|a| a.starts_with("--dpi-desync")) {
         return Err("в аргументах нет --dpi-desync или --lua-desync: вставьте строку из .bat целиком".into());

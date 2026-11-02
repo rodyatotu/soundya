@@ -343,6 +343,9 @@ pub fn pick(dir: &std::path::Path, custom: &str, log: &dyn Fn(String)) -> Option
     let mut best: Option<(String, f64)> = None;
     let mut file: Option<String> = None;
     let mut ids = order(crate::zapret::installed(dir), !custom.trim().is_empty());
+    if !crate::zapret::has_iptables() {
+        log("zapret пропущен: на колонке не нашёлся iptables".into());
+    }
     // nfqws2 (zapret2) may be missing next to nfqws, or the other way round.
     ids.retain(|id| !crate::zapret::is_zapret(id) || crate::zapret::can_run(dir, id, custom));
     for id in &ids {
