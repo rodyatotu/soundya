@@ -67,6 +67,25 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
     reader.read_exact(&mut body)?;
     let body = String::from_utf8_lossy(&body).into_owned();
 
+    // The cover of the playing track, fetched by the speaker (bypass/proxy).
+    if method == "GET" && (path == "/cover" || path.starts_with("/cover?")) {
+        let mut out = &conn;
+        return match cover(shared) {
+            Some((kind, bytes)) => {
+                write!(
+                    out,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: max-age=86400\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                )?;
+                out.write_all(&bytes)?;
+                out.flush()
+            }
+            None => {
+                write!(out, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")?;
+                out.flush()
+            }
+        };
+    }
     let (status, kind, reply) = match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", PAGE.to_owned()),
         ("GET", "/api/status") => {
@@ -101,4 +120,32 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
     )?;
     out.write_all(reply.as_bytes())?;
     out.flush()
+}
+
+/// The last cover fetched: (its SoundCloud address, type, bytes).
+static COVER: std::sync::Mutex<Option<(String, String, Vec<u8>)>> = std::sync::Mutex::new(None);
+
+/// The playing track's cover, from SoundCloud's CDN through the same agent
+/// as the music; kept until the track changes.
+fn cover(shared: &Shared) -> Option<(String, Vec<u8>)> {
+    let url = shared.cover.lock().unwrap().clone()?;
+    if let Some((u, kind, bytes)) = COVER.lock().unwrap().as_ref() {
+        if *u == url {
+            return Some((kind.clone(), bytes.clone()));
+        }
+    }
+    let proxy = shared.proxy.lock().unwrap().clone();
+    let agent = crate::sc::build_agent(&proxy).ok()?;
+    let resp = match agent.get(&url).timeout(Duration::from_secs(15)).call() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("web: cover: {e}");
+            return None;
+        }
+    };
+    let kind = resp.header("Content-Type").filter(|k| k.starts_with("image/")).unwrap_or("image/jpeg").to_owned();
+    let mut bytes = Vec::new();
+    resp.into_reader().take(3 << 20).read_to_end(&mut bytes).ok()?;
+    *COVER.lock().unwrap() = Some((url, kind.clone(), bytes.clone()));
+    Some((kind, bytes))
 }

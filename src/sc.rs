@@ -65,6 +65,8 @@ fn browser_headers(req: ureq::Request, next: ureq::MiddlewareNext) -> Result<ure
 pub struct User {
     #[serde(default)]
     pub username: String,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,6 +106,8 @@ pub struct Track {
     pub duration: Option<u64>,
     #[serde(default)]
     pub permalink_url: Option<String>,
+    #[serde(default)]
+    pub artwork_url: Option<String>,
 }
 
 impl Track {
@@ -118,6 +122,7 @@ impl Track {
             media: None,
             duration: None,
             permalink_url: None,
+            artwork_url: None,
         }
     }
 
@@ -127,6 +132,17 @@ impl Track {
             _ => self.title.clone(),
         }
     }
+    /// The cover, 300×300 (the API gives the 100×100 "large" one): the
+    /// track's own, or its author's picture when it has none.
+    pub fn cover(&self) -> Option<String> {
+        let url = self
+            .artwork_url
+            .clone()
+            .filter(|u| !u.is_empty())
+            .or_else(|| self.user.as_ref().and_then(|u| u.avatar_url.clone()).filter(|u| !u.is_empty()))?;
+        Some(url.replace("-large.", "-t300x300."))
+    }
+
     fn hydrated(&self) -> bool {
         self.media.is_some() && !self.title.is_empty()
     }

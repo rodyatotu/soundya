@@ -63,6 +63,11 @@
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
   h3 { font-size: 13px; color: var(--muted); margin: 16px 0 6px; font-weight: 600; }
   .track { font-size: 17px; font-weight: 600; min-height: 1.45em; word-break: break-word; }
+  .now { display: flex; align-items: center; gap: 14px; }
+  .now .track { flex: 1; min-width: 0; }
+  .cover { width: 72px; height: 72px; flex: none; border-radius: 12px; object-fit: cover; background: var(--line);
+    border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0,0,0,.18); }
+  .cover[hidden] { display: none; }
   .seek { position: relative; padding: 9px 0 5px; margin: 3px 0 1px; cursor: pointer; touch-action: none; }
   .seek .bar { margin: 0; transition: height .15s; }
   .seek:hover .bar, .seek.drag .bar { height: 6px; }
@@ -355,7 +360,10 @@
   </header>
 
   <section>
-    <div class="track" id="track">—</div>
+    <div class="now">
+      <img class="cover" id="cover" alt="" hidden onerror="this.hidden = true">
+      <div class="track" id="track">—</div>
+    </div>
     <div class="seek" id="seek" title="Перемотать"><div class="bar"><i id="progress"></i></div><b class="seek-dot" id="seekdot"></b></div>
     <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
     <div class="controls">
@@ -1274,6 +1282,13 @@ async function refresh() {
   renderUpdate(s.update);
   document.querySelector('.bar').classList.toggle('busy', !!busyText);
   $('track').textContent = s.track || (s.loading ? 'Загружаю: ' + s.loading : '—');
+  const cover = $('cover');
+  if (!s.cover) { cover.hidden = true; cover.removeAttribute('src'); delete cover.dataset.src; }
+  else if (cover.dataset.src !== s.cover) {
+    cover.dataset.src = s.cover;
+    cover.onload = () => { cover.hidden = false; };
+    cover.src = s.cover;
+  }
   $('dur').textContent = mmss(s.duration_ms);
   seekState = { duration: s.duration_ms || 0, playing: s.state !== 'stopped' };
   playClock = { pos: s.position_ms || 0, at: Date.now(), dur: s.duration_ms || 0, running: s.state === 'playing' && !stuck };

@@ -108,6 +108,8 @@ pub struct Shared {
     status: Mutex<String>,
     /// Latest JSON for the web page, so it never waits for a busy controller.
     pub status_json: Mutex<String>,
+    /// The playing track's cover on SoundCloud, for the page's /cover.
+    pub cover: Mutex<Option<String>>,
     pub airplay: airplay::AirPlay,
     /// Anonymous statistics switched on (settings page).
     pub stats: AtomicBool,
@@ -363,7 +365,7 @@ impl Controller {
             "pc_on": self.settings.pc_on,
             "tv_on": self.settings.tv_on,
         });
-        serde_json::json!({
+        let mut out = serde_json::json!({
             "state": state,
             "track": current.map(Track::name),
             "position_ms": position,
@@ -388,8 +390,10 @@ impl Controller {
             "bypass_busy": self.shared.bypass_busy.load(Ordering::Acquire),
             "volume": volume::level(),
             "zapret_presets": zapret::PRESETS.iter().enumerate().map(|(i, (name, _))| { let id = zapret::id_of(i); let e = zapret::engine(&id, "").to_string(); [id, (*name).to_owned(), e] }).collect::<Vec<_>>(),
-        })
-        .to_string()
+        });
+        // Through the speaker: the phone may not reach sndcdn.com itself.
+        out["cover"] = current.filter(|t| t.cover().is_some()).map(|t| format!("/cover?{}", t.id)).into();
+        out.to_string()
     }
 
     /// Measures the round trip to SoundCloud in the background; `reply` is answered when done.
@@ -1684,6 +1688,7 @@ impl Controller {
     fn share_status(&self) {
         *self.shared.status.lock().unwrap() = self.status();
         *self.shared.status_json.lock().unwrap() = self.json();
+        *self.shared.cover.lock().unwrap() = self.current().and_then(Track::cover);
     }
 }
 
@@ -1859,6 +1864,7 @@ fn daemon() {
         queue: AtomicBool::new(false),
         status: Mutex::new("stopped".into()),
         status_json: Mutex::new(String::new()),
+        cover: Mutex::new(None),
         bypass_log: Mutex::new(Vec::new()),
         bypass_busy: AtomicBool::new(false),
         alice_music: AtomicBool::new(false),
