@@ -4,7 +4,7 @@
 # providers and lends it the ring. One artifact per Station model:
 #   export YAM_PUBLISH_TOKEN='…'                       # Профиль → Publish-токен
 #   export YAM_AUTHOR_KEY_FILE=~/Keys/yam-author-private-key.pem
-#   sh scripts/build-mac.sh && sh scripts/yam-release.sh
+#   sh scripts/yam-release.sh        (сам делает git pull и сборку; release.sh вызывает его)
 #
 # Needs YAM's yam-publish (git clone https://github.com/nyakokitsu/yam ../yam &&
 # cd ../yam && cargo build --release --locked --bin yam-publish), or set YAM_SRC.
@@ -16,6 +16,7 @@
 # and enable it in Luna (binary plugins on, the package switched on).
 set -eu
 cd "$(dirname "$0")/.."
+. scripts/fresh.sh
 NS=${YAM_NS:-rodyatotu}
 ID="$NS.soundya"
 # Defaults, so a release is just «sh scripts/yam-release.sh»:
@@ -30,7 +31,6 @@ fi
 PUBLISH="$YAM_SRC/target/release/yam-publish"
 # Station Lite, Mini 1, Mini 2, Station 2: the models soundya runs on.
 TARGETS=${YAM_TARGETS:-"yandexmicro yandexmini yandexmini_2 yandexmidi"}
-VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
 PACK_ONLY=${YAM_PACK_ONLY:-0}
 if [ "$PACK_ONLY" != 1 ]; then
@@ -83,13 +83,21 @@ YAML
         "$PUBLISH" pack --source "$STAGE" --profiles "$YAM_SRC/platforms" --platform "$T" \
             --output "dist/soundya-$VERSION-$T.yampkg"
     else
-        "$PUBLISH" release \
+        # A version already in YAM cannot change: skip it, publish the rest.
+        if ! OUT=$("$PUBLISH" release \
             --source "$STAGE" \
             --profiles "$YAM_SRC/platforms" \
             --platform "$T" \
             --output "dist/soundya-$VERSION-$T.yampkg" \
             --token "$YAM_PUBLISH_TOKEN" \
-            --key "$YAM_AUTHOR_KEY_FILE"
+            --key "$YAM_AUTHOR_KEY_FILE" 2>&1); then
+            case "$OUT" in
+                *immutable*) echo "   $VERSION для $T уже есть в YAM, пропускаю (для новой сборки поднимите версию)" ;;
+                *) echo "$OUT" >&2; exit 1 ;;
+            esac
+        else
+            echo "$OUT"
+        fi
     fi
 done
 echo "Готово: yam install $NS/soundya, затем включите пакет в Luna"

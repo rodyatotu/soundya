@@ -11,6 +11,7 @@
 # speaker on its own, so a dropped adb connection cannot leave it half-done.
 set -u
 cd "$(dirname "$0")/.."
+. scripts/fresh.sh
 IP=${1:?usage: scripts/deploy.sh <speaker-ip | usb-serial from adb devices>}
 # An address goes over Wi-Fi (adb connect); anything else is a USB serial.
 case "$IP" in
