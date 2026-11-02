@@ -665,13 +665,13 @@ impl Controller {
                 } else {
                     self.original = None;
                 }
-                alice::pause_native();
                 self.queue = tracks;
                 self.failures = 0;
                 if let Some((name, cmd)) = self.asked.take() {
                     self.history.set(name, cmd);
                 }
                 self.start(0);
+                pause_native_again(&self.shared);
                 respond(reply, &format!("OK {}", self.status()), None);
             }
             Ok(_) => respond(
@@ -997,8 +997,8 @@ impl Controller {
             }
             Intent::Default => {
                 if !self.queue.is_empty() {
-                    alice::pause_native();
                     self.set_paused(false);
+                    pause_native_again(&self.shared);
                     respond(reply, "OK", None);
                 } else if self.client.has_token() {
                     self.intent(Intent::Likes, reply);
@@ -1027,17 +1027,8 @@ impl Controller {
                 // «Продолжи» reaches Alice's own player too: her paused Yandex
                 // Music would quietly start under SoundCloud. Pause it now and
                 // once more when her own answer to the phrase has arrived.
-                alice::pause_native();
                 self.set_paused(false);
-                let shared = self.shared.clone();
-                thread::spawn(move || {
-                    for wait in [800, 1500, 2500] {
-                        thread::sleep(Duration::from_millis(wait));
-                        if shared.playing.load(Ordering::Acquire) {
-                            alice::pause_native();
-                        }
-                    }
-                });
+                pause_native_again(&self.shared);
                 respond(reply, "OK", None);
             }
             Intent::Next => {
@@ -1766,6 +1757,25 @@ fn blocked_hint(e: &str) -> String {
     } else {
         e.to_owned()
     }
+}
+
+/// Pauses Alice's own player now and a few more times while soundya starts:
+/// she pauses Yandex Music to listen to a phrase and turns it back on when her
+/// answer is over, which can be after soundya has already started, and then
+/// both play at once.
+fn pause_native_again(shared: &Arc<Shared>) {
+    alice::pause_native();
+    let shared = shared.clone();
+    thread::spawn(move || {
+        // The first track may still be loading: pause her player anyway, the
+        // user asked for SoundCloud.
+        for wait in [800, 1500, 2500, 4000] {
+            thread::sleep(Duration::from_millis(wait));
+            if !shared.alice_music() {
+                alice::pause_native();
+            }
+        }
+    });
 }
 
 /// A soundcloud.com link without the share tracking (?utm_source=… #…).
