@@ -11,13 +11,19 @@
 # speaker on its own, so a dropped adb connection cannot leave it half-done.
 set -u
 cd "$(dirname "$0")/.."
-IP=${1:?usage: scripts/deploy.sh <speaker-ip>}
-DEV="$IP:5555"
+IP=${1:?usage: scripts/deploy.sh <speaker-ip | usb-serial from adb devices>}
+# An address goes over Wi-Fi (adb connect); anything else is a USB serial.
+case "$IP" in
+    *.*.*.*:*) DEV="$IP"; USB= ;;
+    *.*.*.*) DEV="$IP:5555"; USB= ;;
+    *) DEV="$IP"; USB=1 ;;
+esac
 TAR=dist/soundya-armv7.tar
 [ -f "$TAR" ] || { echo "no $TAR: run sh scripts/build-mac.sh first" >&2; exit 1; }
 SIZE=$(wc -c < "$TAR" | tr -d ' ')
 
 connect() {
+    [ -n "$USB" ] && { adb -s "$DEV" shell true >/dev/null 2>&1; return; }
     adb disconnect "$DEV" >/dev/null 2>&1
     adb connect "$DEV" 2>&1 | grep -q "connected to" && adb -s "$DEV" shell true >/dev/null 2>&1
 }

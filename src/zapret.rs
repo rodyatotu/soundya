@@ -19,6 +19,7 @@ use std::{
 };
 
 const QUEUE: &str = "200";
+const QUEUE_NUM: u16 = 200;
 const CHAIN: &str = "SOUNDYA_ZAPRET";
 const DOMAINS: &str = "soundcloud.com,sndcdn.com,soundcloud.cloud";
 
@@ -174,7 +175,7 @@ fn binary(dir: &Path, engine: u8) -> PathBuf {
 
 /// nfqws or nfqws2 is on the speaker.
 pub fn installed(dir: &Path) -> bool {
-    (crate::fsx::exists(&binary(dir, 1)) || crate::fsx::exists(&binary(dir, 2))) && has_iptables()
+    (crate::fsx::exists(&binary(dir, 1)) || crate::fsx::exists(&binary(dir, 2))) && can_queue()
 }
 
 /// What nfqws2 needs before a strategy: zapret2's Lua library, Google's hello
@@ -224,9 +225,15 @@ fn iptables_bin() -> Option<(String, Option<&'static str>)> {
         .clone()
 }
 
-/// iptables is on the speaker (nfqws gets nothing without it).
-pub fn has_iptables() -> bool {
+/// iptables is on the speaker.
+fn has_iptables() -> bool {
     iptables_bin().is_some()
+}
+
+/// nfqws can get packets: through iptables, or soundya writes the rule into
+/// the kernel itself when the firmware has no iptables program (Mini 1).
+pub fn can_queue() -> bool {
+    has_iptables() || crate::ipt::available()
 }
 
 /// Runs iptables; Err carries what it said. `-w`: waits for the xtables lock
@@ -266,6 +273,15 @@ fn iptables(args: &[&str]) -> bool {
 
 /// Removes soundya's rules (also ones left by a crash).
 fn remove_rules() {
+    // Written by soundya itself where there is no iptables (see ipt.rs).
+    if crate::ipt::available() {
+        if let Err(e) = crate::ipt::remove(QUEUE_NUM) {
+            eprintln!("zapret: {e}");
+        }
+    }
+    if !has_iptables() {
+        return;
+    }
     while iptables(&["-t", "mangle", "-D", "POSTROUTING", "-j", CHAIN]) {}
     iptables(&["-t", "mangle", "-F", CHAIN]);
     iptables(&["-t", "mangle", "-X", CHAIN]);
@@ -274,6 +290,9 @@ fn remove_rules() {
 /// Sends the first packets of HTTPS connections to nfqws.
 fn add_rules() -> Result<(), String> {
     remove_rules();
+    if !has_iptables() {
+        return crate::ipt::add(QUEUE_NUM, 0x4000_0000).map_err(|e| format!("правило для zapret: {e}"));
+    }
     if let Err(e) = iptables_run(&["-t", "mangle", "-N", CHAIN]) {
         // Left over and still in use: empty it and go on.
         if !(e.contains("exists") && iptables(&["-t", "mangle", "-F", CHAIN])) {
@@ -326,8 +345,8 @@ pub fn start(dir: &Path, id: &str, custom: &str) -> Result<(), String> {
     if !crate::fsx::exists(&bin) {
         return Err(format!("на колонке нет {prog}: обновите soundya"));
     }
-    if !has_iptables() {
-        return Err("на колонке не нашёлся iptables: без него zapret не работает, остаются встроенные стратегии".into());
+    if !can_queue() {
+        return Err("ядро колонки не даёт перенаправить пакеты (нет iptables и таблицы mangle): zapret здесь не работает, остаются встроенные стратегии".into());
     }
     if !lua && !args.iter().any(|a| a.starts_with("--dpi-desync")) {
         return Err("в аргументах нет --dpi-desync или --lua-desync: вставьте строку из .bat целиком".into());
