@@ -261,7 +261,10 @@ impl Table {
             Some(b) => b.len() as i64,
             None => -(read::<Entry>(&self.entries, at).next_offset as i64),
         };
-        let moved = |off: u32| -> u32 { if off as usize > at || (off as usize == at && !hook_start) { (off as i64 + len) as u32 } else { off } };
+        // Adding: everything from `at` on moves (a chain's policy entry too,
+        // when the chain was empty). Removing: everything after `at`.
+        let adding = add.is_some();
+        let moved = |off: u32| -> u32 { if off as usize > at || (adding && off as usize == at) { (off as i64 + len) as u32 } else { off } };
         // Jumps (standard targets with an offset) in the old table.
         let offsets = self.offsets();
         for &e in &offsets {
