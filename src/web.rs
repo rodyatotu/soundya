@@ -122,6 +122,15 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
     out.flush()
 }
 
+/// Fetches the new track's cover in the background.
+pub fn prefetch_cover(shared: Arc<Shared>) {
+    if shared.cover.lock().unwrap().is_some() {
+        thread::spawn(move || {
+            cover(&shared);
+        });
+    }
+}
+
 /// The last cover fetched: (its SoundCloud address, type, bytes).
 static COVER: std::sync::Mutex<Option<(String, String, Vec<u8>)>> = std::sync::Mutex::new(None);
 

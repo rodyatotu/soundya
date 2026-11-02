@@ -78,6 +78,11 @@ pub struct Settings {
     /// bypass `bypass_on`.
     #[serde(default = "yes")]
     pub soundcloud: bool,
+    /// Equalizer for SoundCloud and AirPlay: on, and dB per band (eq.rs).
+    #[serde(default)]
+    pub eq_on: bool,
+    #[serde(default)]
+    pub eq: Vec<i8>,
     #[serde(default = "yes")]
     pub pc_on: bool,
     #[serde(default = "yes")]
@@ -159,6 +164,8 @@ impl Default for Settings {
             light_mid: light_mid(),
             light_high: light_high(),
             soundcloud: true,
+            eq_on: false,
+            eq: Vec::new(),
             pc_on: true,
             tv_on: true,
         }

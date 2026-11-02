@@ -335,6 +335,13 @@
   .seg button { flex: 1; border: 0; background: transparent; padding: 9px 6px; border-radius: 12px; }
   .seg button.on { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); color: #fff; box-shadow: 0 4px 14px rgba(255, 80, 40, .3); }
   .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .eq { display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; margin-top: 14px; padding: 12px 6px 8px;
+    border-radius: 14px; background: var(--bg); border: 1px solid var(--glass-edge); }
+  .eq.off { opacity: .45; }
+  .eq label { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); min-width: 0; }
+  .eq input { writing-mode: vertical-lr; direction: rtl; width: 22px; height: 130px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  .eq b { font-size: 11px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .presets .preset.text { padding: 6px 12px; }
   .preset { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 6px; border-radius: 999px; font-size: 13px; }
   .preset i { width: 22px; height: 22px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .35); }
   .preset.on { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(255, 106, 31, .25); }
@@ -572,6 +579,17 @@
       <button class="primary" onclick="saveSettings('spkmsg')">Сохранить</button>
     </div>
     <div class="msg" id="spkmsg"></div>
+
+    <h2 class="section">Эквалайзер</h2>
+    <p class="hint">Для SoundCloud и AirPlay, звук Алисы он не трогает. Сильный подъём самых низких полос (31–62 Гц)
+      маленькая колонка может не вытянуть и начать дребезжать.</p>
+    <label class="check">
+      <input type="checkbox" id="eqon" onchange="eqChanged()">
+      <span>Эквалайзер включён</span>
+    </label>
+    <div class="presets" id="eqpresets"></div>
+    <div class="eq off" id="eqbands"></div>
+    <div class="msg" id="eqmsg"></div>
 
     <h2 class="section">AirPlay</h2>
     <p class="hint">Колонка видна в списке AirPlay на iPhone, iPad и Mac: Пункт управления → значок AirPlay
@@ -1138,6 +1156,68 @@ function lightPreview() {
       : LIGHT_PRESETS[i][1] === $('lightc1').value && LIGHT_PRESETS[i][2] === $('lightc2').value));
 }
 let lightSaving = null;
+
+// ---- эквалайзер ----
+const EQ_FREQS = ['31', '62', '125', '250', '500', '1k', '2k', '4k', '8k', '16k'];
+const EQ_PRESETS = [
+  ['Ровно', [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+  ['Басы', [4, 6, 5, 3, 0, 0, 0, 0, 0, 0]],
+  ['Громко', [3, 5, 3, 0, -1, 0, 1, 3, 4, 3]],
+  ['Голос', [-4, -3, -1, 1, 3, 4, 4, 2, 0, -2]],
+  ['Верха', [0, 0, 0, 0, 0, 0, 2, 4, 5, 5]],
+  ['Мягко', [1, 2, 1, 0, 0, 0, -1, -2, -3, -4]],
+];
+let eqSaving = false;
+function eqValues() { return [...document.querySelectorAll('#eqbands input')].map(i => Number(i.value)); }
+function eqDraw() {
+  const vals = eqValues();
+  document.querySelectorAll('#eqbands b').forEach((b, i) => { b.textContent = (vals[i] > 0 ? '+' : '') + vals[i]; });
+  $('eqbands').classList.toggle('off', !$('eqon').checked);
+  document.querySelectorAll('#eqpresets .preset').forEach((p, i) =>
+    p.classList.toggle('on', EQ_PRESETS[i][1].every((v, j) => v === vals[j])));
+}
+function renderEq(s) {
+  if (!$('eqbands').children.length) {
+    EQ_FREQS.forEach(f => {
+      const l = document.createElement('label');
+      const v = document.createElement('b');
+      const i = document.createElement('input');
+      i.type = 'range'; i.min = -12; i.max = 12; i.step = 1; i.value = 0;
+      i.setAttribute('aria-label', f + ' Гц');
+      i.oninput = eqChanged;
+      l.append(v, i, f);
+      $('eqbands').append(l);
+    });
+    EQ_PRESETS.forEach(([name, vals]) => {
+      const p = document.createElement('button');
+      p.className = 'preset text'; p.textContent = name;
+      p.onclick = () => {
+        document.querySelectorAll('#eqbands input').forEach((i, j) => { i.value = vals[j]; });
+        $('eqon').checked = true;
+        eqChanged();
+      };
+      $('eqpresets').append(p);
+    });
+  }
+  $('eqon').checked = !!s.eq_on;
+  const vals = s.eq || [];
+  document.querySelectorAll('#eqbands input').forEach((i, j) => { i.value = vals[j] || 0; });
+  eqDraw();
+}
+// Heard on the speaker while the slider moves: one request at a time, the
+// latest values go in the next one.
+let eqDirty = false;
+async function eqChanged() {
+  eqDraw();
+  if (eqSaving) { eqDirty = true; return; }
+  eqSaving = true;
+  do {
+    eqDirty = false;
+    const r = await post('/api/settings', settingsBody({}));
+    if (r.startsWith('error')) show($('eqmsg'), r); else $('eqmsg').textContent = '';
+  } while (eqDirty);
+  eqSaving = false;
+}
 function saveLight() {
   lightPreview();
   clearTimeout(lightSaving);
@@ -1352,6 +1432,7 @@ async function refresh() {
     $('keyword').checked = settings.keyword_only;
     $('ring').checked = settings.ring !== false;
     renderLight(settings);
+    renderEq(settings);
     $('pchost').value = settings.pc_host || '';
     $('pctoken').value = settings.pc_token || '';
     $('pcmac').value = settings.pc_mac || '';
@@ -1473,7 +1554,8 @@ function settingsBody(extra) {
     airplay: $('airplay').checked, airplay_name: $('airplayname').value, airplay_icon: $('airplayicon').value,
     stats: $('stats').checked,
     tv_host: $('tvhost').value,
-    soundcloud: $('fsc').checked, pc_on: $('fpc').checked, tv_on: $('ftv').checked
+    soundcloud: $('fsc').checked, pc_on: $('fpc').checked, tv_on: $('ftv').checked,
+    eq_on: $('eqon').checked, eq: eqValues()
   }, extra));
 }
 

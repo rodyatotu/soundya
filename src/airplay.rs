@@ -365,6 +365,7 @@ fn session(
     let mut written = 0u64;
     let mut queue_at_stats = 0usize;
     let mut gain = crate::player::Gain::default();
+    let mut eq = crate::eq::Eq::new();
     let mut announced = false;
     let mut samples: Vec<i16> = Vec::new();
     let result = loop {
@@ -422,6 +423,7 @@ fn session(
                         }
                     }
                 }
+                eq.apply(&mut samples, CHANNELS, RATE);
                 gain.apply(&mut samples, CHANNELS, RATE, shared.duck.active());
                 if let Some(o) = output.as_mut() {
                     let queued = o.queued();

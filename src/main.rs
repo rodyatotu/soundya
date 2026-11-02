@@ -9,6 +9,7 @@ mod buttons;
 mod bypass;
 mod clock;
 mod dns;
+mod eq;
 mod fsx;
 mod history;
 mod ipt;
@@ -334,7 +335,7 @@ impl Controller {
         };
         let current = self.current();
         // Its own macro call: one big json! runs out of the macro recursion limit.
-        let settings = serde_json::json!({
+        let mut settings = serde_json::json!({
             "proxy": self.settings.masked_proxy(),
             "keyword_only": self.settings.keyword_only,
             "ring": self.settings.ring,
@@ -365,6 +366,8 @@ impl Controller {
             "pc_on": self.settings.pc_on,
             "tv_on": self.settings.tv_on,
         });
+        settings["eq_on"] = self.settings.eq_on.into();
+        settings["eq"] = self.settings.eq.clone().into();
         let mut out = serde_json::json!({
             "state": state,
             "track": current.map(Track::name),
@@ -592,6 +595,7 @@ impl Controller {
         self.shared.keyword_only.store(new.keyword_only, Ordering::Release);
         self.shared.ring.store(new.ring, Ordering::Release);
         *self.shared.light.lock().unwrap() = led::Light::from_settings(&new);
+        eq::set(new.eq_on, &new.eq);
         new.airplay_name = new.airplay_name.trim().to_owned();
         self.shared.airplay.configure(new.airplay, &new.airplay_name, &new.airplay_icon);
         self.shared.stats.store(new.stats, Ordering::Release);
@@ -1688,7 +1692,17 @@ impl Controller {
     fn share_status(&self) {
         *self.shared.status.lock().unwrap() = self.status();
         *self.shared.status_json.lock().unwrap() = self.json();
-        *self.shared.cover.lock().unwrap() = self.current().and_then(Track::cover);
+        let cover = self.current().and_then(Track::cover);
+        let changed = {
+            let mut now = self.shared.cover.lock().unwrap();
+            let changed = *now != cover;
+            *now = cover;
+            changed
+        };
+        // Fetched as the track starts: the page shows it at once.
+        if changed {
+            web::prefetch_cover(self.shared.clone());
+        }
     }
 }
 
@@ -1874,7 +1888,10 @@ fn daemon() {
         proxy: Mutex::new(settings.use_proxy().to_owned()),
         tv: AtomicBool::new(settings.tv_configured()),
         soundcloud: AtomicBool::new(settings.soundcloud),
-        light: Mutex::new(led::Light::from_settings(&settings)),
+        light: Mutex::new({
+            eq::set(settings.eq_on, &settings.eq);
+            led::Light::from_settings(&settings)
+        }),
     });
     let (tx, rx) = mpsc::channel();
     led::run(shared.clone());

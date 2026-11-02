@@ -153,6 +153,7 @@ fn run(
     let mut buf_frames = 0usize;
     let mut pcm: Vec<i16> = Vec::new();
     let mut gain = Gain(1.0);
+    let mut eq = crate::eq::Eq::new();
     let mut frames_played: u64 = 0;
     let mut decode_errors = 0;
     let mut reopened = 0;
@@ -253,6 +254,7 @@ fn run(
         pcm.clear();
         pcm.extend_from_slice(sb.samples());
         let samples = pcm.as_mut_slice();
+        eq.apply(samples, channels, spec.rate);
         gain.apply(samples, channels, spec.rate, duck.active());
         if let Err(e) = out.as_mut().unwrap().write(samples) {
             if e.kind() == std::io::ErrorKind::TimedOut && reopened < 2 {
