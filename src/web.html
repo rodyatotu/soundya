@@ -485,10 +485,10 @@
         <select id="zstrat" onchange="$('zargsbox').hidden = this.value !== 'nfqc'"></select>
       </label>
       <div id="zargsbox" hidden>
-        <label class="field">Аргументы из .bat (zapret для Windows)
-          <textarea id="zargs" rows="4" placeholder='Откройте свой рабочий «general (ALT).bat» блокнотом и вставьте строку с --filter-tcp=443 … --dpi-desync=… целиком'></textarea>
+        <label class="field">Аргументы из .bat (zapret или zapret2 для Windows)
+          <textarea id="zargs" rows="4" placeholder='Откройте свой рабочий «general (ALT).bat» блокнотом и вставьте строку с --filter-tcp=443 … --dpi-desync=… (или --lua-desync=…) целиком'></textarea>
         </label>
-        <p class="hint">Колонка сама уберёт то, что нужно только Windows (--wf-*, списки, %BIN%), и возьмёт часть до первого --new.</p>
+        <p class="hint">Колонка сама уберёт то, что нужно только Windows (--wf-*, списки, --lua-init, %BIN%), и возьмёт часть до первого --new.</p>
       </div>
       <div class="row">
         <button class="primary" onclick="bypassSet()" id="bypassset">Включить</button>
@@ -1650,9 +1650,12 @@ function renderStrategies(presets, current, args) {
     const opt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; };
     sel.append(opt('auto', 'Подобрать автоматически (перебрать все)'));
     const own = document.createElement('optgroup'); own.label = 'zapret (nfqws), как на ПК';
-    presets.forEach(([id, name]) => own.append(opt(id, name)));
-    own.append(opt('nfqc', 'Свои аргументы из .bat…'));
+    presets.filter(p => p[2] !== '2').forEach(([id, name]) => own.append(opt(id, name)));
+    own.append(opt('nfqc', 'Свои аргументы из .bat (zapret или zapret2)…'));
     sel.append(own);
+    const two = document.createElement('optgroup'); two.label = 'zapret2 (nfqws2, Lua)';
+    presets.filter(p => p[2] === '2').forEach(([id, name]) => two.append(opt(id, name.replace(/^zapret2: /, ''))));
+    if (two.children.length) sel.append(two);
     const builtIn = document.createElement('optgroup'); builtIn.label = 'Встроенные в soundya (без nfqws)';
     [['split1', 'split1'], ['splitsni', 'splitsni'], ['tlsrec', 'tlsrec'], ['tlsrec+split', 'tlsrec+split'], ['direct', 'напрямую (без обхода)']]
       .forEach(([id, name]) => builtIn.append(opt(id, name)));

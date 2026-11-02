@@ -386,7 +386,7 @@ impl Controller {
             "bypass_log": *self.shared.bypass_log.lock().unwrap(),
             "bypass_busy": self.shared.bypass_busy.load(Ordering::Acquire),
             "volume": volume::level(),
-            "zapret_presets": zapret::PRESETS.iter().enumerate().map(|(i, (name, _))| [zapret::id_of(i), (*name).to_owned()]).collect::<Vec<_>>(),
+            "zapret_presets": zapret::PRESETS.iter().enumerate().map(|(i, (name, _))| { let id = zapret::id_of(i); let e = zapret::engine(&id, "").to_string(); [id, (*name).to_owned(), e] }).collect::<Vec<_>>(),
         })
         .to_string()
     }

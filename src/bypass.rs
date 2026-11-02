@@ -342,7 +342,9 @@ pub fn measure(
 pub fn pick(dir: &std::path::Path, custom: &str, log: &dyn Fn(String)) -> Option<(String, f64)> {
     let mut best: Option<(String, f64)> = None;
     let mut file: Option<String> = None;
-    let ids = order(crate::zapret::installed(dir), !custom.trim().is_empty());
+    let mut ids = order(crate::zapret::installed(dir), !custom.trim().is_empty());
+    // nfqws2 (zapret2) may be missing next to nfqws, or the other way round.
+    ids.retain(|id| !crate::zapret::is_zapret(id) || crate::zapret::can_run(dir, id, custom));
     for id in &ids {
         if CANCEL.load(Ordering::Acquire) {
             log("подбор отменён".into());

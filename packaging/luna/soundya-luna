@@ -16,10 +16,11 @@ if [ -x /etc/init.d/S99soundya ]; then
     while :; do sleep 3600; done
 fi
 
-for f in shairport-sync nfqws; do
+for f in shairport-sync nfqws nfqws2; do
     [ -f "$PAYLOAD/$f" ] && ln -sf "$PAYLOAD/$f" "$STATE/$f"
 done
 [ -d "$PAYLOAD/fake" ] && ln -sfn "$PAYLOAD/fake" "$STATE/fake"
+[ -d "$PAYLOAD/lua" ] && ln -sfn "$PAYLOAD/lua" "$STATE/lua"
 # Settings that used to be in soundya.env.
 export SOUNDYA_DIR="$STATE"
 export SOUNDYA_WEB_PORT="${SOUNDYA_WEB_PORT:-8765}" SOUNDYA_NAME="${SOUNDYA_NAME:-soundya}" SOUNDYA_DEVICE="${SOUNDYA_DEVICE:-default}"

@@ -16,6 +16,15 @@ if [ -f "$SRC/nfqws" ]; then
     cp "$SRC/nfqws" "$DIR/nfqws.new" && mv "$DIR/nfqws.new" "$DIR/nfqws"
     chmod 755 "$DIR/nfqws"
 fi
+# zapret2's nfqws2 and its Lua library.
+if [ -f "$SRC/nfqws2" ]; then
+    killall nfqws2 2>/dev/null || true
+    cp "$SRC/nfqws2" "$DIR/nfqws2.new" && mv "$DIR/nfqws2.new" "$DIR/nfqws2"
+    chmod 755 "$DIR/nfqws2"
+fi
+if [ -d "$SRC/lua" ]; then
+    mkdir -p "$DIR/lua" && cp "$SRC"/lua/*.lua "$DIR/lua/"
+fi
 # Fake TLS hellos for zapret strategies (from zapret's release).
 if [ -d "$SRC/fake" ]; then
     mkdir -p "$DIR/fake" && cp "$SRC"/fake/*.bin "$DIR/fake/"

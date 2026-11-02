@@ -43,10 +43,11 @@ fi
 STAGE=dist/yam
 PLUGIN="$STAGE/plugin"
 rm -rf "$STAGE" && mkdir -p "$PLUGIN"
-cp dist/soundya/soundya dist/soundya/shairport-sync dist/soundya/nfqws "$PLUGIN/"
+cp dist/soundya/soundya dist/soundya/shairport-sync dist/soundya/nfqws dist/soundya/nfqws2 "$PLUGIN/"
 cp -R dist/soundya/fake "$PLUGIN/fake"
+cp -R dist/soundya/lua "$PLUGIN/lua"
 cp packaging/luna/soundya-luna "$PLUGIN/soundya-luna"
-chmod 755 "$PLUGIN/soundya" "$PLUGIN/shairport-sync" "$PLUGIN/nfqws" "$PLUGIN/soundya-luna"
+chmod 755 "$PLUGIN/soundya" "$PLUGIN/shairport-sync" "$PLUGIN/nfqws" "$PLUGIN/nfqws2" "$PLUGIN/soundya-luna"
 cat > "$PLUGIN/plugin.toml" <<TOML
 id = "$ID"
 name = "soundya — SoundCloud"

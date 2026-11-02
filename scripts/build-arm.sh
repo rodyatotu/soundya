@@ -45,6 +45,9 @@ cp packaging/shairport-sync dist/soundya/
 # zapret nfqws v72.9, linux-arm static, from the official release (see packaging/NFQWS.md).
 cp packaging/nfqws dist/soundya/
 mkdir -p dist/soundya/fake && cp packaging/fake/*.bin dist/soundya/fake/
-chmod 755 dist/soundya/soundya dist/soundya/shairport-sync dist/soundya/nfqws dist/soundya/install.sh dist/soundya/uninstall.sh dist/soundya/run.sh dist/soundya/guard.sh dist/soundya/S99soundya
+# zapret2 nfqws2 v1.0.6, linux-arm static, and its Lua library, from the official release.
+cp packaging/nfqws2 dist/soundya/
+mkdir -p dist/soundya/lua && cp packaging/lua/*.lua dist/soundya/lua/
+chmod 755 dist/soundya/soundya dist/soundya/shairport-sync dist/soundya/nfqws dist/soundya/nfqws2 dist/soundya/install.sh dist/soundya/uninstall.sh dist/soundya/run.sh dist/soundya/guard.sh dist/soundya/S99soundya
 COPYFILE_DISABLE=1 tar -C dist -cf dist/soundya-armv7.tar soundya
 echo "Built dist/soundya-armv7.tar"
