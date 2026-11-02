@@ -8,7 +8,7 @@
 //!  -m mark ! --mark 0x40000000/0x40000000 -j NFQUEUE --queue-num N --queue-bypass`,
 //! put first in POSTROUTING and found again by its NFQUEUE number.
 
-use std::mem::size_of;
+use std::{ffi::c_void, mem::size_of};
 
 const SOL_IP: i32 = 0;
 const AF_INET: i32 = 2;
@@ -23,8 +23,9 @@ const HOOKS: usize = 5;
 extern "C" {
     fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
     fn close(fd: i32) -> i32;
-    fn getsockopt(fd: i32, level: i32, name: i32, val: *mut u8, len: *mut u32) -> i32;
-    fn setsockopt(fd: i32, level: i32, name: i32, val: *const u8, len: u32) -> i32;
+    fn getsockopt(fd: i32, level: i32, name: i32, val: *mut c_void, len: *mut u32) -> i32;
+    // The same signature as in mdns.rs: one declaration per symbol.
+    fn setsockopt(fd: i32, level: i32, name: i32, val: *const c_void, len: u32) -> i32;
 }
 
 /// struct ipt_getinfo
@@ -199,7 +200,7 @@ fn open() -> Result<Table, String> {
     name[..6].copy_from_slice(b"mangle");
     let mut info = Info { name, valid_hooks: 0, hook_entry: [0; HOOKS], underflow: [0; HOOKS], num_entries: 0, size: 0 };
     let mut len = size_of::<Info>() as u32;
-    if unsafe { getsockopt(fd, SOL_IP, SO_GET_INFO, &mut info as *mut Info as *mut u8, &mut len) } < 0 {
+    if unsafe { getsockopt(fd, SOL_IP, SO_GET_INFO, &mut info as *mut Info as *mut c_void, &mut len) } < 0 {
         let e = os_err("таблица mangle");
         unsafe { close(fd) };
         return Err(e);
@@ -209,7 +210,7 @@ fn open() -> Result<Table, String> {
     buf[..32].copy_from_slice(&name);
     buf[32..36].copy_from_slice(&info.size.to_ne_bytes());
     let mut len = buf.len() as u32;
-    if unsafe { getsockopt(fd, SOL_IP, SO_GET_ENTRIES, buf.as_mut_ptr(), &mut len) } < 0 {
+    if unsafe { getsockopt(fd, SOL_IP, SO_GET_ENTRIES, buf.as_mut_ptr() as *mut c_void, &mut len) } < 0 {
         let e = os_err("правила mangle");
         unsafe { close(fd) };
         return Err(e);
@@ -315,7 +316,7 @@ impl Table {
         let mut buf = vec![0u8; size_of::<Replace>()];
         unsafe { std::ptr::copy_nonoverlapping(&head as *const Replace as *const u8, buf.as_mut_ptr(), size_of::<Replace>()) };
         buf.extend_from_slice(&self.entries);
-        if unsafe { setsockopt(self.fd, SOL_IP, SO_SET_REPLACE, buf.as_ptr(), buf.len() as u32) } < 0 {
+        if unsafe { setsockopt(self.fd, SOL_IP, SO_SET_REPLACE, buf.as_ptr() as *const c_void, buf.len() as u32) } < 0 {
             return Err(os_err("ядро не приняло правило"));
         }
         Ok(())
