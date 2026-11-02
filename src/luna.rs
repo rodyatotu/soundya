@@ -151,6 +151,21 @@ pub fn ring(colours: &[(u8, u8, u8)]) -> Result<(), String> {
     }
 }
 
+/// Luna on this speaker takes LED frames. Some builds have no LED API (404
+/// on both lights, seen on a Station Mini 1): then soundya drives the LEDs
+/// itself.
+pub fn has_led() -> bool {
+    match ring(&[(0, 0, 0)]) {
+        Ok(()) => true,
+        Err(e) if e.contains("404") => {
+            eprintln!("led: luna has no LED API here ({e})");
+            false
+        }
+        // Anything else (busy, a timeout): Luna's, as before.
+        Err(_) => true,
+    }
+}
+
 pub fn ring_off() -> Result<(), String> {
     let path = format!("/led/off/{}", zone());
     if active() { post(&path, &json!({})).map(|_| ()) } else { post_main(&path, &json!({})) }

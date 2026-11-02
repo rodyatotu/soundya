@@ -161,7 +161,7 @@ enum Ring {
 impl Ring {
     fn detect() -> Option<Self> {
         // Luna drives the LEDs on this speaker: draw through it, not past it.
-        if crate::luna::present() {
+        if crate::luna::present() && crate::luna::has_led() {
             return Some(Ring::Luna);
         }
         // Station Lite: micro:red:ring1..3; Mini 2: mini2:red:ring1..6.
