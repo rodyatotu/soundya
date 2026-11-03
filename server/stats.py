@@ -168,98 +168,138 @@ def stats():
     }
 
 
+SPK = ('<svg class="spk" viewBox="0 0 44 78" fill="none">'
+       '<rect x="6" y="4" width="32" height="70" rx="15" fill="url(#sg)" stroke="rgba(255,255,255,.18)"/>'
+       '<circle cx="22" cy="30" r="10" fill="rgba(0,0,0,.25)" stroke="rgba(255,255,255,.12)"/>'
+       '<circle cx="22" cy="30" r="4" fill="rgba(255,255,255,.14)"/>'
+       '<rect x="12" y="60" width="20" height="3" rx="1.5" fill="rgba(255,255,255,.14)"/>'
+       '<rect x="14" y="66" width="16" height="3" rx="1.5" fill="rgba(255,255,255,.1)"/></svg>')
+
+
 def page(s):
     e = html.escape
-    # Model bars; hovering a row shows the raw model names folded into it.
+    retail = {"Станция Мини 2", "Станция Лайт", "Станция Мини 1", "Станция Миди", "Станция 2", "Станция 1"}
     mpeak = max([m["count"] for m in s["models"]] + [1])
     model_rows = ""
     for m in s["models"]:
-        shown = m["raw"][:12]
-        tip = "".join(f'<div class="tl"><span>{e(name)}</span><b>{c}</b></div>' for name, c in shown)
-        if len(m["raw"]) > 12:
-            rest = sum(c for _, c in m["raw"][12:])
-            tip += f'<div class="tl more">…и ещё {len(m["raw"]) - 12} ({rest})</div>'
-        # Nothing extra to reveal when the group is a single raw name.
-        single = len(m["raw"]) == 1 and m["raw"][0][0] == m["model"]
         model_rows += (
             f'<div class="row"><div class="nm">{e(m["model"])}</div>'
             f'<div class="bar"><i style="--_w:{100 * m["count"] / mpeak:.0f}%"></i></div>'
-            f'<div class="ct">{m["count"]}</div>'
-            + ('' if single else f'<div class="tip">{tip}</div>')
-            + '</div>'
+            f'<div class="ct">{m["count"]}</div></div>'
         )
-    # Daily activity.
     dpeak = max([d["count"] for d in s["days"]] + [1])
     day_bars = "".join(
-        f'<div class="d" style="height:{max(4, 100 * d["count"] / dpeak):.0f}%" data-v="{d["day"][5:]} · {d["count"]}"></div>'
+        f'<div class="d" style="height:{max(5, 100 * d["count"] / dpeak):.0f}%" data-v="{d["day"][5:]} · {d["count"]}"></div>'
         for d in reversed(s["days"])
     )
-    # Versions, compact.
     ver_rows = "".join(
         f'<div class="kv"><span>{e(v["version"])}</span><b>{v["count"]}</b></div>' for v in s["versions"]
     )
+    side = "".join(f'<div class="spk-wrap" style="--i:{i}">{SPK}</div>' for i in range(4))
     return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>soundya · статистика</title><style>
-:root{{--bg:#0e0d13;--card:#17161e;--line:#262430;--ink:#f2f0f6;--muted:#9a94a8;--accent:#ff5500;--accent2:#ff2f6d}}
+:root{{--ink:#f4f2fa;--muted:#aaa2bb;--accent:#ff5500;--accent2:#ff2f6d;
+  --glass:rgba(255,255,255,.055);--glass2:rgba(255,255,255,.09);--edge:rgba(255,255,255,.12)}}
 *{{box-sizing:border-box}}
 body{{margin:0;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);min-height:100vh;
-  background:radial-gradient(1000px 500px at 80% -10%,rgba(255,85,0,.14),transparent),var(--bg)}}
-.wrap{{max-width:720px;margin:0 auto;padding:32px 20px 48px}}
-.top{{display:flex;align-items:center;justify-content:space-between}}
+  background:#0b0a10;overflow-x:hidden}}
+.bgblobs{{position:fixed;inset:0;z-index:-1;overflow:hidden}}
+.bgblobs i{{position:absolute;border-radius:50%;filter:blur(80px);opacity:.5}}
+.bgblobs i:nth-child(1){{width:520px;height:520px;background:#ff5500;top:-160px;right:-120px;opacity:.38}}
+.bgblobs i:nth-child(2){{width:460px;height:460px;background:#ff2f6d;top:34%;left:-180px;opacity:.26}}
+.bgblobs i:nth-child(3){{width:420px;height:420px;background:#7b3bff;bottom:-160px;right:10%;opacity:.26}}
+.wrap{{max-width:720px;margin:0 auto;padding:30px 20px 56px;position:relative}}
+.card{{background:var(--glass);backdrop-filter:blur(26px) saturate(150%);-webkit-backdrop-filter:blur(26px) saturate(150%);
+  border:1px solid var(--edge);border-radius:22px;box-shadow:0 18px 50px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.1)}}
+.top{{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}}
 .logo{{font-size:26px;font-weight:800;letter-spacing:-.03em}}
 .logo span{{background:linear-gradient(120deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}}
 .gh{{color:var(--muted);transition:.15s;display:inline-flex}}.gh:hover{{color:var(--ink);transform:translateY(-1px)}}
-.hero{{margin:26px 0 24px;display:flex;align-items:baseline;gap:16px}}
+.hero{{display:flex;align-items:center;gap:18px;padding:22px 26px;margin-bottom:16px}}
 .bigwrap{{position:relative}}
-.big{{font-size:76px;font-weight:800;line-height:1;letter-spacing:-.04em;cursor:default;
+.big{{font-size:78px;font-weight:800;line-height:1;letter-spacing:-.04em;cursor:pointer;user-select:none;
   background:linear-gradient(120deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}}
-.bigwrap .btip{{position:absolute;left:0;top:100%;margin-top:6px;white-space:nowrap;font-size:13px;color:var(--ink);
-  background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px 10px;opacity:0;pointer-events:none;transition:.15s;transform:translateY(-4px)}}
+.big:active{{transform:scale(.96)}}
+.btip{{position:absolute;left:0;top:100%;margin-top:6px;white-space:nowrap;font-size:13px;color:var(--ink);
+  background:var(--glass2);border:1px solid var(--edge);border-radius:10px;padding:6px 10px;
+  opacity:0;pointer-events:none;transition:.15s;transform:translateY(-4px);backdrop-filter:blur(10px)}}
 .bigwrap:hover .btip{{opacity:1;transform:none}}
 .heroL{{color:var(--muted);max-width:230px}}
-h2{{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin:28px 0 14px;font-weight:700}}
-.row{{display:flex;align-items:center;gap:12px;margin:9px 0;position:relative}}
-.row .nm{{width:190px;font-size:14px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.bar{{flex:1;height:26px;background:#201e29;border-radius:8px;overflow:hidden}}
-.bar i{{display:block;height:100%;border-radius:8px;background:linear-gradient(90deg,var(--accent),var(--accent2));
-  width:0;animation:g 1s cubic-bezier(.2,.8,.2,1) forwards}}
+.panel{{padding:18px 20px;margin-bottom:16px}}
+h2{{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin:0 0 14px;font-weight:700}}
+.row{{display:flex;align-items:center;gap:12px;margin:10px 0}}
+.row .nm{{width:170px;font-size:14px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.bar{{flex:1;height:26px;background:rgba(255,255,255,.06);border-radius:9px;overflow:hidden}}
+.bar i{{display:block;height:100%;border-radius:9px;background:linear-gradient(90deg,var(--accent),var(--accent2));
+  width:0;box-shadow:0 0 18px rgba(255,85,0,.35);animation:g 1s cubic-bezier(.2,.8,.2,1) forwards}}
 .row .ct{{width:40px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}}
 @keyframes g{{to{{width:var(--_w)}}}}
-.tip{{position:absolute;left:190px;top:calc(100% + 4px);z-index:5;min-width:220px;max-width:340px;
-  background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 10px;
-  box-shadow:0 12px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;transform:translateY(-4px);transition:.15s}}
-.row:hover .tip{{opacity:1;transform:none}}
-.tl{{display:flex;justify-content:space-between;gap:16px;font-size:13px;padding:2px 0;color:var(--muted)}}
-.tl span{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.tl b{{color:var(--ink);font-variant-numeric:tabular-nums}}.tl.more{{color:var(--muted);justify-content:flex-start;padding-top:4px}}
-.panels{{display:grid;grid-template-columns:1.4fr 1fr;gap:16px;margin-top:8px}}
-@media(max-width:560px){{.panels{{grid-template-columns:1fr}}}}
-.panel{{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px}}
-.panel h2{{margin:0 0 12px}}
-.days{{display:flex;align-items:flex-end;gap:4px;height:96px}}
-.days .d{{flex:1;background:linear-gradient(180deg,var(--accent),rgba(255,85,0,.25));border-radius:4px 4px 0 0;min-height:4px;position:relative;transition:.15s}}
+.cols{{display:grid;grid-template-columns:1.4fr 1fr;gap:16px}}
+@media(max-width:560px){{.cols{{grid-template-columns:1fr}}}}
+.days{{display:flex;align-items:flex-end;gap:4px;height:100px}}
+.days .d{{flex:1;background:linear-gradient(180deg,var(--accent),rgba(255,47,109,.35));border-radius:5px 5px 0 0;
+  min-height:5px;position:relative;transition:.15s}}
 .days .d:hover{{filter:brightness(1.3)}}
 .days .d:hover::after{{content:attr(data-v);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
-  font-size:11px;white-space:nowrap;color:var(--ink);background:var(--bg);border:1px solid var(--line);padding:1px 6px;border-radius:6px}}
-.kv{{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:14px}}
+  font-size:11px;white-space:nowrap;color:var(--ink);background:var(--glass2);border:1px solid var(--edge);
+  padding:1px 7px;border-radius:7px;backdrop-filter:blur(8px)}}
+.kv{{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.07);font-size:14px}}
 .kv:last-child{{border:0}}.kv b{{font-variant-numeric:tabular-nums}}
-</style></head><body><div class="wrap">
+/* Standing speakers on the sides, rising in when you hover the page (desktop). */
+.side{{position:fixed;top:0;bottom:0;width:120px;display:none;flex-direction:column;justify-content:center;
+  gap:26px;align-items:center;pointer-events:none;z-index:1}}
+.side.l{{left:0}}.side.r{{right:0}}
+@media(min-width:1040px){{.side{{display:flex}}}}
+.spk-wrap{{opacity:0;transform:translateY(22px);transition:opacity .5s,transform .5s;transition-delay:calc(var(--i)*.07s)}}
+body:hover .spk-wrap{{opacity:.8;transform:none}}
+.spk{{width:44px;height:78px;filter:drop-shadow(0 10px 20px rgba(0,0,0,.5))}}
+.side.r .spk{{transform:scaleX(-1)}}
+/* Easter-egg hearts */
+.heart{{position:fixed;z-index:50;pointer-events:none;color:#ff2f6d;text-shadow:0 2px 8px rgba(255,47,109,.5);font-size:22px;animation:fly 1.4s ease-out forwards}}
+@keyframes fly{{0%{{opacity:1;transform:translate(0,0) scale(.6)}}100%{{opacity:0;transform:translate(var(--dx),-160px) scale(1.2)}}}}
+</style></head><body>
+<div class="bgblobs"><i></i><i></i><i></i></div>
+<svg width="0" height="0"><defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="rgba(255,255,255,.14)"/><stop offset="1" stop-color="rgba(255,255,255,.04)"/></linearGradient></defs></svg>
+<div class="side l">{side}</div><div class="side r">{side}</div>
+<div class="wrap">
 <div class="top">
   <div class="logo">sound<span>ya</span></div>
   <a class="gh" href="https://github.com/rodyatotu/soundya" target="_blank" title="GitHub">
     <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.53-1.33-1.3-1.69-1.3-1.69-1.06-.72.08-.71.08-.71 1.17.08 1.79 1.2 1.79 1.2 1.04 1.79 2.73 1.27 3.4.97.1-.76.41-1.27.74-1.56-2.55-.29-5.24-1.28-5.24-5.67 0-1.25.45-2.28 1.19-3.08-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.08 0 4.4-2.69 5.37-5.25 5.66.42.36.8 1.08.8 2.18v3.24c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5z"/></svg>
   </a>
 </div>
-<div class="hero">
-  <div class="bigwrap"><div class="big">{s["active"]}</div><div class="btip">всего установлено за всё время: {s["ever"]}</div></div>
+<div class="card hero">
+  <div class="bigwrap"><div class="big" id="big">{s["active"]}</div><div class="btip">всего установлено за всё время: {s["ever"]}</div></div>
   <div class="heroL">колонок с soundya сейчас работают</div>
 </div>
-<h2>Модели колонок <span style="text-transform:none;letter-spacing:0;font-weight:400">— наведите, чтобы увидеть, что внутри</span></h2>
-{model_rows}
-<div class="panels">
-  <div class="panel"><h2>Активность по дням</h2><div class="days">{day_bars}</div></div>
-  <div class="panel"><h2>Версии</h2>{ver_rows}</div>
+<div class="card panel"><h2>Модели колонок</h2>{model_rows}</div>
+<div class="cols">
+  <div class="card panel"><h2>Активность по дням</h2><div class="days">{day_bars}</div></div>
+  <div class="card panel"><h2>Версии</h2>{ver_rows}</div>
 </div>
 </div>
+<script>
+(function(){{
+  var big=document.getElementById('big'),n=0,t;
+  big.addEventListener('click',function(){{
+    n++; clearTimeout(t); t=setTimeout(function(){{n=0;}},1200);
+    if(n>=5){{n=0;hearts();}}
+  }});
+  function hearts(){{
+    var r=big.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
+    for(var i=0;i<16;i++){{
+      var h=document.createElement('div');h.className='heart';h.textContent='❤';
+      h.style.left=(cx-10)+'px';h.style.top=(cy-10)+'px';
+      h.style.setProperty('--dx',(Math.random()*220-110).toFixed(0)+'px');
+      h.style.animationDelay=(Math.random()*0.3).toFixed(2)+'s';
+      h.style.fontSize=(16+Math.random()*16).toFixed(0)+'px';
+      document.body.appendChild(h);
+      h.addEventListener('animationend',function(){{this.remove();}});
+    }}
+  }}
+}})();
+</script>
 </body></html>"""
 
 
