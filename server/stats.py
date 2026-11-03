@@ -260,7 +260,7 @@ body{{margin:0;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:var(
 .card{{background:var(--glass);backdrop-filter:blur(26px) saturate(150%);-webkit-backdrop-filter:blur(26px) saturate(150%);
   border:1px solid var(--edge);border-radius:22px;box-shadow:0 18px 50px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.1)}}
 .top{{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}}
-.logo{{font-size:26px;font-weight:800;letter-spacing:-.03em}}
+.logo{{font-size:26px;font-weight:800;letter-spacing:-.03em;text-decoration:none;color:var(--ink);cursor:pointer}}
 .logo span{{background:linear-gradient(120deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}}
 .gh{{color:var(--muted);transition:.15s;display:inline-flex}}.gh:hover{{color:var(--ink);transform:translateY(-1px)}}
 .hero{{display:flex;align-items:center;gap:18px;padding:22px 26px;margin-bottom:16px}}
@@ -293,10 +293,10 @@ h2{{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--mut
 .kv{{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.07);font-size:14px}}
 .kv:last-child{{border:0}}.kv b{{font-variant-numeric:tabular-nums}}
 /* One speaker on the side: visible only while the page is hovered, cycling models in place. */
-.stage{{position:fixed;top:50%;right:5vw;transform:translateY(-50%) translateX(16px);width:240px;height:300px;z-index:1;
+.stage{{position:fixed;left:3vw;bottom:3vh;transform:translateX(-18px);width:220px;height:280px;z-index:1;
   pointer-events:none;opacity:0;transition:opacity .45s,transform .45s;display:none}}
-@media(min-width:1180px){{.stage{{display:block}}}}
-body:hover .stage{{opacity:1;transform:translateY(-50%)}}
+@media(min-width:1180px){{.stage{{display:block}}.wrap{{transform:translateX(70px)}}}}
+body:hover .stage{{opacity:1;transform:none}}
 .stage .mdl{{position:absolute;inset:0;width:100%;height:100%;opacity:0;transition:opacity .8s}}
 .stage .mdl.on{{opacity:1}}
 .heart{{position:fixed;z-index:50;pointer-events:none;color:#ff2f6d;text-shadow:0 2px 8px rgba(255,47,109,.5);font-size:22px;animation:fly 1.4s ease-out forwards}}
@@ -307,7 +307,7 @@ body:hover .stage{{opacity:1;transform:translateY(-50%)}}
 <div class="stage">{SPEAKERS}</div>
 <div class="wrap">
 <div class="top">
-  <div class="logo">sound<span>ya</span></div>
+  <a class="logo" href="https://github.com/rodyatotu/soundya" target="_blank">sound<span>ya</span></a>
   <a class="gh" href="https://github.com/rodyatotu/soundya" target="_blank" title="GitHub">
     <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.53-1.33-1.3-1.69-1.3-1.69-1.06-.72.08-.71.08-.71 1.17.08 1.79 1.2 1.79 1.2 1.04 1.79 2.73 1.27 3.4.97.1-.76.41-1.27.74-1.56-2.55-.29-5.24-1.28-5.24-5.67 0-1.25.45-2.28 1.19-3.08-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.08 0 4.4-2.69 5.37-5.25 5.66.42.36.8 1.08.8 2.18v3.24c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5z"/></svg>
   </a>
