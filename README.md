@@ -9,11 +9,6 @@
 </p>
 
 <p align="center">
-  <a href="https://www.donationalerts.com/r/rodyatotu"><img src="https://img.shields.io/badge/Поддержать-DonationAlerts-ff5500?style=for-the-badge" alt="Поддержать через DonationAlerts"></a>
-  <a href="#поддержать-проект"><img src="https://img.shields.io/badge/USDT-TRC--20-26a17b?style=for-the-badge&logo=tether&logoColor=white" alt="USDT TRC-20"></a>
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/Станция_Лайт-работает-2f9e5b" alt="Станция Лайт: работает">
   <img src="https://img.shields.io/badge/Станция_Мини_1-работает-2f9e5b" alt="Станция Мини 1: работает">
   <img src="https://img.shields.io/badge/Станция_Мини_2-работает-2f9e5b" alt="Станция Мини 2: работает">
@@ -309,7 +304,7 @@ adb shell "cd /tmp && tar -xf soundya-armv7.tar && sh /tmp/soundya/install.sh"
 | «**запиши** купить молоко» / «открой блокнот и запиши …» | заметка: отдельный файл в «Документы\Заметки» |
 | «**допиши в блокнот** купить хлеб» | строка в последнюю заметку |
 | «**создай документ** отчёт с текстом …» | документ Word с текстом |
-| «**напиши маме в телеграм** привет» / «отправь саше сообщение …» | сообщение в Telegram (контакты задаются в настройках) |
+| «**напиши контакту в телеграм** привет» / «отправь саше сообщение …» | сообщение в Telegram (контакты задаются в настройках) |
 | «**подключи впн**» / «отключи впн» | открывает / закрывает приложение VPN |
 | «**создай папку** проекты на рабочем столе» | новая папка |
 
@@ -432,24 +427,6 @@ SoundCloud отвечает на такие запросы капчей свое
 ## Важно
 
 soundya — неофициальный проект и никак не связан с Яндексом и SoundCloud. Root-доступ и изменение прошивки — на ваш страх и риск: гарантию на колонку это может лишить. Пользуйтесь SoundCloud в рамках его правил.
-
-## Поддержать проект
-
-Если soundya вам пригодился — можно сказать спасибо:
-
-<p align="center">
-  <a href="https://www.donationalerts.com/r/rodyatotu"><img src="https://img.shields.io/badge/Задонатить-DonationAlerts-ff5500?style=for-the-badge" alt="DonationAlerts"></a>
-</p>
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/usdt-qr-dark.png">
-    <img src="docs/usdt-qr-light.png" alt="USDT TRC-20: TSEJPa8FefWd8u8mo4USu8muSJr7589gWg" width="260">
-  </picture>
-</p>
-
-<h3 align="center">USDT · TRC-20</h3>
-<p align="center"><code>TSEJPa8FefWd8u8mo4USu8muSJr7589gWg</code><br><sub>Только сеть Tron (TRC-20). Перевод в другой сети потеряется.</sub></p>
 
 ## Лицензия
 
