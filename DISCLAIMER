@@ -1,0 +1,44 @@
+soundya — DISCLAIMER / ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ
+
+English
+-------
+soundya is an unofficial, non-commercial hobby project for personal use and
+interoperability. It is not affiliated with, endorsed by, or connected to
+Yandex or SoundCloud in any way.
+
+- The software is provided "AS IS", without warranty of any kind, express or
+  implied. See LICENSE (MIT).
+- Rooting or modifying your speaker's firmware is done by you, at your own risk,
+  on a device you own, and may void its warranty. The project only makes use of
+  access that is already publicly documented.
+- soundya does not host, copy, or distribute any music. It plays content that
+  the user already has access to through their own SoundCloud account. Use
+  SoundCloud in accordance with its Terms of Service.
+- The optional "bypass" feature is off by default. It runs a third-party,
+  open-source component (zapret, MIT, by bol-van, https://github.com/bol-van/zapret)
+  unchanged, solely to reach SoundCloud. Enabling it, and ensuring such use
+  complies with the laws of the user's jurisdiction, is the user's own decision
+  and responsibility.
+- The author accepts no liability for any damage, loss, or legal consequence
+  arising from the use or misuse of this software.
+
+Русский
+-------
+soundya — неофициальный некоммерческий любительский проект для личного
+использования и совместимости. Он никак не связан с Яндексом и SoundCloud и
+не является их продуктом.
+
+- Программа предоставляется «КАК ЕСТЬ», без каких-либо гарантий. См. LICENSE (MIT).
+- Root и изменение прошивки колонки вы выполняете самостоятельно, на свой риск,
+  на принадлежащем вам устройстве; это может лишить гарантии. Проект использует
+  лишь уже публично описанный доступ к устройству.
+- soundya ничего не раздаёт, не копирует и не хранит музыку. Воспроизводится
+  только то, к чему у пользователя есть доступ под его аккаунтом SoundCloud.
+  Пользуйтесь SoundCloud в рамках его правил.
+- Опциональная функция «обход блокировок» выключена по умолчанию. Она без
+  изменений запускает сторонний открытый компонент zapret (MIT, автор bol-van,
+  https://github.com/bol-van/zapret) исключительно для доступа к SoundCloud.
+  Включение этой функции и соответствие использования законам своей страны —
+  решение и ответственность пользователя.
+- Автор не несёт ответственности за любой ущерб, убытки или правовые последствия,
+  возникшие в результате использования или неправильного использования программы.
