@@ -1054,6 +1054,15 @@ fn read_frames(
                 seen.pop_front();
             }
             crate::volume::heard(&text);
+            // A user macro whose phrase is heard wins over built-in handling.
+            let normalized = normalize(&text);
+            if let Some((phrase, _)) = shared.macros().into_iter().find(|(p, _)| normalized.contains(p.as_str())) {
+                eprintln!("voice: {text:?} -> macro {phrase:?}");
+                cancel_alice();
+                let (dtx, _drx) = std::sync::mpsc::channel();
+                let _ = tx.send(Cmd::Control(format!("macro run {phrase}"), dtx));
+                continue;
+            }
             let intent = message_to_contact(&text, &shared.contact_names())
                 .or_else(|| intent(&text, shared.keyword_only()));
             let Some(intent) = intent else {
