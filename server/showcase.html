@@ -28,7 +28,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .icon:hover{color:var(--accent)}
 .icon svg{width:20px;height:20px}
 .center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding-top:8px;pointer-events:none}
-.badge{pointer-events:auto;margin-top:4px;padding:7px 16px;border-radius:999px;color:var(--muted);font-size:13px;
+.badge{pointer-events:auto;margin-top:4px;padding:7px 16px;border-radius:999px;color:var(--muted);font-size:13px;white-space:nowrap;
   background:var(--surf);box-shadow:5px 5px 12px var(--sh-d),-4px -4px 10px var(--sh-l)}
 .badge b{color:var(--accent);font-weight:800;font-size:15px}
 .mname{margin:18px 0 2px;font-size:30px;font-weight:800;letter-spacing:-.02em;text-align:center;
@@ -78,19 +78,31 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .scrim{position:fixed;inset:0;z-index:3;background:rgba(0,0,0,.4);opacity:0;pointer-events:none;transition:.3s}
 .scrim.on{opacity:1;pointer-events:auto}
 .fallback{display:none;position:fixed;inset:0;z-index:5;padding:40px;overflow:auto}
-@media(max-width:620px){.mname{font-size:24px}.center{padding-top:2px}}
+@media(max-width:620px){.mname{font-size:24px}.center{padding-top:2px}header{padding:12px 16px}.logo{font-size:20px}.icon{width:38px;height:38px}.badge{font-size:12px;padding:6px 12px}.hbtns{gap:8px}}
 
 /* scrollable layout */
 .dim{position:fixed;inset:0;z-index:1;background:#0b0a10;opacity:0;pointer-events:none}
 header{position:fixed;top:0;left:0;right:0;z-index:6}
 main{position:relative;z-index:2}
-.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:space-between;padding:88px 22px 26px;pointer-events:none}
-.hero .center{flex:0 0 auto;align-items:center}
-.herobottom{display:flex;flex-direction:column;gap:14px}
-.herobottom>*{pointer-events:auto}
-.center{pointer-events:none}
+/* narrow: stacked; model shows in the flexible middle */
+.hero{min-height:100vh;display:flex;flex-direction:column;gap:14px;padding:84px 20px 22px;pointer-events:none}
+.hero>*{pointer-events:auto}
+.center{pointer-events:none;text-align:center}
+.heromid{flex:1;min-height:32vh}
+.pL,.pR{align-self:stretch}
+.catalog{order:1}.pL{order:2}.pR{order:3}
 .badge{pointer-events:auto}
-.stats{grid-template-columns:repeat(auto-fit,minmax(240px,1fr));max-width:820px}
+/* wide: stat panels flank the centred 3D model, catalog under it */
+@media(min-width:1040px){
+  .hero{display:grid;gap:18px;align-items:center;
+    grid-template-columns:340px 1fr 340px;grid-template-rows:auto 1fr auto;
+    grid-template-areas:"name name name" "left mid right" "cat cat cat"}
+  .center{grid-area:name;align-self:start}
+  .heromid{grid-area:mid;min-height:0}
+  .pL{grid-area:left;align-self:center;order:0}
+  .pR{grid-area:right;align-self:center;order:0}
+  .catalog{grid-area:cat;align-self:end;order:0}
+}
 /* story */
 .story{position:relative;z-index:2;max-width:880px;margin:0 auto;padding:30px 22px 100px}
 .story>section{margin:72px 0}
@@ -138,13 +150,10 @@ code{background:#121118;padding:2px 7px;border-radius:7px;font-size:13px;color:v
     <div class="minfo" id="minfo"></div>
     <div class="hint" id="scrollhint">перетащите, чтобы повернуть · листайте вниз ↓</div>
   </div>
-  <div class="herobottom">
-    <div class="catalog" id="catalog"></div>
-    <div class="stats">
-      <div class="neo panel"><h2>Модели колонок</h2><div id="models"></div></div>
-      <div class="neo panel"><h2>Версии</h2><div id="versions"></div></div>
-    </div>
-  </div>
+  <div class="heromid"></div>
+  <div class="neo panel pL"><h2>Модели колонок</h2><div id="models"></div></div>
+  <div class="neo panel pR"><h2>Версии</h2><div id="versions"></div></div>
+  <div class="catalog" id="catalog"></div>
   </section>
   <section class="story">
     <section class="reveal">
@@ -253,7 +262,7 @@ function init(){
   renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
   renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.0;
   scene=new THREE.Scene();
-  camera=new THREE.PerspectiveCamera(32,1,0.1,100); camera.position.set(0,1.15,7.1); camera.lookAt(0,0.95,0);
+  camera=new THREE.PerspectiveCamera(32,1,0.1,100); camera.position.set(0,1.25,6.3); camera.lookAt(0,1.15,0);
   // environment for reflections
   pmrem=new THREE.PMREMGenerator(renderer);
   scene.environment=pmrem.fromScene(gradEnv(),0,0.1,10).texture;
@@ -263,10 +272,10 @@ function init(){
   key.castShadow=true; key.shadow.mapSize.set(1024,1024); key.shadow.radius=6;
   key.shadow.camera.near=0.5; key.shadow.camera.far=24; key.shadow.bias=-0.0005; scene.add(key);
   var rim=new THREE.DirectionalLight(0xff3b7d,1.2); rim.position.set(-4,2,-3); scene.add(rim);
-  underLight=new THREE.PointLight(0xff5500,1.6,6,2); underLight.position.set(0,0.45,0.3); scene.add(underLight);
+  underLight=new THREE.PointLight(0xff5500,1.5,6,2); underLight.position.set(0,0.6,0.3); scene.add(underLight);
   // ground + soft shadow
   var g=new THREE.Mesh(new THREE.PlaneGeometry(40,40), new THREE.ShadowMaterial({opacity:0.4}));
-  g.rotation.x=-Math.PI/2; g.position.y=0.18; g.receiveShadow=true; scene.add(g);
+  g.rotation.x=-Math.PI/2; g.position.y=0.30; g.receiveShadow=true; scene.add(g);
   // background mesh gradient
   bgScene=new THREE.Scene(); bgCam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
   bgMat=new THREE.ShaderMaterial({depthTest:false,depthWrite:false,uniforms:{
@@ -312,7 +321,7 @@ function gradEnv(){
 // material helpers
 function matPlastic(col){return new THREE.MeshStandardMaterial({color:col,roughness:0.42,metalness:0.25,envMapIntensity:1.1});}
 function matFabric(col){return new THREE.MeshStandardMaterial({color:col,roughness:0.95,metalness:0.0,envMapIntensity:0.5});}
-function matRing(){return new THREE.MeshStandardMaterial({color:0x120a0a,emissive:hx(settings.c1),emissiveIntensity:1.7,roughness:.5});}
+function matRing(){return new THREE.MeshStandardMaterial({color:0x120a0a,emissive:hx(settings.c1),emissiveIntensity:1.25,roughness:.45,metalness:.3});}
 
 function buildMini(){
   var g=new THREE.Group();
@@ -320,8 +329,8 @@ function buildMini(){
   body.castShadow=true; body.receiveShadow=true; g.add(body);
   var topFace=new THREE.Mesh(new THREE.CylinderGeometry(1.08,1.08,0.04,96),matPlastic(0x15151b));
   topFace.position.y=0.30; g.add(topFace);
-  var ring=new THREE.Mesh(new THREE.TorusGeometry(1.0,0.028,20,120),matRing());
-  ring.rotation.x=Math.PI/2; ring.position.y=0.31; g.add(ring);
+  var ring=new THREE.Mesh(new THREE.TorusGeometry(1.03,0.02,20,140),matRing());
+  ring.rotation.x=Math.PI/2; ring.position.y=0.285; g.add(ring);
   var btn=new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.1,0.05,32),matPlastic(0x2a2a33));
   btn.position.y=0.33; g.add(btn);
   g.userData.base=0.0; return g;
@@ -350,7 +359,7 @@ var BUILD={mini:buildMini,lite:buildLite,st:buildStation};
 
 function disposeGroup(grp){ grp.traverse(o=>{ if(o.geometry)o.geometry.dispose(); if(o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.dispose());} }); }
 
-var transT=0, transFrom=null, baseY=1.0, MODEL_SCALE=0.72;
+var transT=0, transFrom=null, baseY=1.18, MODEL_SCALE=0.95;
 function setModel(i,instant){
   current=i; var dev=DEVICES[i];
   var ng=BUILD[dev.key](); ng.scale.setScalar(instant?MODEL_SCALE:0.0001); scene.add(ng);
@@ -391,7 +400,9 @@ function loop(){
   renderer.clear(); renderer.render(bgScene,bgCam); renderer.clearDepth(); renderer.render(scene,camera);
 }
 
-function resize(){ var w=innerWidth,h=innerHeight; renderer.setSize(w,h); camera.aspect=w/h; camera.updateProjectionMatrix();
+function resize(){ var w=innerWidth,h=innerHeight; renderer.setSize(w,h); camera.aspect=w/h;
+  var z=6.3; if(w/h<1.1) z=6.3+(1.1-w/h)*5.2;  // pull back on portrait so the wide model fits
+  camera.position.set(0,1.25,z); camera.lookAt(0,1.15,0); camera.updateProjectionMatrix();
   bgMat.uniforms.res.value.set(w*renderer.getPixelRatio(),h*renderer.getPixelRatio()); }
 
 // drag to rotate
