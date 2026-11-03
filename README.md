@@ -216,7 +216,7 @@ adb shell sh /data/opt/yandex-noupdate.sh status
 curl https://sh.rustup.rs -sSf | sh -s -- -y && source ~/.cargo/env
 rustup target add armv7-unknown-linux-gnueabihf
 brew install zig cargo-zigbuild          # на Linux: pip install ziglang && cargo install cargo-zigbuild
-git clone https://github.com/soundyaa/soundya && cd soundya
+git clone https://github.com/rodyatotu/soundya && cd soundya
 sh scripts/build-mac.sh                  # → dist/soundya-armv7.tar
 ```
 
