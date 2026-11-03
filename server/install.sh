@@ -6,6 +6,21 @@ set -eu
 PORT=${PORT:-8787}
 SRC=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 command -v python3 >/dev/null || { apt-get update && apt-get install -y python3; }
+
+# Telegram bot for anonymous feedback from the web panel (optional).
+# Create a bot via @BotFather, learn your chat id (e.g. send /start to @userinfobot),
+# then run install with:  SOUNDYA_TG_TOKEN=... SOUNDYA_TG_CHAT=... sh install.sh
+ENVFILE=/etc/soundya-stats.env
+if [ -n "${SOUNDYA_TG_TOKEN:-}" ] && [ -n "${SOUNDYA_TG_CHAT:-}" ]; then
+    umask 077
+    printf 'SOUNDYA_TG_TOKEN=%s\nSOUNDYA_TG_CHAT=%s\n' "$SOUNDYA_TG_TOKEN" "$SOUNDYA_TG_CHAT" > "$ENVFILE"
+    chown soundya-stats:soundya-stats "$ENVFILE" 2>/dev/null || true
+    echo "обратная связь включена: токен и chat id записаны в $ENVFILE"
+elif [ ! -f "$ENVFILE" ]; then
+    : > "$ENVFILE"   # empty file so the unit's EnvironmentFile line always works
+    chmod 600 "$ENVFILE"
+    echo "обратная связь выключена (нет SOUNDYA_TG_TOKEN/SOUNDYA_TG_CHAT); можно задать позже в $ENVFILE"
+fi
 id soundya-stats >/dev/null 2>&1 || useradd --system --home /var/lib/soundya-stats --shell /usr/sbin/nologin soundya-stats
 install -d -o soundya-stats -g soundya-stats /var/lib/soundya-stats
 install -D -m 755 "$SRC/stats.py" /opt/soundya-stats/stats.py
@@ -16,12 +31,14 @@ After=network-online.target
 
 [Service]
 User=soundya-stats
+EnvironmentFile=-/etc/soundya-stats.env
 ExecStart=/usr/bin/python3 /opt/soundya-stats/stats.py --port $PORT --db /var/lib/soundya-stats/stats.db
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/soundya-stats
+# Feedback forwarding needs outbound HTTPS to api.telegram.org.
 
 [Install]
 WantedBy=multi-user.target

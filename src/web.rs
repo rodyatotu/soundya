@@ -106,6 +106,13 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
             Ok(s) => ("200 OK", "text/plain; charset=utf-8", ask(tx, |r| Cmd::Settings(s, r), 15)),
             Err(e) => ("400 Bad Request", "text/plain; charset=utf-8", format!("error: {e}")),
         },
+        ("POST", "/api/feedback") => {
+            let text = body.trim();
+            match crate::stats::feedback(text) {
+                Ok(()) => ("200 OK", "text/plain; charset=utf-8", "ok".to_owned()),
+                Err(e) => ("200 OK", "text/plain; charset=utf-8", format!("error: {e}")),
+            }
+        }
         ("POST", "/api/test") => {
             let proxy = serde_json::from_str::<Settings>(&body).map(|s| s.proxy).unwrap_or_default();
             ("200 OK", "text/plain; charset=utf-8", ask(tx, |r| Cmd::TestProxy(proxy, r), 40))

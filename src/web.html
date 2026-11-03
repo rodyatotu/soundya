@@ -179,6 +179,15 @@
   ul.list li.now .t::before { content: "▶ "; color: var(--accent); }
   ul.queue { max-height: 340px; overflow: auto; }
   .empty { color: var(--muted); font-size: 14px; }
+  .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(0, 0, 0, .5); }
+  .modal[hidden] { display: none; }
+  .modal-card { width: 100%; max-width: 420px; padding: 18px; border-radius: 16px;
+    background: var(--card); border: 1px solid var(--line); box-shadow: var(--glass-shadow); }
+  .modal-card h2 { font-size: 16px; margin: 0 0 6px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+  .modal-card textarea { width: 100%; margin-top: 10px; min-height: 120px; resize: vertical;
+    font: inherit; border: 1px solid var(--line); background: transparent; color: var(--ink);
+    border-radius: 12px; padding: 10px; box-sizing: border-box; }
   .donatewrap { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); position: relative; }
   .coffee {
     display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600;
@@ -717,6 +726,12 @@
     </div>
     <div class="msg" id="updmsg"></div>
 
+    <h2 class="section">Обратная связь</h2>
+    <p class="hint">Напишите, что улучшить или что не работает. Отправляется анонимно: имя, аккаунт и адрес колонки не передаются.</p>
+    <div class="row">
+      <button onclick="openFeedback()" id="fbopen">Написать автору</button>
+    </div>
+
     <div id="donate" class="donatewrap" style="display:none">
       <button type="button" id="coffeebtn" class="coffee" aria-expanded="false" aria-controls="donatepop">
         <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h13v4a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M17 10h2a2.5 2.5 0 0 1 0 5h-2"/><path d="M8 2v2M11.5 2v2M5 22h12"/></svg>
@@ -743,6 +758,18 @@
   </section>
 
 
+  <div class="modal" id="fbmodal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="fbtitle">
+      <h2 id="fbtitle">Обратная связь</h2>
+      <p class="hint">Пишется анонимно — без имени, аккаунта и адреса. Автору прилетит только текст.</p>
+      <textarea id="fbtext" rows="5" maxlength="2000" placeholder="Что улучшить, что не работает, пожелания…"></textarea>
+      <div class="msg" id="fbmsg"></div>
+      <div class="row">
+        <button onclick="closeFeedback()">Отмена</button>
+        <button class="primary" id="fbsend" onclick="sendFeedback()">Отправить</button>
+      </div>
+    </div>
+  </div>
 </main>
 
 <div class="modal" id="updmodal" role="dialog" aria-modal="true" aria-labelledby="updmodaltitle" hidden>
@@ -984,6 +1011,22 @@ function show(el, text, isErr) {
 }
 
 function busy(el, text) { el.className = 'msg'; el.textContent = text; }
+
+// ---- обратная связь ----
+function openFeedback() { $('fbmsg').textContent = ''; $('fbmsg').className = 'msg'; $('fbtext').value = ''; $('fbmodal').hidden = false; $('fbtext').focus(); }
+function closeFeedback() { $('fbmodal').hidden = true; }
+async function sendFeedback() {
+  const t = $('fbtext').value.trim();
+  if (!t) { show($('fbmsg'), 'error: напишите сообщение'); return; }
+  $('fbsend').disabled = true;
+  busy($('fbmsg'), 'Отправляю…');
+  const r = await post('/api/feedback', t);
+  $('fbsend').disabled = false;
+  if (r.startsWith('error')) show($('fbmsg'), r);
+  else { show($('fbmsg'), 'Спасибо! Отправлено.', false); setTimeout(closeFeedback, 1200); }
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('fbmodal').hidden) closeFeedback(); });
+document.getElementById('fbmodal').addEventListener('click', (e) => { if (e.target.id === 'fbmodal') closeFeedback(); });
 
 async function post(url, body) {
   try {

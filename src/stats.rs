@@ -4,7 +4,7 @@
 //! start, not tied to the speaker or any account), soundya's version, the model
 //! and whether AirPlay / the PC are switched on. Nothing else: no IP is stored
 //! on the server, no tracks, tokens or commands. Off with «Анонимная статистика»
-//! on the settings page. The server is server/stats.py in this repository.
+//! on the settings page. The server is server/stats.py in this repository (also forwards web-panel feedback to a Telegram bot).
 
 use std::{
     io::Read,
@@ -22,6 +22,39 @@ const URL: &str = match option_env!("SOUNDYA_STATS_URL") {
     None => "http://195.209.211.30:8787/ping",
 };
 const DAY: Duration = Duration::from_secs(24 * 3600);
+
+/// Anonymous feedback from the web panel goes to the same server, which passes
+/// it to the author's Telegram bot (server/stats.py). Same base as the pings.
+pub fn feedback(text: &str) -> Result<(), String> {
+    if URL.is_empty() {
+        return Err("сервер обратной связи не задан".into());
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("пустое сообщение".into());
+    }
+    let url = URL.strip_suffix("/ping").map(|b| format!("{b}/feedback")).unwrap_or_else(|| URL.to_owned());
+    let body = serde_json::json!({
+        "text": text.chars().take(2000).collect::<String>(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "model": model(),
+    });
+    let resp = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .post(&url)
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string());
+    match resp {
+        Ok(_) => Ok(()),
+        // The server says why (feedback off, too many, not delivered).
+        Err(ureq::Error::Status(503, _)) => Err("обратная связь сейчас недоступна".into()),
+        Err(ureq::Error::Status(429, _)) => Err("слишком часто, попробуйте через минуту".into()),
+        Err(ureq::Error::Status(_, _)) => Err("сервер не принял сообщение".into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
 
 /// Random install number, kept in <state dir>/install_id.
 fn install_id(dir: &Path) -> Option<String> {

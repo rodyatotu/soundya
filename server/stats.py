@@ -6,6 +6,11 @@ Each speaker sends once a day (soundya src/stats.rs):
                  "airplay": true, "pc": false}
 Nothing else is stored: no IP addresses, no tracks, no accounts.
 
+Anonymous feedback from the web panel is forwarded to a Telegram bot:
+    POST /feedback {"text": "...", "version": "0.4.40", "model": "yandexmini"}
+Set SOUNDYA_TG_TOKEN (bot token from @BotFather) and SOUNDYA_TG_CHAT (your
+chat id) to enable it; without them /feedback replies 503. No IP is stored.
+
 Pages:
     GET /badge.svg   "работает на 47 колонках" for the README
     GET /badge.json  the same for shields.io (needs HTTPS)
@@ -16,12 +21,16 @@ Python 3.8+, standard library only. Run:  python3 stats.py --port 8787 --db /var
 """
 
 import argparse
+import collections
 import datetime as dt
 import html
 import json
+import os
 import re
 import sqlite3
 import threading
+import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ACTIVE_DAYS = 7  # a speaker counts as running if it pinged within this many days
@@ -35,6 +44,15 @@ MODELS = {
 }
 ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
 TEXT_RE = re.compile(r"^[\w.\- ]{0,40}$")
+
+# Telegram bot for anonymous feedback from the web panel (set in the environment).
+TG_TOKEN = os.environ.get("SOUNDYA_TG_TOKEN", "").strip()
+TG_CHAT = os.environ.get("SOUNDYA_TG_CHAT", "").strip()
+FEEDBACK_MAX = 2000  # characters
+# Simple in-memory limits so the bot cannot be flooded (nothing is persisted).
+_fb_lock = threading.Lock()
+_fb_times = collections.deque()  # timestamps of accepted feedback, last hour
+_fb_last = {}  # remote ip -> last time (kept in memory only, never stored or logged)
 
 db_lock = threading.Lock()
 db = None
@@ -139,6 +157,37 @@ AirPlay включён: {s["airplay"]} · компьютер подключён:
 </body></html>"""
 
 
+def send_telegram(text):
+    """Posts the text to the Telegram bot. Returns True on success."""
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    data = json.dumps({"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status == 200
+    except Exception as e:  # network, bad token, wrong chat id
+        print(f"feedback: telegram error: {e}", flush=True)
+        return False
+
+
+def accept_feedback(ip):
+    """In-memory rate check: at most 1 per 20 s per sender, 30 per hour total."""
+    nowt = time.monotonic()
+    with _fb_lock:
+        while _fb_times and nowt - _fb_times[0] > 3600:
+            _fb_times.popleft()
+        if len(_fb_times) >= 30:
+            return False
+        if nowt - _fb_last.get(ip, 0) < 20:
+            return False
+        # Forget old per-sender entries so the dict stays small.
+        for k in [k for k, t in _fb_last.items() if nowt - t > 3600]:
+            del _fb_last[k]
+        _fb_last[ip] = nowt
+        _fb_times.append(nowt)
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "soundya-stats"
 
@@ -171,7 +220,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, "not found", "text/plain")
 
     def do_POST(self):
-        if self.path.split("?")[0] != "/ping":
+        route = self.path.split("?")[0]
+        if route == "/feedback":
+            return self.do_feedback()
+        if route != "/ping":
             return self.send(404, "not found", "text/plain")
         try:
             length = min(int(self.headers.get("Content-Length", 0)), 2048)
@@ -194,6 +246,30 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, "ok", "text/plain")
         except (ValueError, json.JSONDecodeError):
             self.send(400, "bad ping", "text/plain")
+
+    def do_feedback(self):
+        if not TG_TOKEN or not TG_CHAT:
+            return self.send(503, "feedback disabled", "text/plain")
+        try:
+            length = min(int(self.headers.get("Content-Length", 0)), FEEDBACK_MAX + 512)
+            p = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            return self.send(400, "bad feedback", "text/plain")
+        text = str(p.get("text", "")).strip()[:FEEDBACK_MAX]
+        if not text:
+            return self.send(400, "empty", "text/plain")
+        # The sender ip is used only for the rate limit, held in memory, never stored.
+        ip = self.client_address[0] if self.client_address else "?"
+        if not accept_feedback(ip):
+            return self.send(429, "too many", "text/plain")
+        version = str(p.get("version", ""))[:20]
+        model = str(p.get("model", ""))[:40]
+        tag = " · ".join(x for x in (MODELS.get(model, model), version) if x)
+        msg = "💬 Обратная связь soundya" + (f" ({tag})" if tag else "") + "\n\n" + text
+        if send_telegram(msg):
+            self.send(200, "ok", "text/plain")
+        else:
+            self.send(502, "not delivered", "text/plain")
 
 
 def main():
