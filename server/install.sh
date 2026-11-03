@@ -4,6 +4,9 @@
 # Needs python3 (any 3.8+). Listens on port 8787; data in /var/lib/soundya-stats.
 set -eu
 PORT=${PORT:-8787}
+# Behind an HTTPS reverse proxy (Caddy, see Caddyfile)? Set HOST=127.0.0.1 so the
+# server is not exposed directly; otherwise it listens on all interfaces.
+HOST=${HOST:-0.0.0.0}
 SRC=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 command -v python3 >/dev/null || { apt-get update && apt-get install -y python3; }
 
@@ -32,7 +35,7 @@ After=network-online.target
 [Service]
 User=soundya-stats
 EnvironmentFile=-/etc/soundya-stats.env
-ExecStart=/usr/bin/python3 /opt/soundya-stats/stats.py --port $PORT --db /var/lib/soundya-stats/stats.db
+ExecStart=/usr/bin/python3 /opt/soundya-stats/stats.py --host $HOST --port $PORT --db /var/lib/soundya-stats/stats.db
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes

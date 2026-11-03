@@ -1,0 +1,18 @@
+# HTTPS для сервера статистики/обратной связи soundya через Caddy.
+# Caddy сам получает и продлевает сертификат Let's Encrypt — нужен только домен,
+# указывающий на этот сервер (A-запись на его IP).
+#
+# Установка Caddy (Debian/Ubuntu):
+#   apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+#   curl -1sLf 'https://dl.cloudflare.com/...'   # см. https://caddyserver.com/docs/install
+#   apt update && apt install caddy
+# Положите этот файл в /etc/caddy/Caddyfile, подставьте свой домен, затем:
+#   systemctl restart caddy
+#
+# stats.py при этом слушает только localhost (см. install.sh: --host 127.0.0.1),
+# наружу торчит лишь Caddy на 443. Открытый 8787 можно закрыть фаерволом.
+
+stats.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8787
+}
