@@ -70,8 +70,6 @@ pub struct Eq {
     filters: Vec<Coeffs>,
     /// Per channel, per filter: x1, x2, y1, y2.
     state: Vec<[f32; 4]>,
-    /// Lowers everything by the largest boost, so boosted bands do not clip.
-    pre: f32,
 }
 
 impl Eq {
@@ -96,8 +94,6 @@ impl Eq {
         } else {
             Vec::new()
         };
-        let boost = if on { gains.iter().copied().max().unwrap_or(0).max(0) } else { 0 };
-        self.pre = 10f32.powf(-(boost as f32) / 20.0);
         // Keep the running state when only the gains changed: no click.
         if filters.len() != self.filters.len() || channels != self.channels || rate != self.rate {
             self.state = vec![[0.0; 4]; filters.len() * channels];
@@ -118,7 +114,7 @@ impl Eq {
         let n = self.filters.len();
         for frame in samples.chunks_exact_mut(ch) {
             for (c, s) in frame.iter_mut().enumerate() {
-                let mut x = *s as f32 * self.pre;
+                let mut x = *s as f32;
                 for (f, st) in self.filters.iter().zip(&mut self.state[c * n..(c + 1) * n]) {
                     let y = f.b0 * x + f.b1 * st[0] + f.b2 * st[1] - f.a1 * st[2] - f.a2 * st[3];
                     st[1] = st[0];
@@ -127,10 +123,21 @@ impl Eq {
                     st[2] = y;
                     x = y;
                 }
-                *s = x.round().clamp(-32768.0, 32767.0) as i16;
+                *s = soft_clip(x);
             }
         }
     }
+}
+
+/// Keeps everything below 85% of full scale untouched (so the equaliser never
+/// changes the overall volume), then a smooth knee compresses only the peaks
+/// instead of hard-clipping. Boosting a band makes it louder, as expected.
+fn soft_clip(x: f32) -> i16 {
+    const L: f32 = 32767.0;
+    const K: f32 = 0.85 * L;
+    let a = x.abs();
+    let y = if a <= K { x } else { x.signum() * (K + (L - K) * (1.0 - (-(a - K) / (L - K)).exp())) };
+    y.round().clamp(-L, L) as i16
 }
 
 #[cfg(test)]
@@ -140,7 +147,7 @@ mod tests {
     fn sine(freq: f32, rate: u32, n: usize) -> Vec<i16> {
         (0..n)
             .flat_map(|i| {
-                let v = ((2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin() * 8000.0) as i16;
+                let v = ((2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin() * 2000.0) as i16;
                 [v, v]
             })
             .collect()
@@ -162,17 +169,17 @@ mod tests {
         Eq::new().apply(&mut s, 2, rate);
         assert_eq!(rms(&s), orig, "off: untouched");
 
-        // +12 dB at 1 kHz with the pre-gain: 1 kHz stays about the same, 62 Hz drops 12 dB.
+        // +12 dB at 1 kHz: that band is actually boosted ~+12 dB (no hidden drop).
         set(true, &[0, 0, 0, 0, 0, 12, 0, 0, 0, 0]);
         let mut s = sine(1000.0, rate, 44100);
         Eq::new().apply(&mut s, 2, rate);
         let db = 20.0 * (rms(&s) / orig).log10();
-        assert!(db.abs() < 1.0, "1 kHz: {db} dB");
+        assert!((db - 12.0).abs() < 1.0, "1 kHz boost: {db} dB");
         let low = rms(&sine(62.0, rate, 44100));
         let mut s = sine(62.0, rate, 44100);
         Eq::new().apply(&mut s, 2, rate);
         let db = 20.0 * (rms(&s) / low).log10();
-        assert!((db + 12.0).abs() < 1.0, "62 Hz: {db} dB");
+        assert!(db.abs() < 1.0, "62 Hz untouched by 1k band: {db} dB");
 
         // −12 dB at 62 Hz: no pre-gain, 62 Hz down 12 dB, 4 kHz untouched.
         set(true, &[0, -12, 0, 0, 0, 0, 0, 0, 0, 0]);

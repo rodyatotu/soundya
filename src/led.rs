@@ -166,10 +166,13 @@ impl Ring {
         }
         // Station Lite: micro:red:ring1..3; Mini 2: mini2:red:ring1..6.
         let sysfs = ["micro", "mini2"].into_iter().find_map(|board| {
+            // The Mini 2 wires its red and blue sysfs nodes the opposite way
+            // round, so orange came out blue; route the colours to match.
+            let (rc, bc) = if board == "mini2" { ("blue", "red") } else { ("red", "blue") };
             let zones: Vec<Zone> = (1..=6)
                 .map(|z| {
                     let p = |c: &str| PathBuf::from(format!("/sys/class/leds/{board}:{c}:ring{z}/brightness"));
-                    Zone { r: p("red"), g: p("green"), b: p("blue") }
+                    Zone { r: p(rc), g: p("green"), b: p(bc) }
                 })
                 .filter(|z| crate::fsx::exists(&z.r) && crate::fsx::exists(&z.g) && crate::fsx::exists(&z.b))
                 .collect();
