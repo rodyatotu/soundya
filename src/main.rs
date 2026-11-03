@@ -113,6 +113,8 @@ pub struct Shared {
     pub status_json: Mutex<String>,
     /// The playing track's cover on SoundCloud, for the page's /cover.
     pub cover: Mutex<Option<String>>,
+    /// The track playing now, for the browser audio stream (/api/stream).
+    pub now_track: Mutex<Option<Track>>,
     pub airplay: airplay::AirPlay,
     /// Anonymous statistics switched on (settings page).
     pub stats: AtomicBool,
@@ -1780,6 +1782,7 @@ impl Controller {
     fn share_status(&self) {
         *self.shared.status.lock().unwrap() = self.status();
         *self.shared.status_json.lock().unwrap() = self.json();
+        *self.shared.now_track.lock().unwrap() = self.current().cloned();
         let cover = self.current().and_then(Track::cover);
         let changed = {
             let mut now = self.shared.cover.lock().unwrap();
@@ -1983,6 +1986,7 @@ fn daemon() {
         status: Mutex::new("stopped".into()),
         status_json: Mutex::new(String::new()),
         cover: Mutex::new(None),
+        now_track: Mutex::new(None),
         bypass_log: Mutex::new(Vec::new()),
         bypass_busy: AtomicBool::new(false),
         alice_music: AtomicBool::new(false),
@@ -2023,8 +2027,9 @@ fn daemon() {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8765);
+    let client = client_with(&settings);
     if port != 0 {
-        web::serve(port, tx.clone(), shared.clone());
+        web::serve(port, tx.clone(), shared.clone(), client.clone());
     }
     let control_tx = tx.clone();
     let status_shared = shared.clone();
@@ -2043,7 +2048,7 @@ fn daemon() {
         if settings.proxy.is_empty() { "none".into() } else { settings.masked_proxy() }
     );
     Controller {
-        client: client_with(&settings),
+        client,
         shared,
         tx,
         device: device(),
