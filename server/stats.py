@@ -42,6 +42,30 @@ MODELS = {
     "yandexstation": "Станция 1",
     "yandexmidi": "Станция Миди",
 }
+def pretty_model(raw):
+    """Collapse raw hostnames / device-tree names to a clean model name.
+    Per-unit hostnames like 'yandex-mini2-224K' all become 'Станция Мини 2'."""
+    m = (raw or "").lower().replace("_", "").replace("-", "").replace(" ", "")
+    if "yandexmini2" in m or "mini2" in m:
+        return "Станция Мини 2"
+    if "yandexmicro" in m or "stationlite" in m or "micro" in m:
+        return "Станция Лайт"
+    if "yandexmidi" in m or "midi" in m:
+        return "Станция Миди"
+    if "yandexstation2" in m or "station2" in m:
+        return "Станция 2"
+    if "yandexmini" in m or "mini" in m:
+        return "Станция Мини 1"
+    if "yandexstation" in m:
+        return "Станция 1"
+    if raw in MODELS:
+        return MODELS[raw]
+    # Engineering samples (Plum/Cucumber/Bergamot EVT/DVT) and unknown Yandex units.
+    if "yandex" in m:
+        return "Станция (другая модель)"
+    return "Прочие"
+
+
 ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
 TEXT_RE = re.compile(r"^[\w.\- ]{0,40}$")
 
@@ -105,13 +129,21 @@ def badge_svg(label, value, color="ff5500"):
 </g></svg>"""
 
 
+def collapse(rows):
+    """Fold (raw_model, count) rows into [{model, count}] by pretty name, desc."""
+    agg = {}
+    for m, c in rows:
+        agg[pretty_model(m)] = agg.get(pretty_model(m), 0) + c
+    return [{"model": k, "count": v} for k, v in sorted(agg.items(), key=lambda kv: -kv[1])]
+
+
 def stats():
     since = (now() - dt.timedelta(days=ACTIVE_DAYS)).isoformat()
     with db_lock:
         total = db.execute("SELECT COUNT(*) FROM speakers").fetchone()[0]
         active = db.execute("SELECT COUNT(*) FROM speakers WHERE last_seen >= ?", (since,)).fetchone()[0]
-        models = db.execute(
-            "SELECT model, COUNT(*) FROM speakers WHERE last_seen >= ? GROUP BY model ORDER BY 2 DESC", (since,)
+        raw_models = db.execute(
+            "SELECT model, COUNT(*) FROM speakers WHERE last_seen >= ? GROUP BY model", (since,)
         ).fetchall()
         versions = db.execute(
             "SELECT version, COUNT(*) FROM speakers WHERE last_seen >= ? GROUP BY version ORDER BY 2 DESC", (since,)
@@ -123,7 +155,7 @@ def stats():
         "active": active,
         "active_days": ACTIVE_DAYS,
         "ever": total,
-        "models": [{"model": MODELS.get(m, m or "?"), "count": c} for m, c in models],
+        "models": collapse(raw_models),
         "versions": [{"version": v or "?", "count": c} for v, c in versions],
         "airplay": airplay,
         "pc": pc,
@@ -157,10 +189,29 @@ AirPlay включён: {s["airplay"]} · компьютер подключён:
 </body></html>"""
 
 
-def send_telegram(text):
+# Person-directed insults and slurs: feedback matching these is still delivered,
+# but hidden behind a Telegram spoiler so the author need not read it unless they
+# tap. General swearing (мат) is NOT here — it comes through normally.
+INSULT_WORDS = (
+    "уебок уёбок мудак долбоеб долбоёб долбаеб долбаёб дебил идиот кретин придурок "
+    "тупой тупая тупорыл ничтожество урод гандон гондон чмо мразь тварь скотина "
+    "ублюдок даун пидор пидар пидорас педик гнида выблядок чурка хач нигер негр "
+    "дегенерат имбецил овца овуляшка быдло ушлепок ушлёпок хуесос козлина"
+).split()
+
+
+def looks_like_insult(text):
+    low = text.lower().replace("ё", "е")
+    return any(w.replace("ё", "е") in low for w in INSULT_WORDS)
+
+
+def send_telegram(text, html=False):
     """Posts the text to the Telegram bot. Returns True on success."""
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    data = json.dumps({"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}).encode()
+    body = {"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}
+    if html:
+        body["parse_mode"] = "HTML"
+    data = json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -264,12 +315,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(429, "too many", "text/plain")
         version = str(p.get("version", ""))[:20]
         model = str(p.get("model", ""))[:40]
-        tag = " · ".join(x for x in (MODELS.get(model, model), version) if x)
-        msg = "💬 Обратная связь soundya" + (f" ({tag})" if tag else "") + "\n\n" + text
-        if send_telegram(msg):
-            self.send(200, "ok", "text/plain")
+        tag = " · ".join(x for x in (pretty_model(model), version) if x)
+        head = "💬 Обратная связь soundya" + (f" ({tag})" if tag else "")
+        if looks_like_insult(text):
+            # Delivered, but hidden behind a spoiler: tap in Telegram to read.
+            body = html.escape(head) + " ⚠️\n\n<tg-spoiler>" + html.escape(text) + "</tg-spoiler>"
+            ok = send_telegram(body, html=True)
         else:
-            self.send(502, "not delivered", "text/plain")
+            ok = send_telegram(head + "\n\n" + text)
+        self.send(200, "ok", "text/plain") if ok else self.send(502, "not delivered", "text/plain")
 
 
 def main():
