@@ -179,7 +179,18 @@
   ul.list li.now .t::before { content: "▶ "; color: var(--accent); }
   ul.queue { max-height: 340px; overflow: auto; }
   .empty { color: var(--muted); font-size: 14px; }
-  .donate-title { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .donatewrap { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); position: relative; }
+  .coffee {
+    display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600;
+    color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
+  }
+  .coffee:hover { color: var(--accent); border-color: var(--accent); }
+  .coffee svg { width: 17px; height: 17px; }
+  .donatepop {
+    margin-top: 12px; padding: 14px; border-radius: 14px; max-width: 360px;
+    background: var(--card); border: 1px solid var(--line); box-shadow: var(--glass-shadow);
+  }
+  .donatepop[hidden] { display: none; }
   .donate-main {
     display: block; margin-top: 12px; padding: 12px 14px; border-radius: 12px; text-align: center;
     background: var(--accent); color: var(--accent-ink); font-weight: 600; text-decoration: none;
@@ -706,14 +717,19 @@
     </div>
     <div class="msg" id="updmsg"></div>
 
-    <div id="donate" style="display:none">
-      <h2 class="donate-title">Поддержать проект</h2>
-      <p class="hint">Если soundya вам пригодился — можно сказать спасибо:</p>
-      <a id="dabtn" class="donate-main" target="_blank" rel="noopener" style="display:none">
-        Задонатить через DonationAlerts
-        <small>банковской картой и другими способами DonationAlerts</small>
-      </a>
-      <div id="donatecrypto"></div>
+    <div id="donate" class="donatewrap" style="display:none">
+      <button type="button" id="coffeebtn" class="coffee" aria-expanded="false" aria-controls="donatepop">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h13v4a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M17 10h2a2.5 2.5 0 0 1 0 5h-2"/><path d="M8 2v2M11.5 2v2M5 22h12"/></svg>
+        Кофе автору
+      </button>
+      <div id="donatepop" class="donatepop" hidden>
+        <p class="hint">Если soundya вам пригодился — можно угостить автора кофе:</p>
+        <a id="dabtn" class="donate-main" target="_blank" rel="noopener" style="display:none">
+          Задонатить через DonationAlerts
+          <small>банковской картой и другими способами DonationAlerts</small>
+        </a>
+        <div id="donatecrypto"></div>
+      </div>
     </div>
 
     <details class="danger">
@@ -1901,6 +1917,19 @@ function renderDonate() {
   if (!daOk && !wallets.length) return;
   $('donate').style.display = 'block';
   if (daOk) { $('dabtn').href = da; $('dabtn').style.display = 'block'; }
+  const btn = $('coffeebtn'), pop = $('donatepop');
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const open = pop.hidden;
+    pop.hidden = !open;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  document.addEventListener('click', (e) => {
+    if (!pop.hidden && !$('donate').contains(e.target)) { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !pop.hidden) { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
+  });
   wallets.forEach(c => {
     const address = c.address.trim();
     const box = document.createElement('div'); box.className = 'wallet';
