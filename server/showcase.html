@@ -90,22 +90,22 @@ code{background:#121118;padding:2px 7px;border-radius:7px;font-size:13px}
 .copycmd:hover .tip{opacity:1;transform:translateX(-50%)}
 .bg i:nth-child(4){width:34vw;height:34vw;min-width:300px;min-height:300px;background:#ffb020;top:-6%;right:24%;opacity:calc(var(--glow) * .55);animation-delay:-20s}
 /* festive 100-users banner */
-.party{max-width:1040px;margin:0 auto 6px;padding:0 22px}
-.party .card{position:relative;overflow:hidden;display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:18px 22px;border-radius:20px;
-  background:linear-gradient(120deg,rgba(255,85,0,.17),rgba(255,47,109,.14),rgba(123,59,255,.17));
-  box-shadow:7px 7px 16px var(--sh-d),-6px -6px 14px var(--sh-l),inset 0 0 0 1px rgba(255,255,255,.07)}
-.party .card::before{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 30%,rgba(255,255,255,.16) 48%,transparent 66%);
-  transform:translateX(-120%);animation:shine 5.5s ease-in-out infinite;pointer-events:none}
+.party{max-width:1040px;margin:0 auto 4px;padding:0 22px}
+.party .card{position:relative;overflow:hidden;display:flex;align-items:center;gap:12px;padding:9px 12px 9px 16px;border-radius:14px;
+  background:linear-gradient(120deg,rgba(255,85,0,.15),rgba(255,47,109,.12),rgba(123,59,255,.15));
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)}
+.party .card::before{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 30%,rgba(255,255,255,.14) 48%,transparent 66%);
+  transform:translateX(-120%);animation:shine 6s ease-in-out infinite;pointer-events:none}
 @keyframes shine{0%,55%{transform:translateX(-120%)}80%,100%{transform:translateX(120%)}}
-.party .em{font-size:30px;line-height:1}
-.party .pt{flex:1;min-width:210px}.party .pt b{font-size:17px;display:block}.party .pt span{color:var(--muted);font-size:14px}
-.party a.tg{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:14px;text-decoration:none;color:#fff;font-weight:600;white-space:nowrap;
-  background:linear-gradient(120deg,#2aabee,#1f93d2);box-shadow:0 12px 28px rgba(42,171,238,.34)}
-.party a.tg svg{width:18px;height:18px}
-.party .x{position:absolute;top:8px;right:10px;color:var(--muted);background:transparent;border:0;cursor:pointer;font-size:18px;line-height:1;padding:4px}
+.party .pt{flex:1;min-width:0;font-size:13.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.party .pt b{color:var(--ink);font-weight:700}
+.party a.tg{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:11px;text-decoration:none;color:#fff;font-weight:600;font-size:13px;white-space:nowrap;
+  background:linear-gradient(120deg,#2aabee,#1f93d2);box-shadow:0 6px 16px rgba(42,171,238,.3)}
+.party a.tg svg{width:15px;height:15px}
+.party .x{color:var(--muted);background:transparent;border:0;cursor:pointer;font-size:17px;line-height:1;padding:2px 4px;flex:none}
 .party .x:hover{color:var(--ink)}
 .party[hidden]{display:none}
-@media(max-width:620px){.party{padding:0 16px}.party a.tg{width:100%;justify-content:center}}
+@media(max-width:560px){.party .pt span{display:none}}
 @media(prefers-reduced-motion:reduce){.bg i,.scrolldn,.party .card::before{animation:none}.reveal{transition:none}}
 @media(max-width:620px){header{padding:12px 16px}.logo{font-size:20px}.icon{width:38px;height:38px}}
 </style></head>
@@ -127,13 +127,12 @@ code{background:#121118;padding:2px 7px;border-radius:7px;font-size:13px}
   <section class="hero">
     <div class="party" id="party" hidden>
       <div class="card">
-        <button class="x" id="partyX" aria-label="Закрыть">×</button>
-        <div class="em">🎉</div>
-        <div class="pt"><b id="partyTitle">Нас уже 100+!</b><span>Спасибо, что выбираете soundya. Залетайте в Telegram-канал — новости, релизы и поддержка.</span></div>
+        <div class="pt">🎉 <b id="partyTitle">Нас уже 100+</b><span> — спасибо, что выбираете soundya</span></div>
         <a class="tg" href="https://t.me/+lvaSgqYWrXUwYzA0" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.9 4.3l-3.3 15.6c-.25 1.1-.9 1.37-1.83.85l-5.05-3.72-2.44 2.35c-.27.27-.5.5-1 .5l.36-5.1L17.9 6.3c.4-.36-.09-.56-.62-.2L6.9 12.6l-4.98-1.56c-1.08-.34-1.1-1.08.23-1.6l19.46-7.5c.9-.33 1.69.2 1.29 2.36z"/></svg>
-          Telegram-канал
+          Telegram
         </a>
+        <button class="x" id="partyX" aria-label="Закрыть">×</button>
       </div>
     </div>
     <div class="count">
