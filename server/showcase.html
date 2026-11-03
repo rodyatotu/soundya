@@ -40,10 +40,15 @@ main{position:relative;z-index:1}
   text-shadow:0 20px 80px rgba(255,85,0,.25)}
 .clbl{font-size:clamp(15px,2.4vw,20px);color:var(--ink);opacity:.92;margin-top:6px}
 .ever{color:var(--muted);font-size:14px;margin-top:8px}
-.stats{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;align-items:start}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
 @media(max-width:720px){.stats{grid-template-columns:1fr}}
 .panel{padding:14px 16px}
 .panel h2{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:700}
+/* equal-height lists that scroll inside the card when there are many rows */
+#models,#versions{height:216px;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--accent) transparent;padding-right:4px}
+#models::-webkit-scrollbar,#versions::-webkit-scrollbar{width:6px}
+#models::-webkit-scrollbar-thumb,#versions::-webkit-scrollbar-thumb{background:linear-gradient(var(--accent),var(--accent2));border-radius:3px}
+#models::-webkit-scrollbar-track,#versions::-webkit-scrollbar-track{background:transparent}
 .row{display:flex;align-items:center;gap:12px;margin:5px 0}
 .row .nm{flex:1;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row .ct{font-variant-numeric:tabular-nums;font-weight:700;color:var(--accent);width:32px;text-align:right}
