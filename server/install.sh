@@ -27,8 +27,6 @@ fi
 id soundya-stats >/dev/null 2>&1 || useradd --system --home /var/lib/soundya-stats --shell /usr/sbin/nologin soundya-stats
 install -d -o soundya-stats -g soundya-stats /var/lib/soundya-stats
 install -D -m 755 "$SRC/stats.py" /opt/soundya-stats/stats.py
-install -D -m 644 "$SRC/showcase.html" /opt/soundya-stats/showcase.html
-install -D -m 644 "$SRC/static/three.module.min.js" /opt/soundya-stats/static/three.module.min.js
 cat > /etc/systemd/system/soundya-stats.service <<UNIT
 [Unit]
 Description=soundya statistics (counts running speakers)
