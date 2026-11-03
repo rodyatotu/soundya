@@ -17,7 +17,7 @@ use std::{
 
 use serde_json::Value;
 
-const RELEASES: &str = "https://api.github.com/repos/rodyatotu/soundya/releases/latest";
+const RELEASES: &str = "https://api.github.com/repos/soundyaa/soundya/releases/latest";
 const ASSET: &str = "soundya-armv7.tar";
 const TAR: &str = "/tmp/soundya-update.tar";
 const DIR: &str = "/tmp/soundya-update";

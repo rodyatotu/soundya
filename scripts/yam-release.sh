@@ -72,7 +72,7 @@ name: $NS/soundya
 version: $VERSION
 license: MIT
 description: SoundCloud на Станции голосом Алисы, AirPlay, управление ПК и ТВ, веб-панель (пакет для Luna)
-homepage: https://github.com/rodyatotu/soundya
+homepage: https://github.com/soundyaa/soundya
 targets: [$T]
 depends: [yam/luna]
 files:
