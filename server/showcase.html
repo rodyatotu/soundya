@@ -8,7 +8,8 @@
   --sh-d:#0c0b10;--sh-l:#242230;
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);background:var(--bg);overflow:hidden}
+html{scroll-behavior:smooth}
+body{margin:0;min-height:100%;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);background:var(--bg)}
 #gl{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0}
 .ui{position:fixed;inset:0;z-index:2;pointer-events:none;display:flex;flex-direction:column}
 .ui>*{pointer-events:auto}
@@ -78,11 +79,47 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .scrim.on{opacity:1;pointer-events:auto}
 .fallback{display:none;position:fixed;inset:0;z-index:5;padding:40px;overflow:auto}
 @media(max-width:620px){.mname{font-size:24px}.center{padding-top:2px}}
+
+/* scrollable layout */
+.dim{position:fixed;inset:0;z-index:1;background:#0b0a10;opacity:0;pointer-events:none}
+header{position:fixed;top:0;left:0;right:0;z-index:6}
+main{position:relative;z-index:2}
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:space-between;padding:88px 22px 26px;pointer-events:none}
+.hero .center{flex:0 0 auto;align-items:center}
+.herobottom{display:flex;flex-direction:column;gap:14px}
+.herobottom>*{pointer-events:auto}
+.center{pointer-events:none}
+.badge{pointer-events:auto}
+.stats{grid-template-columns:repeat(auto-fit,minmax(240px,1fr));max-width:820px}
+/* story */
+.story{position:relative;z-index:2;max-width:880px;margin:0 auto;padding:30px 22px 100px}
+.story>section{margin:72px 0}
+.reveal{opacity:0;transform:translateY(26px);transition:opacity .7s cubic-bezier(.2,.8,.2,1),transform .7s cubic-bezier(.2,.8,.2,1)}
+.reveal.in{opacity:1;transform:none}
+.big{font-size:clamp(26px,4vw,36px);font-weight:800;letter-spacing:-.02em;margin:0 0 14px}
+.lead{font-size:17px;color:var(--muted);max-width:640px;margin:0}
+.steps{display:grid;gap:14px;grid-template-columns:repeat(3,1fr);margin-top:22px}
+@media(max-width:720px){.steps{grid-template-columns:1fr}}
+.step{padding:20px}
+.step .n{width:36px;height:36px;border-radius:12px;display:grid;place-items:center;font-weight:800;color:var(--accent);margin-bottom:12px;
+  background:var(--surf);box-shadow:inset 3px 3px 7px var(--sh-d),inset -3px -3px 7px var(--sh-l)}
+.step b{font-size:15px}.step p{color:var(--muted);margin:6px 0 0;font-size:14px}
+.feats{display:grid;gap:14px;grid-template-columns:repeat(3,1fr);margin-top:22px}
+@media(max-width:720px){.feats{grid-template-columns:1fr 1fr}}
+@media(max-width:460px){.feats{grid-template-columns:1fr}}
+.feat{padding:18px}
+.feat .fi{color:var(--accent);margin-bottom:10px}.feat .fi svg{width:24px;height:24px}
+.feat b{display:block;margin-bottom:3px}.feat span{color:var(--muted);font-size:13.5px}
+.cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:22px}
+.cta a{padding:12px 20px;border-radius:16px;text-decoration:none;color:var(--ink);font-weight:600;
+  background:var(--surf);box-shadow:5px 5px 12px var(--sh-d),-4px -4px 10px var(--sh-l)}
+.cta a.primary{background:linear-gradient(120deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 10px 26px rgba(255,85,0,.32)}
+code{background:#121118;padding:2px 7px;border-radius:7px;font-size:13px;color:var(--ink)}
 </style></head>
 <body>
 <canvas id="gl"></canvas>
-<div class="ui">
-  <header>
+<div class="dim" id="dim"></div>
+<header>
     <a class="logo" href="https://github.com/rodyatotu/soundya" target="_blank">sound<span>ya</span></a>
     <div class="hbtns">
       <span class="badge" id="badge"><b id="activeN">—</b> колонок работают</span>
@@ -94,21 +131,55 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </a>
     </div>
   </header>
+<main>
+  <section class="hero">
   <div class="center">
     <h1 class="mname" id="mname">—</h1>
     <div class="minfo" id="minfo"></div>
-    <div class="hint">перетащите, чтобы повернуть</div>
+    <div class="hint" id="scrollhint">перетащите, чтобы повернуть · листайте вниз ↓</div>
   </div>
-  <div class="bottom">
+  <div class="herobottom">
     <div class="catalog" id="catalog"></div>
     <div class="stats">
       <div class="neo panel"><h2>Модели колонок</h2><div id="models"></div></div>
-      <div class="neo panel"><h2>Активность по дням</h2><div class="days" id="days"></div>
-        <div style="margin-top:12px" id="everLine"></div></div>
       <div class="neo panel"><h2>Версии</h2><div id="versions"></div></div>
     </div>
   </div>
-</div>
+  </section>
+  <section class="story">
+    <section class="reveal">
+      <h2 class="big">Что такое soundya</h2>
+      <p class="lead">SoundCloud прямо на Яндекс&nbsp;Станции — голосом Алисы, без телефона и компьютера. <span id="leadN"></span></p>
+    </section>
+    <section class="reveal">
+      <h2 class="big">Как это работает</h2>
+      <div class="steps">
+        <div class="neo step"><div class="n">1</div><b>Скажите Алисе</b><p>«Алиса, включи Bonobo в саундклауде»</p></div>
+        <div class="neo step"><div class="n">2</div><b>soundya ловит команду</b><p>и играет трек напрямую из SoundCloud, минуя Яндекс&nbsp;Музыку.</p></div>
+        <div class="neo step"><div class="n">3</div><b>Управляйте как удобно</b><p>голосом или из веб-панели: пауза, следующий, лайки, громкость.</p></div>
+      </div>
+    </section>
+    <section class="reveal">
+      <h2 class="big">Что умеет</h2>
+      <div class="feats">
+        <div class="neo feat"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></div><b>SoundCloud голосом</b><span>Рекомендации, лайки, плейлисты, поиск по голосу.</span></div>
+        <div class="neo feat"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-2"/><path d="M12 15l5 6H7l5-6z"/></svg></div><b>AirPlay</b><span>Станция становится AirPlay-колонкой для iPhone и Mac.</span></div>
+        <div class="neo feat"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></div><b>Подсветка под музыку</b><span>Кольцо светится в такт — бас, середина, верха (Ambilight).</span></div>
+        <div class="neo feat"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></div><b>Эквалайзер</b><span>10 полос для SoundCloud и AirPlay прямо из панели.</span></div>
+        <div class="neo feat"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div><b>ПК, ТВ и Telegram</b><span>«Открой телеграм», «включи проектор», сообщения с компьютера.</span></div>
+        <div class="neo feat"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div><b>Обход блокировок</b><span>Встроенный zapret/zapret2 — когда SoundCloud режут по имени сайта.</span></div>
+      </div>
+    </section>
+    <section class="reveal">
+      <h2 class="big">Поставить себе</h2>
+      <p class="lead">soundya — открытый проект. Нужен root на Станции; всё остальное делает установщик.</p>
+      <div class="cta">
+        <a class="primary" href="https://github.com/rodyatotu/soundya" target="_blank">Открыть на GitHub</a>
+      </div>
+      <p style="color:var(--muted);margin-top:16px">Через Luna/YAM: <code>yam install rodyatotu/soundya</code></p>
+    </section>
+  </section>
+</main>
 <div class="scrim" id="scrim"></div>
 <aside class="settings neo" id="settings">
   <button class="neo icon close" id="closeSet" aria-label="Закрыть">✕</button>
@@ -139,15 +210,18 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   $('#activeN').textContent=DATA.active;
   var mp=Math.max.apply(null,[1].concat(DATA.models.map(function(m){return m.count;})));
   $('#models').innerHTML=DATA.models.map(function(m){return '<div class="row"><span class="nm">'+esc(m.model)+'</span><span class="meter"><i style="width:'+(100*m.count/mp)+'%"></i></span><span class="ct">'+m.count+'</span></div>';}).join('');
-  var dp=Math.max.apply(null,[1].concat(DATA.days.map(function(d){return d.count;})));
-  $('#days').innerHTML=DATA.days.map(function(d){return '<div class="d" style="height:'+Math.max(6,100*d.count/dp)+'%" title="'+d.day.slice(5)+' · '+d.count+'"></div>';}).join('');
-  $('#everLine').innerHTML='<span style="color:var(--muted);font-size:13px">всего установлено за всё время: <b style="color:var(--ink)">'+DATA.ever+'</b></span>';
+  var leadN=document.getElementById('leadN'); if(leadN) leadN.textContent='Сейчас работает на '+DATA.active+' колонках, установлена '+DATA.ever+' раз.';
   $('#versions').innerHTML=DATA.versions.map(function(v){return '<div class="kv"><span>'+esc(v.version)+'</span><b>'+v.count+'</b></div>';}).join('');
   window.showFallback=function(){
     var gl=document.getElementById('gl'); if(gl)gl.style.display='none';
     ['.center','#catalog','#paint'].forEach(function(sel){var el=document.querySelector(sel); if(el)el.style.display='none';});
     document.documentElement.style.overflow='auto'; document.body.style.overflow='auto';
   };
+  // Reveal story sections on scroll.
+  var reduceM=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var revs=document.querySelectorAll('.reveal');
+  if(reduceM||!('IntersectionObserver' in window)){ revs.forEach(function(el){el.classList.add('in');}); }
+  else { var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:0.14,rootMargin:'0px 0px -8% 0px'}); revs.forEach(function(el){io.observe(el);}); }
   // Watchdog: if 3D hasn't booted (e.g. module failed to load), degrade to stats only.
   setTimeout(function(){ if(!window.__ok) window.showFallback(); }, 8000);
 })();
@@ -167,7 +241,7 @@ var DEVICES=[
 
 var reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
 var cv=document.getElementById('gl'), renderer, scene, camera, bgScene, bgCam, bgMat, key, underLight, pmrem;
-var modelGroup=null, current=0, anim=true, speed=1.0, clock, tPrev=0, tAcc=0;
+var modelGroup=null, current=0, anim=true, speed=1.0, clock, tPrev=0, tAcc=0, scrollFade=1;
 var settings={c1:'#ff5500',c2:'#ff2f6d',c3:'#7b3bff',glow:1.0,speed:1.0,anim:true};
 try{ var saved=JSON.parse(localStorage.getItem('soundya-look')); if(saved) Object.assign(settings,saved); }catch(e){}
 
@@ -219,6 +293,9 @@ function init(){
   setModel(0,true);
   resize(); addEventListener('resize',resize);
   dragSetup();
+  addEventListener('scroll',function(){ var tt=Math.min(1,scrollY/(innerHeight*0.7)); scrollFade=1-tt;
+    var d=document.getElementById('dim'); if(d)d.style.opacity=(tt*0.82).toFixed(3);
+    var sh=document.getElementById('scrollhint'); if(sh)sh.style.opacity=(0.6*(1-tt)).toFixed(2); },{passive:true});
   renderer.setAnimationLoop(loop);
   window.__ok=true;
 }
@@ -309,6 +386,8 @@ function loop(){
       transFrom.traverse(o=>{if(o.material){o.material.transparent=true;o.material.opacity=s;}}); }
     if(transT>=1){ cv.style.filter='none'; if(transFrom){ scene.remove(transFrom); disposeGroup(transFrom); transFrom=null; } }
   }
+  if(modelGroup){ modelGroup.visible=scrollFade>0.02;
+    modelGroup.traverse(function(o){ if(o.material){ o.material.transparent=true; o.material.opacity=scrollFade; } }); }
   renderer.clear(); renderer.render(bgScene,bgCam); renderer.clearDepth(); renderer.render(scene,camera);
 }
 
