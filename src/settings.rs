@@ -132,6 +132,10 @@ pub struct Settings {
     /// Apps whose events are ignored.
     #[serde(default)]
     pub duck_exclude: Vec<String>,
+    /// Optional PIN for changing anything from the panel ("" = no PIN).
+    /// Never sent to the page; `soundya pin off` on the speaker removes it.
+    #[serde(default)]
+    pub panel_pin: String,
     /// The panel's first-run wizard was gone through (or skipped).
     #[serde(default)]
     pub onboarded: bool,
@@ -263,6 +267,7 @@ impl Default for Settings {
             duck_notify_level: duck_notify_level(),
             duck_notify_secs: duck_notify_secs(),
             duck_exclude: Vec::new(),
+            panel_pin: String::new(),
             onboarded: false,
             voice_hello: true,
             extra: serde_json::Map::new(),

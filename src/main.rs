@@ -4,6 +4,7 @@ mod adb;
 mod airplay;
 mod alice;
 mod alsa;
+mod auth;
 mod buffer;
 mod buttons;
 mod bypass;
@@ -381,6 +382,7 @@ impl Controller {
         settings["eq_on"] = self.settings.eq_on.into();
         settings["led_order"] = self.settings.led_order.clone().into();
         settings["onboarded"] = self.settings.onboarded.into();
+        settings["pin_on"] = (!self.settings.panel_pin.is_empty()).into();
         settings["duck_mode"] = self.settings.duck_mode.clone().into();
         settings["duck_call_level"] = self.settings.duck_call_level.into();
         settings["duck_notify_level"] = self.settings.duck_notify_level.into();
@@ -566,6 +568,8 @@ impl Controller {
         }
         new.light_bright = new.light_bright.clamp(10, 100);
         new.sync_music(&self.settings);
+        // Only «pin set/off» changes the PIN, never the settings form.
+        new.panel_pin = self.settings.panel_pin.clone();
         if !["smart", "calls", "notify", "manual", "off"].contains(&new.duck_mode.as_str()) {
             return "error: режим приглушения — smart, calls, notify, manual или off".into();
         }
@@ -1509,6 +1513,30 @@ impl Controller {
                     None => send_to(&reply, "usage: duck down | restore | auto on | auto off".into()),
                 }
             }
+            // «pin set <PIN> | pin off» — from the panel (behind the current PIN) or
+            // `soundya pin off` over adb when the PIN is forgotten.
+            "pin" => {
+                let pin = match arg.split_once(' ') {
+                    Some(("set", p)) => p.trim().to_owned(),
+                    _ if arg == "off" => String::new(),
+                    _ => {
+                        send_to(&reply, "usage: pin set <4–12 цифр> | pin off".into());
+                        return;
+                    }
+                };
+                if !pin.is_empty() && !(4..=12).contains(&pin.len()) || !pin.chars().all(|c| c.is_ascii_digit()) {
+                    send_to(&reply, "error: PIN — от 4 до 12 цифр".into());
+                    return;
+                }
+                self.settings.panel_pin = pin.clone();
+                auth::set_pin(&self.dir, &pin);
+                let r = match self.settings.save(&self.dir) {
+                    Ok(()) if pin.is_empty() => "OK: PIN выключен".to_owned(),
+                    Ok(()) => "OK: PIN установлен".to_owned(),
+                    Err(e) => format!("error: не сохранилось: {e}"),
+                };
+                send_to(&reply, r);
+            }
             // «ledtest 0|1|2»: the ring test on the page (one raw channel file).
             "ledtest" => send_to(&reply, match arg.parse::<usize>() {
                 Ok(c) => led::test(c).unwrap_or_else(|e| format!("error: {e}")),
@@ -2176,6 +2204,8 @@ fn daemon() {
     luna::run(tx.clone(), shared.clone());
     // zapret (nfqws) with the saved strategy, before anything talks to SoundCloud.
     zapret::restore(&dir, settings.active_bypass(), &settings.zapret_args);
+    // Optional panel PIN and its saved browser sessions.
+    auth::init(&dir, &settings.panel_pin);
     // Smart Ducking: calls and notifications from devices lower soundya's music.
     ducking::configure(ducking::Config::from_settings(&settings));
     ducking::run(shared.clone());
@@ -2378,7 +2408,8 @@ fn main() {
             }
         }
         "play" | "playlist" | "likes" | "pause" | "resume" | "toggle" | "next" | "prev" | "stop"
-        | "status" | "queue" | "shuffle" | "repeat" | "like" | "unlike" | "similar" | "recs" | "seek" | "pc" | "tv" => send(&format!("{cmd} {rest}")),
+        | "status" | "queue" | "shuffle" | "repeat" | "like" | "unlike" | "similar" | "recs" | "seek" | "pc" | "tv"
+        | "pin" | "macro" | "duck" => send(&format!("{cmd} {rest}")),
         _ => {
             println!(
                 "soundya {}\n\

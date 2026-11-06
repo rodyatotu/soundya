@@ -869,6 +869,20 @@
     </div>
     <ul class="list reports" id="reportlist"></ul>
 
+    <h2 class="section">PIN для панели</h2>
+    <p class="hint" id="pinstate"></p>
+    <p class="hint">Без PIN любой, кто подключён к вашему Wi-Fi, может управлять колонкой с этой страницы. С PIN смотреть
+      можно, а менять что-то — только после ввода PIN (один раз на браузере). Забыли PIN — на компьютере:
+      <code>adb shell soundya pin off</code>.</p>
+    <div class="row">
+      <input type="password" id="pinnew" inputmode="numeric" placeholder="4–12 цифр" autocomplete="new-password">
+    </div>
+    <div class="row">
+      <button class="primary" onclick="setPin()">Установить PIN</button>
+      <button onclick="offPin()" id="pinoff">Выключить PIN</button>
+    </div>
+    <div class="msg" id="pinmsg"></div>
+
     <details class="danger">
       <summary>Удалить soundya с колонки</summary>
       <p class="hint">Удалит программу, приёмник AirPlay и все настройки (вход в SoundCloud, ключ компьютера).
@@ -1076,7 +1090,7 @@ async function previewReport() {
   const shot = body.screenshot ? Math.round(body.screenshot.length * 3 / 4 / 1024) : 0;
   body.screenshot = '';
   let r;
-  try { r = await (await fetch('/api/report/preview', { method: 'POST', body: JSON.stringify(body) })).json(); }
+  try { r = await (await authed('/api/report/preview', { method: 'POST', body: JSON.stringify(body) })).json(); }
   catch (e) { show($('fbmsg'), 'error: нет связи с колонкой'); return; }
   if (r.error) { show($('fbmsg'), 'error: ' + r.error); return; }
   box.innerHTML = '';
@@ -1101,7 +1115,7 @@ async function sendFeedback() {
   $('fbsend').disabled = true;
   busy($('fbmsg'), 'Сохраняю отчёт…');
   let r;
-  try { r = await (await fetch('/api/report', { method: 'POST', body: JSON.stringify(body) })).json(); }
+  try { r = await (await authed('/api/report', { method: 'POST', body: JSON.stringify(body) })).json(); }
   catch (e) { r = { error: 'нет связи с колонкой' }; }
   $('fbsend').disabled = false;
   if (r.error) { show($('fbmsg'), 'error: ' + r.error); return; }
@@ -1131,9 +1145,32 @@ async function loadReports() {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('fbmodal').hidden) closeFeedback(); });
 document.getElementById('fbmodal').addEventListener('click', (e) => { if (e.target.id === 'fbmodal') closeFeedback(); });
 
+// The optional panel PIN: a change answered with 401 asks for it once, signs this
+// browser in (cookie for a year) and is sent again.
+let pinAsking = null;
+async function authed(url, opts) {
+  let r = await fetch(url, opts);
+  if (r.status !== 401) return r;
+  if (!pinAsking) {
+    pinAsking = (async () => {
+      for (let i = 0; i < 3; i++) {
+        const pin = window.prompt(i ? 'Неверный PIN. Попробуйте ещё раз:' : 'Панель защищена PIN-кодом. Введите PIN:');
+        if (!pin) return false;
+        const l = await fetch('/api/login', { method: 'POST', body: pin.trim() });
+        if (l.ok) return true;
+        const t = await l.text();
+        if (t.includes('попыток')) { alert(t.replace(/^error:\s*/, '')); return false; }
+      }
+      return false;
+    })().finally(() => setTimeout(() => { pinAsking = null; }, 0));
+  }
+  if (await pinAsking) r = await fetch(url, opts);
+  return r;
+}
+
 async function post(url, body) {
   try {
-    const r = await fetch(url, { method: 'POST', body });
+    const r = await authed(url, { method: 'POST', body });
     return (await r.text()).trim();
   } catch (e) {
     notePageError(`POST ${url} failed: ${e}`);
@@ -1517,6 +1554,23 @@ async function saveDuck() {
 }
 async function duckCmd(c) { show($('duckmsg'), await post('/api/cmd', 'duck ' + c)); refresh(); }
 
+// ---- PIN для панели ----
+function renderPin(st) {
+  $('pinstate').textContent = st.pin_on ? 'PIN включён.' : 'PIN не установлен.';
+  $('pinoff').hidden = !st.pin_on;
+}
+async function setPin() {
+  const p = $('pinnew').value.trim();
+  if (!/^\d{4,12}$/.test(p)) { show($('pinmsg'), 'error: PIN — от 4 до 12 цифр'); return; }
+  show($('pinmsg'), await post('/api/pin', p));
+  $('pinnew').value = ''; settingsLoaded = false; refresh();
+}
+async function offPin() {
+  if (!confirm('Выключить PIN? Управлять колонкой снова сможет любой в вашей сети.')) return;
+  show($('pinmsg'), await post('/api/pin', ''));
+  settingsLoaded = false; refresh();
+}
+
 // ---- мастер первой настройки ----
 let wizStep = 0;
 const WIZ_STEPS = 4;
@@ -1843,6 +1897,7 @@ async function refresh() {
     renderLight(settings);
     renderLedOrder(settings.led_order, s.led);
     renderDuck(settings);
+    renderPin(settings);
     maybeWizard(settings);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';

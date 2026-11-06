@@ -48,15 +48,26 @@ pub fn serve(port: u16, tx: Sender<Cmd>, shared: Arc<Shared>, client: Client) {
     eprintln!("web: http://<speaker-ip>:{port}/");
     thread::spawn(move || {
         for conn in listener.incoming().flatten() {
+            // A thread per connection, but not without end: a slow or hostile
+            // client on the network must not use up the speaker's memory.
+            if OPEN.load(std::sync::atomic::Ordering::Acquire) >= MAX_CONNECTIONS {
+                let _ = reply(&conn, "503 Service Unavailable", "text/plain; charset=utf-8", "error: занято, повторите");
+                continue;
+            }
+            OPEN.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             let tx = tx.clone();
             let shared = shared.clone();
             let client = client.clone();
             thread::spawn(move || {
                 let _ = handle(conn, &tx, &shared, &client);
+                OPEN.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             });
         }
     });
 }
+
+static OPEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const MAX_CONNECTIONS: usize = 48;
 
 fn ask(tx: &Sender<Cmd>, make: impl FnOnce(Sender<String>) -> Cmd, wait: u64) -> String {
     let (rtx, rrx) = mpsc::channel();
@@ -78,6 +89,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
     let mut length = 0usize;
     let mut host = String::new();
     let mut origin = String::new();
+    let mut cookie = String::new();
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
@@ -90,6 +102,8 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
                 host = v.trim().to_owned();
             } else if k.eq_ignore_ascii_case("origin") {
                 origin = v.trim().to_owned();
+            } else if k.eq_ignore_ascii_case("cookie") {
+                cookie = v.trim().to_owned();
             }
         }
     }
@@ -109,6 +123,24 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
     let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
     let body = String::from_utf8_lossy(&body).into_owned();
+    // The optional PIN: logging in, and every change needs the session.
+    if method == "POST" && path == "/api/login" {
+        return match crate::auth::login(&crate::state_dir(), body.trim()) {
+            Ok(token) => {
+                let mut out = &conn;
+                write!(
+                    out,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nSet-Cookie: {}={token}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Strict\r\nContent-Length: 2\r\nCache-Control: no-store\r\nConnection: close\r\n\r\nok",
+                    crate::auth::COOKIE
+                )?;
+                out.flush()
+            }
+            Err(e) => reply(&conn, "403 Forbidden", "text/plain; charset=utf-8", &format!("error: {e}")),
+        };
+    }
+    if method != "GET" && path != "/api/duck" && crate::auth::enabled() && !crate::auth::session_ok(&cookie) {
+        return reply(&conn, "401 Unauthorized", "text/plain; charset=utf-8", "error: нужен PIN панели");
+    }
 
     // The cover of the playing track, fetched by the speaker (bypass/proxy).
     if method == "GET" && (path == "/cover" || path.starts_with("/cover?")) {
@@ -216,6 +248,24 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             },
             Err(e) => ("400 Bad Request", "application/json", serde_json::json!({"error": e.to_string()}).to_string()),
         },
+        // Set or remove the PIN (behind the current one); this browser stays signed in.
+        ("POST", "/api/pin") => {
+            let pin = body.trim().to_owned();
+            let r = ask(tx, |r| Cmd::Control(if pin.is_empty() { "pin off".into() } else { format!("pin set {pin}") }, r), 15);
+            if r.starts_with("OK") && !pin.is_empty() {
+                if let Ok(token) = crate::auth::login(&crate::state_dir(), &pin) {
+                    let mut out = &conn;
+                    write!(
+                        out,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nSet-Cookie: {}={token}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Strict\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{r}",
+                        crate::auth::COOKIE,
+                        r.len()
+                    )?;
+                    return out.flush();
+                }
+            }
+            ("200 OK", "text/plain; charset=utf-8", r)
+        }
         ("GET", "/api/community") => (
             "200 OK",
             "application/json",

@@ -161,7 +161,7 @@ fn new_id() -> String {
 
 /// Values that must never leave the speaker, read from the settings.
 pub fn secrets(s: &crate::settings::Settings) -> Vec<String> {
-    let mut out = vec![s.token.clone(), s.pc_token.clone()];
+    let mut out = vec![s.token.clone(), s.pc_token.clone(), s.panel_pin.clone()];
     // Proxy password (and the whole proxy with it, as written).
     if let Some((_, rest)) = s.proxy.split_once("://") {
         if let Some((cred, _)) = rest.split_once('@') {
