@@ -245,6 +245,7 @@ fn say(_shared: &Shared, text: String) {
     eprintln!("telegram: announcing a message");
     // Music down a little while she reads it (Smart Ducking, «уведомление»).
     let _ = crate::ducking::event(&crate::ducking::Request { source: "telegram".into(), kind: "notify".into(), state: "start".into(), ..Default::default() });
+    crate::display::notify("tg");
     crate::alice::say(text);
 }
 

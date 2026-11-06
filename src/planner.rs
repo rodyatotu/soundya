@@ -568,6 +568,7 @@ pub fn run(dir: &Path) {
                 let text = if late > 600 { format!("Пропущенное напоминание: {title}") } else { format!("Напоминаю: {title}") };
                 eprintln!("planner: {text}");
                 crate::led::set_install(Some(crate::led::Install::Done));
+                crate::display::notify("rem");
                 crate::alice::say(text);
             }
             set_done(id, true);

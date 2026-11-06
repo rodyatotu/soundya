@@ -13,6 +13,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::Mutex,
     thread,
     time::{Duration, Instant},
 };
@@ -51,6 +52,8 @@ pub fn glyph(c: char) -> Option<&'static str> {
         'T' => "DEFG",
         'U' => "BCDEF",
         'Y' => "BCDFG",
+        'G' => "ACDEF",
+        'R' => "EG",
         '-' => "G",
         '_' => "D",
         ' ' => "",
@@ -105,7 +108,9 @@ pub fn spinner(tick: usize) -> Vec<String> {
 
 impl Clock {
     pub fn detect() -> Option<Clock> {
-        Self::detect_in(Path::new(ROOT))
+        // SOUNDYA_LEDS_ROOT: only for testing on a computer with a fake sysfs.
+        let root = std::env::var("SOUNDYA_LEDS_ROOT").unwrap_or_else(|_| ROOT.into());
+        Self::detect_in(Path::new(&root))
     }
 
     fn detect_in(root: &Path) -> Option<Clock> {
@@ -143,9 +148,10 @@ impl Clock {
     }
 
     fn show(&self, lit: &[String], colon: bool) {
+        let level = (255 * u32::from(BRIGHT.load(std::sync::atomic::Ordering::Acquire)) / 100).max(10).to_string();
         for (name, path) in &self.paths {
             let on = lit.iter().any(|l| l == name) || (colon && (name == "DH" || name == "DL"));
-            let _ = std::fs::write(path, if on { "255" } else { "0" });
+            let _ = std::fs::write(path, if on { level.as_str() } else { "0" });
         }
     }
 
@@ -178,14 +184,168 @@ pub fn frame(phase: &crate::led::Install, ms: u64, ip: Option<&str>, dots: bool)
     }
 }
 
-/// Draws the install phases on the display while they last, then puts the
-/// firmware's clock back.
+// ---------------------------------------------------------------- widgets
+//
+// Smart Display: after the install, the display goes round the chosen widgets
+// — «clock» (the firmware's own clock: soundya leaves the display alone),
+// «pc» (the PC's temperature, pc.rs metrics) and «weather» (Open-Meteo, no key)
+// — each for `secs`. A Telegram message or a reminder (notify) takes over for
+// a few seconds. Data that is not there (PC off, no city) is skipped.
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Widgets {
+    pub on: bool,
+    pub list: Vec<String>,
+    pub secs: u64,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+}
+
+static WIDGETS: Mutex<Option<Widgets>> = Mutex::new(None);
+static BRIGHT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(100);
+/// Latest data: (value °C, when).
+static WEATHER: Mutex<Option<(i64, Instant)>> = Mutex::new(None);
+static PC_TEMP: Mutex<Option<(i64, Instant)>> = Mutex::new(None);
+/// An interrupt: (text, until).
+static NOTE: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+/// What is on the display now, for the page («" 23C°"», «clock»).
+static SHOWN: Mutex<String> = Mutex::new(String::new());
+static PC: Mutex<Option<crate::settings::Settings>> = Mutex::new(None);
+
+pub fn configure(w: Widgets, bright: u8, settings: &crate::settings::Settings) {
+    *WIDGETS.lock().unwrap() = Some(w);
+    BRIGHT.store(bright.clamp(10, 100), std::sync::atomic::Ordering::Release);
+    *PC.lock().unwrap() = settings.pc_configured().then(|| settings.clone());
+}
+
+/// «tg» — a Telegram message, «rem» — a reminder: shown for 6 seconds.
+pub fn notify(kind: &str) {
+    let text = match kind {
+        "tg" => "tEL ",
+        "rem" => "rEn ",
+        _ => "----",
+    };
+    *NOTE.lock().unwrap() = Some((text.to_owned(), Instant::now() + Duration::from_secs(6)));
+}
+
+/// «23» → " 23C" with the degree sign; «P» prefix for the PC.
+pub fn temp_text(t: i64, pc: bool) -> String {
+    let t = t.clamp(-99, 199);
+    if pc { format!("P{:>2}C", t.min(99)) } else { format!("{t:>3}C") }
+}
+
+/// The widget for `ms` since the cycle began: None = the firmware's clock.
+fn widget_now(w: &Widgets, ms: u64) -> Option<String> {
+    let fresh = |slot: &Mutex<Option<(i64, Instant)>>, max: u64| {
+        slot.lock().unwrap().filter(|(_, at)| at.elapsed() < Duration::from_secs(max)).map(|(v, _)| v)
+    };
+    let ready: Vec<Option<String>> = w
+        .list
+        .iter()
+        .filter_map(|k| match k.as_str() {
+            "clock" => Some(None),
+            "pc" => fresh(&PC_TEMP, 300).map(|t| Some(temp_text(t, true))),
+            "weather" => fresh(&WEATHER, 3600).map(|t| Some(temp_text(t, false))),
+            _ => None,
+        })
+        .collect();
+    if ready.is_empty() {
+        return None;
+    }
+    let slot = (ms / (w.secs.max(3) * 1000)) as usize % ready.len();
+    ready[slot].clone()
+}
+
+pub fn json() -> serde_json::Value {
+    serde_json::json!({
+        "shown": *SHOWN.lock().unwrap(),
+        "weather": WEATHER.lock().unwrap().map(|(t, _)| t),
+        "pc_temp": PC_TEMP.lock().unwrap().map(|(t, _)| t),
+    })
+}
+
+/// Weather from Open-Meteo (free, no key), through the proxy from the settings.
+fn fetch_weather(shared: &crate::Shared, lat: f64, lon: f64) -> Result<i64, String> {
+    let proxy = shared.proxy.lock().unwrap().clone();
+    let agent = crate::sc::build_agent(&proxy).map_err(|e| e.to_string())?;
+    let v: serde_json::Value = agent
+        .get("https://api.open-meteo.com/v1/forecast")
+        .query("latitude", &format!("{lat:.3}"))
+        .query("longitude", &format!("{lon:.3}"))
+        .query("current", "temperature_2m")
+        .timeout(Duration::from_secs(15))
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_json()
+        .map_err(|e| e.to_string())?;
+    parse_weather(&v).ok_or_else(|| "в ответе нет температуры".into())
+}
+
+pub fn parse_weather(v: &serde_json::Value) -> Option<i64> {
+    v["current"]["temperature_2m"].as_f64().map(|t| t.round() as i64)
+}
+
+/// A city by name → (name, lat, lon), Open-Meteo's geocoding.
+pub fn find_city(shared: &crate::Shared, name: &str) -> Result<(String, f64, f64), String> {
+    let proxy = shared.proxy.lock().unwrap().clone();
+    let agent = crate::sc::build_agent(&proxy).map_err(|e| e.to_string())?;
+    let v: serde_json::Value = agent
+        .get("https://geocoding-api.open-meteo.com/v1/search")
+        .query("name", name)
+        .query("count", "1")
+        .query("language", "ru")
+        .timeout(Duration::from_secs(15))
+        .call()
+        .map_err(|e| format!("сервис погоды не ответил: {e}"))?
+        .into_json()
+        .map_err(|e| e.to_string())?;
+    let r = &v["results"][0];
+    match (r["latitude"].as_f64(), r["longitude"].as_f64()) {
+        (Some(la), Some(lo)) => Ok((r["name"].as_str().unwrap_or(name).to_owned(), la, lo)),
+        _ => Err(format!("город «{name}» не нашёлся")),
+    }
+}
+
+/// Weather every 15 minutes, the PC's temperature every minute — only for
+/// widgets that are switched on.
+pub fn run_providers(shared: std::sync::Arc<crate::Shared>) {
+    thread::spawn(move || {
+        let mut last_weather: Option<Instant> = None;
+        loop {
+            let w = WIDGETS.lock().unwrap().clone();
+            if let Some(w) = w.filter(|w| w.on) {
+                if let (true, Some(lat), Some(lon)) = (w.list.iter().any(|k| k == "weather"), w.lat, w.lon) {
+                    if last_weather.is_none_or(|t| t.elapsed() > Duration::from_secs(900)) {
+                        last_weather = Some(Instant::now());
+                        match fetch_weather(&shared, lat, lon) {
+                            Ok(t) => *WEATHER.lock().unwrap() = Some((t, Instant::now())),
+                            Err(e) => eprintln!("display: weather: {e}"),
+                        }
+                    }
+                }
+                let pc = PC.lock().unwrap().clone();
+                if let (true, Some(settings)) = (w.list.iter().any(|k| k == "pc"), pc) {
+                    if let Ok(v) = crate::pc::metrics_raw(&settings) {
+                        if let Some(t) = v["cpu_temp"].as_i64().or_else(|| v["gpu_temp"].as_i64()) {
+                            *PC_TEMP.lock().unwrap() = Some((t, Instant::now()));
+                        }
+                    }
+                }
+            }
+            thread::sleep(Duration::from_secs(60));
+        }
+    });
+}
+
+/// Draws the install phases, interrupts and widgets, and puts the firmware's
+/// clock back when it is the clock's turn.
 pub fn run() {
     let Some(clock) = Clock::detect() else { return };
     eprintln!("display: clock found ({} segments)", clock.paths.len());
     thread::spawn(move || {
         let mut saved: Option<HashMap<String, String>> = None;
         let mut started = Instant::now();
+        let cycle = Instant::now();
         let mut last = None;
         loop {
             let phase = crate::led::install_phase();
@@ -193,19 +353,38 @@ pub fn run() {
                 started = Instant::now();
                 last = phase.clone();
             }
-            match &phase {
-                Some(p) => {
+            let note = NOTE.lock().unwrap().clone().filter(|(_, until)| Instant::now() < *until);
+            let widgets = WIDGETS.lock().unwrap().clone().filter(|w| w.on);
+            // What to draw: install > interrupt > widget; None = the firmware's clock.
+            let draw: Option<(Vec<String>, bool, String)> = if let Some(p) = &phase {
+                let ip = crate::mdns::own_ip().map(|i| i.to_string());
+                let (lit, colon) = frame(p, started.elapsed().as_millis() as u64, ip.as_deref(), clock.dots);
+                Some((lit, colon, format!("{p:?}")))
+            } else if let Some((text, until)) = note {
+                let blink = (until.saturating_duration_since(Instant::now()).as_millis() / 400) % 2 == 0;
+                Some((if blink { segments(&text) } else { Vec::new() }, false, text))
+            } else if let Some(text) = widgets.as_ref().and_then(|w| widget_now(w, cycle.elapsed().as_millis() as u64)) {
+                let mut lit = segments(&text);
+                if text.ends_with('C') {
+                    lit.push("DEGREE".into());
+                }
+                Some((lit, false, text))
+            } else {
+                None
+            };
+            match draw {
+                Some((lit, colon, text)) => {
                     if saved.is_none() {
                         saved = Some(clock.read());
                     }
-                    let ip = crate::mdns::own_ip().map(|i| i.to_string());
-                    let (lit, colon) = frame(p, started.elapsed().as_millis() as u64, ip.as_deref(), clock.dots);
                     clock.show(&lit, colon);
+                    *SHOWN.lock().unwrap() = text;
                 }
                 None => {
                     if let Some(s) = saved.take() {
                         clock.restore(&s);
                     }
+                    *SHOWN.lock().unwrap() = "clock".into();
                 }
             }
             thread::sleep(Duration::from_millis(90));
@@ -225,6 +404,21 @@ mod tests {
         assert_eq!(segments(" HI ").len(), 5 + 2);
         assert_eq!(spinner(0).len(), 2);
         assert_ne!(spinner(0), spinner(1));
+    }
+
+    #[test]
+    fn widgets_take_turns() {
+        assert_eq!(temp_text(23, false), " 23C");
+        assert_eq!(temp_text(-3, false), " -3C");
+        assert_eq!(temp_text(54, true), "P54C");
+        assert_eq!(parse_weather(&serde_json::json!({"current": {"temperature_2m": -2.6}})), Some(-3));
+        *WEATHER.lock().unwrap() = Some((7, Instant::now()));
+        *PC_TEMP.lock().unwrap() = None;
+        let w = Widgets { on: true, list: vec!["clock".into(), "pc".into(), "weather".into()], secs: 10, lat: None, lon: None };
+        assert_eq!(widget_now(&w, 0), None, "the clock first");
+        assert_eq!(widget_now(&w, 10_500), Some("  7C".into()), "no PC data: weather next");
+        assert_eq!(widget_now(&w, 20_500), None, "and round again");
+        *WEATHER.lock().unwrap() = None;
     }
 
     #[test]

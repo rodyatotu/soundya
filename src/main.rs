@@ -395,6 +395,11 @@ impl Controller {
         settings["alice_voice"] = self.settings.alice_voice.into();
         settings["planner_on"] = self.settings.planner_on.into();
         settings["tg_on"] = self.settings.tg_on.into();
+        settings["display_on"] = self.settings.display_on.into();
+        settings["display_widgets"] = self.settings.display_widgets.clone().into();
+        settings["display_secs"] = self.settings.display_secs.into();
+        settings["display_bright"] = self.settings.display_bright.into();
+        settings["display_city"] = self.settings.display_city.clone().into();
         settings["tg_bots"] = self.settings.tg_bots.iter().map(|b| serde_json::json!({
             "name": b.name,
             "token": format!("••••••••{}", b.token.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<String>()),
@@ -448,6 +453,7 @@ impl Controller {
             "ducking": ducking::json(),
             "voice": voice::json(),
             "telegram": telegram::json(),
+            "display": display::json(),
             "listen": serde_json::json!({
                 "listeners": web::listeners(),
                 "muted": self.shared.duck.listening(),
@@ -644,6 +650,11 @@ impl Controller {
             telegram::forget_unknown(a.id);
         }
         telegram::configure(telegram::Config::from_settings(&new), &self.shared);
+        new.display_widgets.retain(|w| ["clock", "pc", "weather"].contains(&w.as_str()));
+        new.display_widgets.dedup();
+        new.display_secs = new.display_secs.clamp(3, 120);
+        new.display_bright = new.display_bright.clamp(10, 100);
+        display::configure(display_widgets(&new), new.display_bright, &new);
         planner::configure(new.planner_on, new.tz_offset);
         new.led_order = new.led_order.trim().to_lowercase();
         if !led::set_order(&new.led_order) {
@@ -1620,6 +1631,35 @@ impl Controller {
                     None => send_to(&reply, "usage: duck down | restore | auto on | auto off".into()),
                 }
             }
+            // «display city <город>»: the weather's place, found by name.
+            "display" => {
+                let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                match what {
+                    "city" if !rest.trim().is_empty() => {
+                        let shared = self.shared.clone();
+                        let tx = self.tx.clone();
+                        let name = rest.trim().to_owned();
+                        thread::spawn(move || {
+                            let r = match display::find_city(&shared, &name) {
+                                Ok((n, la, lo)) => {
+                                    let (rtx, rrx) = mpsc::channel();
+                                    let patch = serde_json::json!({ "display_city": n, "display_lat": la, "display_lon": lo });
+                                    let _ = tx.send(Cmd::Settings(patch, rtx));
+                                    let _ = rrx.recv_timeout(Duration::from_secs(10));
+                                    format!("OK: {n} ({la:.2}, {lo:.2})")
+                                }
+                                Err(e) => format!("error: {e}"),
+                            };
+                            let _ = reply.send(r);
+                        });
+                    }
+                    "test" => {
+                        display::notify("tg");
+                        send_to(&reply, "OK".into());
+                    }
+                    _ => send_to(&reply, "usage: display city <город> | display test".into()),
+                }
+            }
             // «tg reply <текст> | tg yes | tg no» — the voice flow from the command line.
             "tg" => {
                 let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
@@ -2117,6 +2157,16 @@ impl Controller {
     }
 }
 
+fn display_widgets(s: &Settings) -> display::Widgets {
+    display::Widgets {
+        on: s.display_on,
+        list: s.display_widgets.clone(),
+        secs: u64::from(s.display_secs),
+        lat: s.display_lat,
+        lon: s.display_lon,
+    }
+}
+
 /// The speaker, for the panel's home page (read once).
 fn device_info() -> serde_json::Value {
     static INFO: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
@@ -2426,8 +2476,10 @@ fn daemon() {
     }
     // After install: Alice says where the panel is (once per version).
     hello::run(&dir, shared.clone(), settings.voice_hello, settings.onboarded, port);
-    // The clock display (Mini 3, Plum, Pickle) shows the install steps too.
+    // The clock display (Mini 3, Plum, Pickle): install steps, then widgets.
+    display::configure(display_widgets(&settings), settings.display_bright, &settings);
     display::run();
+    display::run_providers(shared.clone());
     let control_tx = tx.clone();
     let status_shared = shared.clone();
     thread::spawn(move || {

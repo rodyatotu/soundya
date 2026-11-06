@@ -476,6 +476,16 @@
   @media (min-width: 1100px) { main { max-width: 980px; } }
   #tgsection ~ .row input[type=time] { flex: 1; font: inherit; color: var(--ink); background: var(--field);
     border: 1px solid var(--glass-edge); border-radius: 14px; padding: 9px 11px; }
+  .seven { display: flex; gap: 10px; justify-content: center; padding: 16px; margin: 8px 0 12px; border-radius: 18px; background: #0b0a10; }
+  .seven .dg { position: relative; width: 34px; height: 60px; }
+  .seven .dg i { position: absolute; background: #2a2630; border-radius: 3px; transition: background .2s; }
+  .seven .dg i.on { background: #ff9a4a; box-shadow: 0 0 8px #ff7a1a; }
+  .seven .dg .A { left: 5px; right: 5px; top: 0; height: 5px; } .seven .dg .G { left: 5px; right: 5px; top: 27px; height: 5px; }
+  .seven .dg .D { left: 5px; right: 5px; bottom: 0; height: 5px; }
+  .seven .dg .B { right: 0; top: 4px; width: 5px; height: 24px; } .seven .dg .C { right: 0; bottom: 4px; width: 5px; height: 24px; }
+  .seven .dg .F { left: 0; top: 4px; width: 5px; height: 24px; } .seven .dg .E { left: 0; bottom: 4px; width: 5px; height: 24px; }
+  .seven .deg { width: 8px; height: 8px; border-radius: 50%; border: 2px solid #2a2630; align-self: flex-start; }
+  .seven .deg.on { border-color: #ff9a4a; }
   .planadd { display: grid; gap: 8px; margin: 10px 0; }
   .planadd input[type=datetime-local], .planadd select { flex: 1 1 140px; font: inherit; color: var(--ink); background: var(--field);
     border: 1px solid var(--glass-edge); border-radius: 14px; padding: 9px 11px; }
@@ -988,6 +998,25 @@
         oninput="$('lightbval').textContent = this.value + '%'; lightPreview()" onchange="saveLight()">
     </label>
     <div class="msg" id="lightmsg"></div>
+    <h2 class="section" id="displaysection">Экран-часы</h2>
+    <p class="hint" id="dispnone" hidden>У этой колонки нет цифрового экрана (он есть у Станции Мини 3 и ещё пары моделей) — раздел не нужен.</p>
+    <div id="dispbox">
+      <div class="seven" id="dispprev"></div>
+      <label class="switch"><input type="checkbox" id="dispon" onchange="saveDisp()"><span><b>Показывать по очереди</b></span></label>
+      <p class="hint">Часы — родные часы колонки; температура ПК — с программы soundya-pc; погода — Open-Meteo для вашего города.
+        Сообщение в Telegram и напоминание ненадолго прерывают очередь.</p>
+      <ul class="list" id="displist"></ul>
+      <label class="field">Каждый — <b id="dispsecv"></b> с
+        <input type="range" id="dispsec" min="3" max="60" step="1" class="range" oninput="$('dispsecv').textContent = this.value" onchange="saveDisp()">
+      </label>
+      <label class="field">Яркость <b id="dispbrv"></b>
+        <input type="range" id="dispbr" min="10" max="100" step="5" class="range" oninput="$('dispbrv').textContent = this.value + '%'" onchange="saveDisp()">
+      </label>
+      <div class="row"><input type="text" id="dispcity" placeholder="Город для погоды"><button onclick="findCity()">Найти</button></div>
+      <div class="row"><button onclick="dispTest()">Проверить прерывание</button></div>
+      <div class="msg" id="dispmsg"></div>
+    </div>
+
     <details class="ledcal">
       <summary>Цвета не те? Проверка цветов кольца</summary>
       <p class="hint">Если кольцо путает цвета (например, оранжевый выглядит красным или зелёным), нажмите кнопки по очереди:
@@ -2031,6 +2060,55 @@ async function saveVoice() {
 }
 async function voiceTest() { show($('voicemsg'), await post('/api/cmd', 'voicetest')); }
 
+// ---- экран-часы ----
+const DISP_NAMES = { clock: 'Часы', pc: 'Температура компьютера', weather: 'Погода' };
+const SEG = { '0': 'ABCDEF', '1': 'BC', '2': 'ABDEG', '3': 'ABCDG', '4': 'BCFG', '5': 'ACDFG', '6': 'ACDEFG', '7': 'ABC', '8': 'ABCDEFG', '9': 'ABCDFG',
+  '-': 'G', ' ': '', 'C': 'ADEF', 'P': 'ABEFG', 'T': 'DEFG', 'E': 'ADEFG', 'L': 'DEF', 'R': 'EG', 'N': 'CEG', 'H': 'BCEFG', 'I': 'BC' };
+let dispList = [];
+function drawSeven(text) {
+  const box = $('dispprev'); box.innerHTML = '';
+  if (text === 'clock' || !text) { const d = new Date(); text = String(d.getHours()).padStart(2, ' ') + String(d.getMinutes()).padStart(2, '0'); }
+  const chars = text.replace(/\./g, '').toUpperCase().padEnd(4).slice(0, 4);
+  for (const ch of chars) {
+    const dg = document.createElement('div'); dg.className = 'dg';
+    for (const p of 'ABCDEFG') { const i = document.createElement('i'); i.className = p + ((SEG[ch] || '').includes(p) ? ' on' : ''); dg.appendChild(i); }
+    box.appendChild(dg);
+  }
+  const deg = document.createElement('div'); deg.className = 'deg' + (text.endsWith('C') ? ' on' : ''); box.appendChild(deg);
+}
+function renderDispList() {
+  const ul = $('displist'); ul.innerHTML = '';
+  const order = dispList.concat(Object.keys(DISP_NAMES).filter(k => !dispList.includes(k)));
+  order.forEach((k, i) => {
+    const li = document.createElement('li'); li.style.display = 'flex'; li.style.alignItems = 'center'; li.style.gap = '10px';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = dispList.includes(k);
+    cb.onchange = () => { dispList = order.filter(x => x === k ? cb.checked : dispList.includes(x)); saveDisp(); };
+    const t = document.createElement('span'); t.style.flex = '1'; t.textContent = DISP_NAMES[k];
+    const up = document.createElement('button'); up.className = 'link'; up.textContent = '↑';
+    up.onclick = () => { if (!i) return; const o = order.slice(); [o[i - 1], o[i]] = [o[i], o[i - 1]]; dispList = o.filter(x => dispList.includes(x)); renderDispList(); saveDisp(); };
+    li.append(cb, t, up); ul.appendChild(li);
+  });
+}
+function renderDisp(st, dev) {
+  const has = !!(dev && dev.display);
+  $('dispnone').hidden = has; $('dispbox').hidden = !has;
+  $('dispon').checked = !!st.display_on;
+  dispList = (st.display_widgets || ['clock', 'weather', 'pc']).slice();
+  $('dispsec').value = st.display_secs || 10; $('dispsecv').textContent = $('dispsec').value;
+  $('dispbr').value = st.display_bright || 100; $('dispbrv').textContent = $('dispbr').value + '%';
+  $('dispcity').value = st.display_city || '';
+  renderDispList();
+}
+async function saveDisp() {
+  show($('dispmsg'), await post('/api/settings', JSON.stringify({ display_on: $('dispon').checked, display_widgets: dispList,
+    display_secs: Number($('dispsec').value), display_bright: Number($('dispbr').value) })));
+}
+async function findCity() {
+  busy($('dispmsg'), 'Ищу город…');
+  show($('dispmsg'), await post('/api/cmd', 'display city ' + $('dispcity').value.trim()));
+}
+async function dispTest() { show($('dispmsg'), await post('/api/cmd', 'display test')); }
+
 // ---- Telegram ----
 let tgBots = [], tgAllowed = [];
 const hm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
@@ -2527,6 +2605,7 @@ async function refresh() {
   renderNet(s.net);
   renderDuckState(s.ducking);
   renderTgState(s.telegram);
+  if (s.display) drawSeven(s.display.shown);
   syncListen(s);
   renderHome(s);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
@@ -2557,6 +2636,7 @@ async function refresh() {
     renderPin(settings);
     renderVoice(settings, s.voice);
     renderTg(settings, s.telegram);
+    renderDisp(settings, s.device);
     maybeWizard(settings);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';

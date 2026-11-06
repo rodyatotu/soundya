@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// Version of the config.json layout; see [`Settings::migrate`].
 pub const CONFIG_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     /// Layout version of the file (0: written before 0.5.00).
     #[serde(default)]
@@ -167,6 +167,22 @@ pub struct Settings {
     pub tg_quiet_from: u16,
     #[serde(default = "quiet_to")]
     pub tg_quiet_to: u16,
+    /// Smart Display (display.rs, stations with a clock display): widgets in
+    /// turn, seconds each, brightness %, the weather's place.
+    #[serde(default)]
+    pub display_on: bool,
+    #[serde(default = "display_widgets")]
+    pub display_widgets: Vec<String>,
+    #[serde(default = "ten_u16")]
+    pub display_secs: u16,
+    #[serde(default = "hundred")]
+    pub display_bright: u8,
+    #[serde(default)]
+    pub display_city: String,
+    #[serde(default)]
+    pub display_lat: Option<f64>,
+    #[serde(default)]
+    pub display_lon: Option<f64>,
     /// Optional PIN for changing anything from the panel ("" = no PIN).
     /// Never sent to the page; `soundya pin off` on the speaker removes it.
     #[serde(default)]
@@ -242,6 +258,13 @@ fn hundred<T: From<u8>>() -> T {
     T::from(100)
 }
 fn ten() -> u8 {
+    10
+}
+
+fn display_widgets() -> Vec<String> {
+    vec!["clock".into(), "weather".into(), "pc".into()]
+}
+fn ten_u16() -> u16 {
     10
 }
 
@@ -327,6 +350,13 @@ impl Default for Settings {
             duck_exclude: Vec::new(),
             alice_voice: 100,
             alice_voice_max: 10,
+            display_on: false,
+            display_widgets: display_widgets(),
+            display_secs: 10,
+            display_bright: 100,
+            display_city: String::new(),
+            display_lat: None,
+            display_lon: None,
             tg_on: false,
             tg_bots: Vec::new(),
             tg_allowed: Vec::new(),

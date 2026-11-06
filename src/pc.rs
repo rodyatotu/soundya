@@ -89,6 +89,28 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
 }
 
 /// Standard base64, for sending UTF-8 text in an HTTP header.
+/// The PC's numbers as JSON (for the Smart Display), signed like any command.
+pub fn metrics_raw(settings: &Settings) -> Result<serde_json::Value, String> {
+    let host = settings.pc_host.trim();
+    let key = settings.pc_token.trim();
+    if host.is_empty() || key.is_empty() {
+        return Err("компьютер не настроен".into());
+    }
+    let address = if host.contains(':') { host.to_owned() } else { format!("{host}:{PORT}") };
+    let (ts, nonce, sign) = sign(key, "/metrics", b"");
+    let r = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(3))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .post(&format!("http://{address}/metrics"))
+        .set("X-Soundya-Time", &ts)
+        .set("X-Soundya-Nonce", &nonce)
+        .set("X-Soundya-Sign", &sign)
+        .send_string("")
+        .map_err(|e| e.to_string())?;
+    r.into_json().map_err(|e| e.to_string())
+}
+
 /// soundya-pc answered only the old way (older than 0.5.00): the page says so.
 pub static LEGACY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
