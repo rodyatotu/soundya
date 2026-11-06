@@ -455,14 +455,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send(code, text, "text/plain")
 
 
+def selftest():
+    """Sends one test report through the real bot: proves the last hop
+    (server → Telegram) with the token and chat from the environment."""
+    rid = "SY-" + os.urandom(4).hex().upper()
+    msg = (f"BUG REPORT #{rid}\nSoundya Version: selftest\nDevice: server\nModule: Проверка сервера\n"
+           f"Date: {now().strftime('%Y-%m-%d %H:%M:%S UTC')}\nUser/Installation ID: не передан\n"
+           "Description: проверка доставки отчётов (stats.py --selftest)\nExpected: сообщение и 3 файла\n"
+           "Actual: —\nAttachments:\n* system.log\n* error.log\n* diagnostics.json\n")
+    files = [{"name": n, "data": base64.b64encode(t.encode()).decode()} for n, t in (
+        ("system.log", "selftest: system log\n"), ("error.log", "selftest: no errors\n"),
+        ("diagnostics.json", json.dumps({"selftest": True, "time": now().isoformat()})))]
+    code, text = deliver_report({"id": rid, "message": msg, "files": files})
+    print(f"selftest {rid}: {code} {text}")
+    return 0 if code == 200 else 1
+
+
 def main():
     global db
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--db", default="stats.db")
+    ap.add_argument("--selftest", action="store_true", help="send a test report to the bot and exit")
     a = ap.parse_args()
     db = open_db(a.db)
+    if a.selftest:
+        if not TG_TOKEN or not TG_CHAT:
+            print("selftest: set SOUNDYA_TG_TOKEN and SOUNDYA_TG_CHAT (or source /etc/soundya-stats.env)")
+            raise SystemExit(2)
+        raise SystemExit(selftest())
     print(f"soundya-stats on {a.host}:{a.port}, db {a.db}", flush=True)
     ThreadingHTTPServer((a.host, a.port), Handler).serve_forever()
 

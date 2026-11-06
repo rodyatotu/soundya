@@ -455,27 +455,32 @@ fn clip(s: &str, n: usize) -> String {
 /// The report's header as the author sees it in Telegram.
 pub fn message(r: &Record) -> String {
     let date = date(r.created);
+    let device = match &r.firmware {
+        Some(f) => format!("{} (прошивка {f})", r.model),
+        None => r.model.clone(),
+    };
     let mut m = format!(
-        "{} #{}\nSoundya Version: {}\nDevice: {}\nFirmware: {}\nModule: {}\nDate: {}\nUser/Installation ID: {}\n\nDescription:\n{}\n",
+        "{} #{}\nSoundya Version: {}\nDevice: {}\nModule: {}\nDate: {}\nUser/Installation ID: {}\nDescription: {}\n",
         if r.kind == "feedback" { "FEEDBACK" } else { "BUG REPORT" },
         r.id,
         r.version,
-        r.model,
-        r.firmware.as_deref().unwrap_or("неизвестна"),
+        device,
         module_name(&r.module),
         date,
         r.installation.as_deref().unwrap_or("не передан"),
         if r.description.is_empty() { "—" } else { &r.description },
     );
     if r.kind != "feedback" {
-        m.push_str(&format!("\nExpected:\n{}\n\nActual:\n{}\n", or_dash(&r.expected), or_dash(&r.actual)));
+        m.push_str(&format!("Expected: {}\nActual: {}\n", or_dash(&r.expected), or_dash(&r.actual)));
     }
-    m.push_str("\nAttachments:\n");
+    m.push_str("Attachments:");
     if r.files.is_empty() {
-        m.push_str("— нет\n");
+        m.push_str(" нет\n");
+    } else {
+        m.push('\n');
     }
     for (name, size) in &r.files {
-        m.push_str(&format!("• {name} ({} КБ)\n", size.div_ceil(1024)));
+        m.push_str(&format!("* {name} ({} КБ)\n", size.div_ceil(1024)));
     }
     m
 }
@@ -792,9 +797,15 @@ mod tests {
             firmware: None, installation: None, files: vec![("system.log".into(), 2048)],
         };
         let m = message(&r);
-        for part in ["BUG REPORT #SY-0A1B2C3D", "Soundya Version: 0.5.0", "Device: yandexmini_2", "Module: AirPlay",
-                     "Date: ", "User/Installation ID: не передан", "Description:\nЗвук рвётся", "Expected:\nРовно",
-                     "Actual:\nРвётся", "Attachments:\n• system.log (2 КБ)"] {
+        // Line by line, as agreed with the author.
+        let heads: Vec<&str> = m.lines().map(|l| l.split(':').next().unwrap_or("")).collect();
+        assert_eq!(
+            &heads[..10],
+            ["BUG REPORT #SY-0A1B2C3D", "Soundya Version", "Device", "Module", "Date", "User/Installation ID", "Description", "Expected", "Actual", "Attachments"],
+            "{m}"
+        );
+        for part in ["Soundya Version: 0.5.0", "Device: yandexmini_2", "Module: AirPlay", "Date: 2023-11-14 22:13:20 UTC",
+                     "Description: Звук рвётся", "Expected: Ровно", "Actual: Рвётся", "* system.log (2 КБ)"] {
             assert!(m.contains(part), "missing {part:?} in\n{m}");
         }
     }
