@@ -67,7 +67,17 @@ pub enum Mode {
     Solid,
     Pulse,
     Eq,
+    /// A wave of the two colours going round the ring; brighter with the music.
+    Wave,
+    /// A turning rainbow; brighter with the music.
+    Rainbow,
+    /// Slow breathing in the «quiet» colour.
+    Breathe,
+    /// A comet running round the ring.
+    Running,
 }
+
+pub const MODES: [&str; 7] = ["solid", "pulse", "eq", "wave", "rainbow", "breathe", "running"];
 
 /// «Подсветка» from the settings.
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +88,10 @@ pub struct Light {
     /// Equaliser: bass, middle, treble.
     pub bands: [Rgb; 3],
     pub bright: f32,
+    /// Animation speed, 1.0 = normal.
+    pub speed: f32,
+    /// How strongly the light follows the music, 1.0 = normal.
+    pub intensity: f32,
 }
 
 impl Light {
@@ -86,6 +100,10 @@ impl Light {
             mode: match s.light_mode.as_str() {
                 "pulse" => Mode::Pulse,
                 "eq" => Mode::Eq,
+                "wave" => Mode::Wave,
+                "rainbow" => Mode::Rainbow,
+                "breathe" => Mode::Breathe,
+                "running" => Mode::Running,
                 _ => Mode::Solid,
             },
             quiet: led_colour(&s.light_color).unwrap_or(ORANGE),
@@ -96,14 +114,21 @@ impl Light {
                 led_colour(&s.light_high).unwrap_or((255, 190, 18)),
             ],
             bright: (s.light_bright.clamp(10, 100) as f32) / 100.0,
+            speed: f32::from(s.light_speed.clamp(25, 300)) / 100.0,
+            intensity: f32::from(s.light_intensity.clamp(30, 200)) / 100.0,
         }
     }
 }
 
 /// One frame of the music light: a colour per zone. `smooth` holds the levels
 /// shown last (fast up, slow down, so the light does not flicker).
-fn music_frame(light: &Light, zones: usize, heard: Option<[f32; 3]>, smooth: &mut [f32; 3]) -> Vec<Rgb> {
-    let target = heard.unwrap_or([0.0; 3]);
+fn music_frame(light: &Light, zones: usize, heard: Option<[f32; 3]>, smooth: &mut [f32; 3], ms: u64) -> Vec<Rgb> {
+    let k = light.intensity;
+    let target = heard.map(|h| h.map(|v| (v * k).min(1.0))).unwrap_or([0.0; 3]);
+    let z = zones.max(1);
+    // Time at the chosen speed, in seconds.
+    let t = ms as f32 / 1000.0 * light.speed;
+    let loudness = |s: &[f32; 3]| (0.6 * s[0] + 0.3 * s[1] + 0.1 * s[2]).min(1.0);
     for i in 0..3 {
         smooth[i] = if target[i] > smooth[i] { target[i] } else { smooth[i] * 0.82 + target[i] * 0.18 };
     }
@@ -125,6 +150,34 @@ fn music_frame(light: &Light, zones: usize, heard: Option<[f32; 3]>, smooth: &mu
                 scale(light.bands[band], light.bright * (0.1 + 0.9 * level))
             })
             .collect(),
+        Mode::Wave => {
+            let lift = 0.55 + 0.45 * loudness(smooth);
+            (0..z)
+                .map(|i| {
+                    let phase = (i as f32 / z as f32 - t * 0.35) * std::f32::consts::TAU;
+                    let m = 0.5 + 0.5 * phase.sin();
+                    scale(mix(light.quiet, light.loud, m), light.bright * lift * (0.35 + 0.65 * m))
+                })
+                .collect()
+        }
+        Mode::Rainbow => {
+            let lift = 0.5 + 0.5 * loudness(smooth);
+            (0..z).map(|i| scale(hue(i as f32 / z as f32 + t * 0.12), light.bright * lift)).collect()
+        }
+        Mode::Breathe => {
+            let b = 0.5 + 0.5 * (t * std::f32::consts::TAU / 4.0).cos();
+            vec![scale(light.quiet, light.bright * (0.12 + 0.88 * b)); z]
+        }
+        Mode::Running => {
+            let head = (t * 1.6 * z as f32) % z as f32;
+            (0..z)
+                .map(|i| {
+                    let behind = (head - i as f32).rem_euclid(z as f32);
+                    let level = if behind < 1.0 { 1.0 } else { (1.0 - (behind - 1.0) / 2.5).max(0.05) };
+                    scale(mix(light.quiet, light.loud, level), light.bright * level)
+                })
+                .collect()
+        }
     }
 }
 
@@ -699,7 +752,7 @@ pub fn run(shared: Arc<Shared>) {
                 // Breathing: the speaker is working on it.
                 Some(vec![scale(light.quiet, light.bright * breath(clock)); zones])
             } else if music {
-                Some(music_frame(&light, zones, crate::vis::now(), &mut smooth))
+                Some(music_frame(&light, zones, crate::vis::now(), &mut smooth, clock))
             } else if track.as_ref().is_some_and(|f| f.paused.load(Ordering::Acquire)) {
                 // Paused: dim, so it is clear SoundCloud is still there.
                 Some(vec![scale(light.quiet, light.bright * PAUSED); zones])
@@ -750,6 +803,29 @@ mod tests {
     }
 
     #[test]
+    fn new_effects_move_and_follow_the_music() {
+        let base = Light { mode: Mode::Wave, quiet: (255, 0, 0), loud: (0, 0, 255), bands: [(0, 0, 0); 3], bright: 1.0, speed: 1.0, intensity: 1.0 };
+        for mode in [Mode::Wave, Mode::Rainbow, Mode::Breathe, Mode::Running] {
+            let l = Light { mode, ..base };
+            let a = music_frame(&l, 6, None, &mut [0.0; 3], 0);
+            let b = music_frame(&l, 6, None, &mut [0.0; 3], 700);
+            assert_eq!(a.len(), 6);
+            assert_ne!(a, b, "{mode:?} moves");
+            // Faster speed: the same picture sooner.
+            let fast = Light { speed: 2.0, ..l };
+            assert_eq!(music_frame(&fast, 6, None, &mut [0.0; 3], 350), b, "{mode:?} speed");
+        }
+        // Wave and rainbow get brighter with the music.
+        let sum = |f: Vec<Rgb>| f.iter().map(|c| c.0 as u32 + c.1 as u32 + c.2 as u32).sum::<u32>();
+        let r = Light { mode: Mode::Rainbow, ..base };
+        assert!(sum(music_frame(&r, 6, Some([1.0; 3]), &mut [0.0; 3], 0)) > sum(music_frame(&r, 6, None, &mut [0.0; 3], 0)));
+        // Intensity: a weak signal counts more.
+        let weak = Light { mode: Mode::Pulse, intensity: 2.0, ..base };
+        let normal = Light { mode: Mode::Pulse, ..base };
+        assert!(sum(music_frame(&weak, 3, Some([0.3; 3]), &mut [0.0; 3], 0)) > sum(music_frame(&normal, 3, Some([0.3; 3]), &mut [0.0; 3], 0)));
+    }
+
+    #[test]
     fn install_animations_per_profile() {
         let c = (200, 100, 0);
         // Lite (3 zones): one zone leads, the others are dim.
@@ -796,20 +872,22 @@ mod tests {
             loud: (0, 0, 255),
             bands: [(0, 0, 255), (0, 255, 0), (255, 0, 0)],
             bright: 1.0,
+            speed: 1.0,
+            intensity: 1.0,
         };
         let mut smooth = [0.0; 3];
-        let f = music_frame(&light, 3, Some([1.0, 0.0, 0.0]), &mut smooth);
+        let f = music_frame(&light, 3, Some([1.0, 0.0, 0.0]), &mut smooth, 0);
         assert_eq!(f[0], (0, 0, 255), "loud bass: full bass colour");
         assert!(f[2].0 < 40 && f[2].1 == 0 && f[2].2 == 0, "quiet treble: dim treble colour {:?}", f[2]);
-        let f6 = music_frame(&light, 6, Some([1.0, 0.0, 0.0]), &mut [0.0; 3]);
+        let f6 = music_frame(&light, 6, Some([1.0, 0.0, 0.0]), &mut [0.0; 3], 0);
         assert_eq!(f6[0], f6[5]);
         // Falls slowly, not at once.
-        let after = music_frame(&light, 3, Some([0.0; 3]), &mut smooth);
+        let after = music_frame(&light, 3, Some([0.0; 3]), &mut smooth, 0);
         assert!(after[0].2 > 150, "{:?}", after[0]);
         let pulse = Light { mode: Mode::Pulse, ..light };
-        assert_eq!(music_frame(&pulse, 3, Some([1.0; 3]), &mut [0.0; 3])[0], (0, 0, 255), "pulse: loud colour");
+        assert_eq!(music_frame(&pulse, 3, Some([1.0; 3]), &mut [0.0; 3], 0)[0], (0, 0, 255), "pulse: loud colour");
         let solid = Light { mode: Mode::Solid, bright: 0.5, ..light };
-        assert_eq!(music_frame(&solid, 3, None, &mut [0.0; 3]), vec![(128, 0, 0); 3]);
+        assert_eq!(music_frame(&solid, 3, None, &mut [0.0; 3], 0), vec![(128, 0, 0); 3]);
     }
 
     #[test]

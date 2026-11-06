@@ -82,6 +82,11 @@ pub struct Settings {
     pub light_color2: String,
     #[serde(default = "light_bright")]
     pub light_bright: u8,
+    /// Animation speed and how strongly the light follows the music, %.
+    #[serde(default = "hundred")]
+    pub light_speed: u16,
+    #[serde(default = "hundred")]
+    pub light_intensity: u16,
     /// Equaliser colours: bass, middle, treble.
     #[serde(default = "light_bass")]
     pub light_bass: String,
@@ -209,8 +214,8 @@ fn speaker() -> String {
     "speaker".into()
 }
 
-fn hundred() -> u8 {
-    100
+fn hundred<T: From<u8>>() -> T {
+    T::from(100)
 }
 fn ten() -> u8 {
     10
@@ -263,6 +268,8 @@ impl Default for Settings {
             light_color: light_color(),
             light_color2: light_color2(),
             light_bright: light_bright(),
+            light_speed: 100,
+            light_intensity: 100,
             light_bass: light_bass(),
             light_mid: light_mid(),
             light_high: light_high(),

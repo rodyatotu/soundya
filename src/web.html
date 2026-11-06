@@ -345,6 +345,23 @@
   .ambi-ring i:nth-child(1) { --n: 0; } .ambi-ring i:nth-child(2) { --n: 1; } .ambi-ring i:nth-child(3) { --n: 2; }
   .ambi-ring i:nth-child(4) { --n: 3; } .ambi-ring i:nth-child(5) { --n: 4; } .ambi-ring i:nth-child(6) { --n: 5; }
   .ambi-ring[data-mode=pulse] i { animation: ambipulse 1.1s ease-in-out infinite; }
+  #lightmode { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  #lightmode button { font-size: 13px; padding: 9px 4px; }
+  .ambi-ring[data-mode=rainbow] { background: conic-gradient(#ff2a2a, #ffd22a, #2aff6a, #2ad4ff, #7b3bff, #ff2a9a, #ff2a2a);
+    -webkit-mask: radial-gradient(circle, transparent 52%, #000 53%); mask: radial-gradient(circle, transparent 52%, #000 53%);
+    animation: ambispin calc(8s * var(--spd, 1)) linear infinite; }
+  .ambi-ring[data-mode=rainbow] i { display: none; }
+  .ambi-ring[data-mode=wave] { background: conic-gradient(var(--c1), var(--c2), var(--c1), var(--c2), var(--c1));
+    -webkit-mask: radial-gradient(circle, transparent 52%, #000 53%); mask: radial-gradient(circle, transparent 52%, #000 53%);
+    animation: ambispin calc(3s * var(--spd, 1)) linear infinite; }
+  .ambi-ring[data-mode=wave] i { display: none; }
+  .ambi-ring[data-mode=breathe] i { animation: ambibreathe calc(4s * var(--spd, 1)) ease-in-out infinite; }
+  .ambi-ring[data-mode=running] { background: conic-gradient(from 0deg, transparent 0 230deg, var(--c1) 330deg, var(--c2) 360deg);
+    -webkit-mask: radial-gradient(circle, transparent 52%, #000 53%); mask: radial-gradient(circle, transparent 52%, #000 53%);
+    animation: ambispin calc(1.2s * var(--spd, 1)) linear infinite; }
+  .ambi-ring[data-mode=running] i { display: none; }
+  @keyframes ambispin { to { transform: rotate(360deg); } }
+  @keyframes ambibreathe { 0%, 100% { opacity: .15; } 50% { opacity: var(--b); } }
   .ambi-ring[data-mode=eq] i { animation: ambieq .9s ease-in-out infinite alternate; }
   .ambi-ring[data-mode=eq] i:nth-child(2n) { animation-duration: .6s; } .ambi-ring[data-mode=eq] i:nth-child(3n) { animation-duration: .75s; }
   .ambi-ring.off i { opacity: .08; animation: none; filter: none; }
@@ -353,7 +370,7 @@
   .ambi-ring i:nth-child(1), .ambi-ring i:nth-child(6) { --zc: var(--z0); }
   .ambi-ring i:nth-child(2), .ambi-ring i:nth-child(5) { --zc: var(--z1); }
   .ambi-ring i:nth-child(3), .ambi-ring i:nth-child(4) { --zc: var(--z2); }
-  .colors[hidden] { display: none; }
+  .colors[hidden], .colors.three[hidden] { display: none !important; }
   .colors.three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   .colors.three label { padding: 8px; gap: 6px; font-size: 13px; min-width: 0; }
   .colors.three input[type=color] { width: 28px; height: 28px; flex: none; }
@@ -898,6 +915,10 @@
       <button data-mode="solid" role="radio">Ровный</button>
       <button data-mode="pulse" role="radio">Пульс</button>
       <button data-mode="eq" role="radio">Эквалайзер</button>
+      <button data-mode="wave" role="radio">Волна</button>
+      <button data-mode="rainbow" role="radio">Радуга</button>
+      <button data-mode="breathe" role="radio">Дыхание</button>
+      <button data-mode="running" role="radio">Бегущий огонь</button>
     </div>
     <p class="hint" id="lightmodehint"></p>
     <div class="field">Палитра</div>
@@ -911,6 +932,15 @@
       <label><input type="color" id="lightmid" oninput="lightPreview()" onchange="saveLight()"><span>Середина</span></label>
       <label><input type="color" id="lighthigh" oninput="lightPreview()" onchange="saveLight()"><span>Верха</span></label>
     </div>
+    <label class="field">Скорость <b id="lightspeedv"></b>
+      <input type="range" id="lightspeed" min="25" max="300" step="25" class="range"
+        oninput="$('lightspeedv').textContent = '×' + (this.value / 100); lightPreview()" onchange="saveLight()">
+    </label>
+    <label class="field">Реакция на музыку <b id="lightintv"></b>
+      <input type="range" id="lightint" min="30" max="200" step="10" class="range"
+        oninput="$('lightintv').textContent = this.value + '%'" onchange="saveLight()">
+    </label>
+    <p class="hint">Пока Алиса слушает и говорит, кольцо показывает её анимацию — soundya его не перебивает.</p>
     <label class="field">Яркость <b id="lightbval"></b>
       <input type="range" id="lightbright" min="10" max="100" step="5" class="range"
         oninput="$('lightbval').textContent = this.value + '%'; lightPreview()" onchange="saveLight()">
@@ -1542,6 +1572,10 @@ const LIGHT_HINTS = {
   solid: 'Ровный цвет «Тихо», пока играет музыка.',
   pulse: 'Всё кольцо дышит в такт: громче — ярче и ближе к цвету «Громко».',
   eq: 'Бас, середина и верха — на разных частях кольца, каждая полоса своим цветом.',
+  wave: 'Волна из двух цветов бежит по кольцу и становится ярче на громких местах.',
+  rainbow: 'Радуга медленно вращается, громкая музыка делает её ярче.',
+  breathe: 'Кольцо спокойно дышит цветом «Тихо».',
+  running: 'Огонёк с хвостом бежит по кругу.',
 };
 let lightMode = 'solid';
 function renderLight(s) {
@@ -1553,6 +1587,8 @@ function renderLight(s) {
   $('lightmid').value = s.light_mid || '#ff9a00';
   $('lighthigh').value = s.light_high || '#ffe14d';
   $('lightbval').textContent = $('lightbright').value + '%';
+  $('lightspeed').value = s.light_speed || 100; $('lightspeedv').textContent = '×' + ($('lightspeed').value / 100);
+  $('lightint').value = s.light_intensity || 100; $('lightintv').textContent = $('lightint').value + '%';
   if (!$('lightpresets').children.length) {
     for (const [name, a, b, lo, mi, hi] of LIGHT_PRESETS) {
       const p = document.createElement('button');
@@ -1581,6 +1617,7 @@ function lightPreview() {
   ring.style.setProperty('--c1', $('lightc1').value);
   ring.style.setProperty('--c2', $('lightc2').value);
   ring.style.setProperty('--b', $('lightbright').value / 100);
+  ring.style.setProperty('--spd', 100 / $('lightspeed').value);
   ring.dataset.mode = lightMode;
   ring.style.setProperty('--z0', $('lightbass').value);
   ring.style.setProperty('--z1', $('lightmid').value);
@@ -2449,6 +2486,7 @@ function settingsBody(extra) {
   return JSON.stringify(Object.assign({
     proxy: $('proxy').value, proxy_on: $('proxyon').checked, bypass_on: $('bypasson').checked, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
     light_mode: lightMode, light_color: $('lightc1').value, light_color2: $('lightc2').value, light_bright: Number($('lightbright').value),
+    light_speed: Number($('lightspeed').value), light_intensity: Number($('lightint').value),
     light_bass: $('lightbass').value, light_mid: $('lightmid').value, light_high: $('lighthigh').value,
     pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value,
     pc_contacts: readContacts(),

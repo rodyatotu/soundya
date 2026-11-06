@@ -385,6 +385,8 @@ impl Controller {
         });
         settings["eq_on"] = self.settings.eq_on.into();
         settings["led_order"] = self.settings.led_order.clone().into();
+        settings["light_speed"] = self.settings.light_speed.into();
+        settings["light_intensity"] = self.settings.light_intensity.into();
         settings["onboarded"] = self.settings.onboarded.into();
         settings["pin_on"] = (!self.settings.panel_pin.is_empty()).into();
         settings["alice_voice"] = self.settings.alice_voice.into();
@@ -580,7 +582,7 @@ impl Controller {
     }
 
     fn apply_settings(&mut self, mut new: Settings) -> String {
-        if !["solid", "pulse", "eq"].contains(&new.light_mode.as_str()) {
+        if !led::MODES.contains(&new.light_mode.as_str()) {
             new.light_mode = "solid".into();
         }
         for c in [&mut new.light_color, &mut new.light_color2, &mut new.light_bass, &mut new.light_mid, &mut new.light_high] {
@@ -590,6 +592,8 @@ impl Controller {
             *c = c.trim().to_lowercase();
         }
         new.light_bright = new.light_bright.clamp(10, 100);
+        new.light_speed = new.light_speed.clamp(25, 300);
+        new.light_intensity = new.light_intensity.clamp(30, 200);
         new.sync_music(&self.settings);
         // Only «pin set/off» changes the PIN, never the settings form.
         new.panel_pin = self.settings.panel_pin.clone();
