@@ -68,7 +68,8 @@ pub enum Cmd {
     BypassManual(String),
     Control(String, Sender<String>),
     Ended(u64, Outcome),
-    Settings(Settings, Sender<String>),
+    /// A settings change from the page: only the fields it sends (merged into the current ones).
+    Settings(serde_json::Value, Sender<String>),
     TestProxy(String, Sender<String>),
     /// Search results from a background search, kept for "pick".
     Results(Vec<Track>),
@@ -1613,8 +1614,11 @@ impl Controller {
                 Cmd::Ended(..) => {}
                 Cmd::Loaded { what, result, reply } => self.on_loaded(what, result, reply),
                 Cmd::Related(token, result) => self.on_related(token, result),
-                Cmd::Settings(s, reply) => {
-                    let r = self.apply_settings(s);
+                Cmd::Settings(patch, reply) => {
+                    let r = match self.settings.merged(&patch) {
+                        Ok(s) => self.apply_settings(s),
+                        Err(e) => format!("error: {e}"),
+                    };
                     let _ = reply.send(r);
                 }
                 Cmd::Results(tracks) => self.results = tracks,

@@ -338,7 +338,7 @@ mod mini1 {
     const REG_UPDATE: u8 = 0x25;
     const REG_MODE: u8 = 0x26;
     const REG_FREQ: u8 = 0x4b;
-    const I2C_RDWR: u32 = 0x0707;
+    const I2C_RDWR: std::os::raw::c_ulong = 0x0707;
 
     #[repr(C)]
     struct Message {
@@ -355,7 +355,7 @@ mod mini1 {
     }
 
     extern "C" {
-        fn ioctl(fd: i32, request: u32, ...) -> i32;
+        fn ioctl(fd: i32, request: std::os::raw::c_ulong, ...) -> i32;
     }
 
     pub struct Chip(File);

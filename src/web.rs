@@ -102,8 +102,9 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
             "text/plain; charset=utf-8",
             ask(tx, |r| Cmd::Control(body.trim().to_owned(), r), 240),
         ),
-        ("POST", "/api/settings") => match serde_json::from_str::<Settings>(&body) {
-            Ok(s) => ("200 OK", "text/plain; charset=utf-8", ask(tx, |r| Cmd::Settings(s, r), 15)),
+        ("POST", "/api/settings") => match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(v) if v.is_object() => ("200 OK", "text/plain; charset=utf-8", ask(tx, |r| Cmd::Settings(v, r), 15)),
+            Ok(_) => ("400 Bad Request", "text/plain; charset=utf-8", "error: ожидается объект JSON".to_owned()),
             Err(e) => ("400 Bad Request", "text/plain; charset=utf-8", format!("error: {e}")),
         },
         ("POST", "/api/feedback") => {
