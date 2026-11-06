@@ -61,6 +61,40 @@ pub enum Intent {
     Pc(PcAction),
     /// A command for the Android TV / projector (see tv.rs).
     Tv(TvAction),
+    /// Smart Ducking by voice (ducking.rs).
+    Duck(DuckCmd),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuckCmd {
+    /// «Приглуши звук»: soundya's music down until «верни громкость».
+    Down,
+    /// «Верни громкость»: ends manual and automatic ducking now.
+    Restore,
+    /// «Включи / отключи автоматическое приглушение».
+    Auto(bool),
+}
+
+/// «Приглуши звук», «верни громкость», «отключи автоматическое приглушение».
+/// «Сделай потише» stays Alice's: that is her volume, soundya does not touch it.
+fn duck_command(text: &str) -> Option<DuckCmd> {
+    let auto = text.contains("автоматическое приглушение") || text.contains("автоприглушение") || text.contains("умное приглушение");
+    if auto {
+        if text.starts_with("включи") || text.starts_with("верни") {
+            return Some(DuckCmd::Auto(true));
+        }
+        if ["выключи", "отключи", "убери", "не "].iter().any(|v| text.starts_with(v)) {
+            return Some(DuckCmd::Auto(false));
+        }
+        return None;
+    }
+    match text {
+        "приглуши" | "приглуши звук" | "приглуши музыку" | "притуши музыку" | "притуши звук" => Some(DuckCmd::Down),
+        "верни громкость" | "верни звук" | "верни громкость музыки" | "сними приглушение" | "убери приглушение" => {
+            Some(DuckCmd::Restore)
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -604,6 +638,9 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
     // The TV first: «перемотай вперёд на проекторе», «открой ютуб на проекторе».
     if let Some(action) = tv(&normalize(text)) {
         return Some(Intent::Tv(action));
+    }
+    if let Some(d) = duck_command(&normalize(text)) {
+        return Some(Intent::Duck(d));
     }
     if let Some(ms) = seek_command(&normalize(text)) {
         return Some(Intent::Seek(ms));
@@ -1204,6 +1241,10 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         // Yandex Music is the default service: there it is hers unless
         // SoundCloud has something to continue.
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
+        // «Приглуши/верни» only while our music plays (else it is about Alice's);
+        // switching the automatic mode is always ours.
+        Intent::Duck(DuckCmd::Auto(_)) => true,
+        Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
         Intent::Pc(_) => w.pc,
         Intent::Tv(_) => w.tv,
@@ -1499,9 +1540,22 @@ mod tests {
         assert!(owns(&Intent::Next, &playing) && owns(&Intent::Pause, &playing));
         assert!(!owns(&Intent::Next, &yandex));
         assert!(!owns(&Intent::Pc(PcAction::Wake), &idle));
+        assert!(owns(&Intent::Duck(DuckCmd::Down), &playing));
+        assert!(!owns(&Intent::Duck(DuckCmd::Down), &under_alice));
+        assert!(owns(&Intent::Duck(DuckCmd::Auto(false)), &idle));
         assert_eq!(source(&under_alice), "alice");
         assert_eq!(source(&playing), "soundcloud");
         assert_eq!(source(&Who { airplay: true, ..playing }), "airplay");
+    }
+
+    #[test]
+    fn duck_phrases() {
+        assert_eq!(intent("Алиса, приглуши звук", false), Some(Intent::Duck(DuckCmd::Down)));
+        assert_eq!(intent("верни громкость", true), Some(Intent::Duck(DuckCmd::Restore)));
+        assert_eq!(intent("отключи автоматическое приглушение", false), Some(Intent::Duck(DuckCmd::Auto(false))));
+        assert_eq!(intent("включи автоматическое приглушение", false), Some(Intent::Duck(DuckCmd::Auto(true))));
+        // Her own volume stays hers.
+        assert_eq!(intent("сделай потише", false), None);
     }
 
     #[test]

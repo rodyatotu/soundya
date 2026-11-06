@@ -9,7 +9,9 @@
 #   { "port": 8766, "key": "...", "apps": { "моя игра": "C:\\Games\\game.exe" },
 #     "sites": { "работа": "https://jira.example.com" },
 #     "contacts": { "мама|маме|маму": "@username", "саша|саше": "+79991234567" },
-#     "telegram_send": true, "vpn": "AmneziaVPN" }
+#     "telegram_send": true, "vpn": "AmneziaVPN",
+#     "duck": true, "speaker": "192.168.0.112", "speaker_port": 8765 }
+# "duck": tell the speaker about calls (an app using the microphone) for Smart Ducking.
 # "apps" adds your own names: spoken name -> program name, shortcut or .exe path.
 
 $ErrorActionPreference = 'Stop'
@@ -709,6 +711,60 @@ function Save-Status {
     try { [IO.File]::WriteAllText($StatusFile, ($Status | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false)) } catch {}
 }
 Save-Status
+
+# Smart Ducking (soundya 0.5.00): tell the speaker when an app starts or stops
+# using the microphone — a call in Telegram, Zoom, Discord, Teams… — so it can
+# turn its music down. Windows itself keeps this in the registry (the same data
+# as the microphone icon in the taskbar); nothing is listened to or recorded,
+# and a video in the browser (no microphone) is not a call. Off: "duck": false.
+if ($Config.duck -ne $false) {
+    $DuckScript = {
+        param($Dir, $Speaker, $SpeakerPort, $LogFile)
+        $root = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone'
+        function DuckLog($t) { try { Add-Content -Path $LogFile -Value ("{0:yyyy-MM-dd HH:mm:ss} duck: {1}" -f (Get-Date), $t) -Encoding UTF8 } catch {} }
+        function MicApps {
+            $apps = @{}
+            foreach ($base in @("$root\NonPackaged", $root)) {
+                foreach ($k in @(Get-ChildItem $base -ErrorAction SilentlyContinue)) {
+                    if ($k.PSChildName -eq 'NonPackaged') { continue }
+                    $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+                    if ($p -and $p.LastUsedTimeStart -and $p.LastUsedTimeStop -eq 0) {
+                        $name = (($k.PSChildName -split '#')[-1] -replace '\.exe$', '') -replace '_[a-z0-9]{13}$', ''
+                        $apps[$name] = $true
+                    }
+                }
+            }
+            $apps
+        }
+        function Send([string]$state, [string]$app) {
+            $to = $Speaker
+            if (-not $to) { try { $to = (Get-Content (Join-Path $Dir 'status.json') -Raw -Encoding UTF8 | ConvertFrom-Json).speaker } catch {} }
+            if (-not $to) { return $false }
+            $body = @{ source = 'pc'; kind = 'call'; id = "pc:$app"; state = $state; app = $app } | ConvertTo-Json -Compress
+            try {
+                Invoke-RestMethod -Uri "http://${to}:$SpeakerPort/api/duck" -Method Post -TimeoutSec 3 `
+                    -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) | Out-Null
+                DuckLog "$state $app"
+                return $true
+            } catch { DuckLog "speaker ${to}: $($_.Exception.Message)"; return $false }
+        }
+        $was = @{}
+        while ($true) {
+            try {
+                $now = MicApps
+                foreach ($a in @($now.Keys)) { if (-not $was.ContainsKey($a)) { if (-not (Send 'start' $a)) { $now.Remove($a) } } }
+                foreach ($a in @($was.Keys)) { if (-not $now.ContainsKey($a)) { if (-not (Send 'end' $a)) { $now[$a] = $true } } }
+                $was = $now
+            } catch { DuckLog "error: $_" }
+            Start-Sleep -Seconds 2
+        }
+    }
+    $SpeakerPort = if ($Config.speaker_port) { [int]$Config.speaker_port } else { 8765 }
+    $DuckPs = [powershell]::Create()
+    [void]$DuckPs.AddScript($DuckScript).AddArgument($Dir).AddArgument([string]$Config.speaker).AddArgument($SpeakerPort).AddArgument($LogFile)
+    [void]$DuckPs.BeginInvoke()
+    Log 'ducking: watching the microphone for calls'
+}
 
 $listener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Any), $Port
 try { $listener.Start() } catch { Log "cannot listen on port ${Port}: $_ (already running?)"; exit 1 }

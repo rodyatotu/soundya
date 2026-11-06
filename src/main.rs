@@ -9,6 +9,7 @@ mod buttons;
 mod bypass;
 mod clock;
 mod dns;
+mod ducking;
 mod eq;
 mod fsx;
 mod hello;
@@ -380,6 +381,11 @@ impl Controller {
         settings["eq_on"] = self.settings.eq_on.into();
         settings["led_order"] = self.settings.led_order.clone().into();
         settings["onboarded"] = self.settings.onboarded.into();
+        settings["duck_mode"] = self.settings.duck_mode.clone().into();
+        settings["duck_call_level"] = self.settings.duck_call_level.into();
+        settings["duck_notify_level"] = self.settings.duck_notify_level.into();
+        settings["duck_notify_secs"] = self.settings.duck_notify_secs.into();
+        settings["duck_exclude"] = self.settings.duck_exclude.clone().into();
         settings["voice_hello"] = self.settings.voice_hello.into();
         settings["report_logs"] = self.settings.report_logs.into();
         settings["music_default"] = self.settings.music_default.clone().into();
@@ -411,6 +417,7 @@ impl Controller {
             "bypass_busy": self.shared.bypass_busy.load(Ordering::Acquire),
             "volume": volume::level(),
             "led": led::info(),
+            "ducking": ducking::json(),
             "source": alice::source_of(&self.shared),
             "zapret_presets": zapret::PRESETS.iter().enumerate().map(|(i, (name, _))| { let id = zapret::id_of(i); let e = zapret::engine(&id, "").to_string(); [id, (*name).to_owned(), e] }).collect::<Vec<_>>(),
         });
@@ -559,6 +566,14 @@ impl Controller {
         }
         new.light_bright = new.light_bright.clamp(10, 100);
         new.sync_music(&self.settings);
+        if !["smart", "calls", "notify", "manual", "off"].contains(&new.duck_mode.as_str()) {
+            return "error: режим приглушения — smart, calls, notify, manual или off".into();
+        }
+        new.duck_call_level = new.duck_call_level.min(100);
+        new.duck_notify_level = new.duck_notify_level.min(100);
+        new.duck_notify_secs = new.duck_notify_secs.clamp(1, 120);
+        new.duck_exclude = new.duck_exclude.iter().map(|a| a.trim().to_owned()).filter(|a| !a.is_empty()).take(30).collect();
+        ducking::configure(ducking::Config::from_settings(&new));
         new.led_order = new.led_order.trim().to_lowercase();
         if !led::set_order(&new.led_order) {
             return "error: порядок цветов — rgb, grb, brg, bgr, rbg или gbr".into();
@@ -1163,6 +1178,29 @@ impl Controller {
                 }
                 None => respond(reply, "error: сейчас ничего не играет", None),
             },
+            Intent::Duck(cmd) => {
+                let text = match cmd {
+                    alice::DuckCmd::Down => {
+                        ducking::manual(Some(f32::from(self.settings.duck_call_level.min(100)) / 100.0));
+                        "Приглушила"
+                    }
+                    alice::DuckCmd::Restore => {
+                        ducking::manual(None);
+                        "Вернула громкость"
+                    }
+                    alice::DuckCmd::Auto(on) => {
+                        let mut s = self.settings.clone();
+                        s.duck_mode = if on { "smart" } else { "off" }.into();
+                        let r = self.apply_settings(s);
+                        if r.starts_with("error") {
+                            respond(reply, &r, None);
+                            return;
+                        }
+                        if on { "Автоматическое приглушение включено" } else { "Автоматическое приглушение выключено" }
+                    }
+                };
+                respond(reply, &format!("OK: {text}"), Some(text.into()));
+            }
             Intent::WhatPlaying if self.shared.airplay.is_active() => {
                 let text = "Сейчас играет музыка с телефона по AirPlay".to_owned();
                 respond(reply, &text, Some(text.clone()));
@@ -1428,6 +1466,20 @@ impl Controller {
                 });
             }
             "netcheck" => self.check_net(Some(reply)),
+            // «duck down | restore | auto on|off» — the page's buttons, same as the voice commands.
+            "duck" => {
+                let cmd = match arg.as_str() {
+                    "down" => Some(alice::DuckCmd::Down),
+                    "restore" | "up" => Some(alice::DuckCmd::Restore),
+                    "auto on" => Some(alice::DuckCmd::Auto(true)),
+                    "auto off" => Some(alice::DuckCmd::Auto(false)),
+                    _ => None,
+                };
+                match cmd {
+                    Some(c) => self.intent(Intent::Duck(c), Some(reply)),
+                    None => send_to(&reply, "usage: duck down | restore | auto on | auto off".into()),
+                }
+            }
             // «ledtest 0|1|2»: the ring test on the page (one raw channel file).
             "ledtest" => send_to(&reply, match arg.parse::<usize>() {
                 Ok(c) => led::test(c).unwrap_or_else(|e| format!("error: {e}")),
@@ -2095,6 +2147,9 @@ fn daemon() {
     luna::run(tx.clone(), shared.clone());
     // zapret (nfqws) with the saved strategy, before anything talks to SoundCloud.
     zapret::restore(&dir, settings.active_bypass(), &settings.zapret_args);
+    // Smart Ducking: calls and notifications from devices lower soundya's music.
+    ducking::configure(ducking::Config::from_settings(&settings));
+    ducking::run(shared.clone());
     // Bug reports queued on flash: delivered when the server answers.
     report::run(dir.clone(), shared.clone());
     // Looks for a newer soundya on GitHub; the page offers to install it.

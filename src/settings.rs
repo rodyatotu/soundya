@@ -118,6 +118,20 @@ pub struct Settings {
     /// (Station Lite, Mini 2), set from the ring test on the page.
     #[serde(default = "led_order")]
     pub led_order: String,
+    /// Smart Ducking (ducking.rs): "smart", "calls", "notify", "manual", "off".
+    #[serde(default = "duck_mode")]
+    pub duck_mode: String,
+    /// Share of the music left, %: during a call / a notification.
+    #[serde(default = "duck_call_level")]
+    pub duck_call_level: u8,
+    #[serde(default = "duck_notify_level")]
+    pub duck_notify_level: u8,
+    /// How long a notification keeps the music down, s.
+    #[serde(default = "duck_notify_secs")]
+    pub duck_notify_secs: u16,
+    /// Apps whose events are ignored.
+    #[serde(default)]
+    pub duck_exclude: Vec<String>,
     /// The panel's first-run wizard was gone through (or skipped).
     #[serde(default)]
     pub onboarded: bool,
@@ -185,6 +199,19 @@ fn speaker() -> String {
     "speaker".into()
 }
 
+fn duck_mode() -> String {
+    "smart".into()
+}
+fn duck_call_level() -> u8 {
+    15
+}
+fn duck_notify_level() -> u8 {
+    40
+}
+fn duck_notify_secs() -> u16 {
+    6
+}
+
 fn music_default() -> String {
     "soundcloud".into()
 }
@@ -231,6 +258,11 @@ impl Default for Settings {
             music_default: music_default(),
             led_order: led_order(),
             report_logs: true,
+            duck_mode: duck_mode(),
+            duck_call_level: duck_call_level(),
+            duck_notify_level: duck_notify_level(),
+            duck_notify_secs: duck_notify_secs(),
+            duck_exclude: Vec::new(),
             onboarded: false,
             voice_hello: true,
             extra: serde_json::Map::new(),

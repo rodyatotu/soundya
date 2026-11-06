@@ -208,6 +208,14 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             Ok(()) => ("200 OK", "application/json", serde_json::json!({"ok": true}).to_string()),
             Err(e) => ("200 OK", "application/json", serde_json::json!({"error": e}).to_string()),
         },
+        // Smart Ducking events from devices (the PC agent, a phone automation…).
+        ("POST", "/api/duck") => match serde_json::from_str::<crate::ducking::Request>(&body) {
+            Ok(req) => match crate::ducking::event(&req) {
+                Ok(v) => ("200 OK", "application/json", v.to_string()),
+                Err(e) => ("400 Bad Request", "application/json", serde_json::json!({"error": e}).to_string()),
+            },
+            Err(e) => ("400 Bad Request", "application/json", serde_json::json!({"error": e.to_string()}).to_string()),
+        },
         ("GET", "/api/community") => (
             "200 OK",
             "application/json",

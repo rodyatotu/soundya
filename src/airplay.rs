@@ -424,7 +424,7 @@ fn session(
                     }
                 }
                 eq.apply(&mut samples, CHANNELS, RATE);
-                gain.apply(&mut samples, CHANNELS, RATE, shared.duck.active());
+                gain.apply(&mut samples, CHANNELS, RATE, shared.duck.level());
                 if let Some(o) = output.as_mut() {
                     let queued = o.queued();
                     let out_rate = rate.out_rate;

@@ -626,6 +626,42 @@
     <div class="msg" id="eqmsg"></div>
     <button class="link bugbtn" onclick="openReport('eq')">Сообщить об ошибке</button>
 
+    <h2 class="section" id="ducksection">Приглушение при звонках и уведомлениях</h2>
+    <p class="hint">Музыка soundya (SoundCloud и AirPlay) становится тише, пока идёт звонок на компьютере или пришло важное
+      уведомление, и возвращается сама. Колонка не слушает комнату и ничего не записывает: о звонке сообщает сам компьютер
+      (программа soundya-pc видит, какое приложение сейчас занимает микрофон). Громкость колонки не меняется — приглушается
+      только музыка, поэтому ваша громкость остаётся вашей. Музыку самой Алисы (Яндекс Музыка) soundya приглушить не может.</p>
+    <div class="seg" id="duckmode" role="radiogroup">
+      <button data-duck="smart" role="radio">Умно</button>
+      <button data-duck="calls" role="radio">Звонки</button>
+      <button data-duck="notify" role="radio">Уведомл.</button>
+      <button data-duck="manual" role="radio">Вручную</button>
+      <button data-duck="off" role="radio">Выкл</button>
+    </div>
+    <p class="hint" id="duckhint"></p>
+    <label class="field">Во время звонка музыка — <b id="duckcallv"></b>
+      <input type="range" id="duckcall" min="0" max="80" step="5" class="range" oninput="$('duckcallv').textContent = this.value + '%'" onchange="saveDuck()">
+    </label>
+    <label class="field">При уведомлении — <b id="ducknotv"></b> на <b id="ducksecv"></b>
+      <input type="range" id="ducknot" min="0" max="90" step="5" class="range" oninput="$('ducknotv').textContent = this.value + '%'" onchange="saveDuck()">
+      <input type="range" id="ducksec" min="2" max="30" step="1" class="range" oninput="$('ducksecv').textContent = this.value + ' с'" onchange="saveDuck()">
+    </label>
+    <label class="field">Не приглушать для приложений (через запятую)
+      <input type="text" id="duckexcl" placeholder="например: YouTube, Spotify" autocomplete="off" onchange="saveDuck()">
+    </label>
+    <p class="hint" id="duckstate"></p>
+    <div class="row">
+      <button onclick="duckCmd('down')">Приглушить сейчас</button>
+      <button onclick="duckCmd('restore')">Вернуть громкость</button>
+    </div>
+    <details><summary class="hint">Для своих устройств и автоматизаций</summary>
+      <p class="hint">Любое устройство в сети может сообщить о событии:<br>
+      <code>POST /api/duck {"source":"phone","kind":"call","state":"start","app":"WhatsApp"}</code>, затем то же с
+      <code>"state":"end"</code>. <code>kind</code>: <code>call</code> или <code>notify</code> (уведомление заканчивается само).
+      Голосом: «приглуши звук», «верни громкость», «отключи/включи автоматическое приглушение».</p></details>
+    <div class="msg" id="duckmsg"></div>
+    <button class="link bugbtn" onclick="openReport('ducking')">Сообщить об ошибке</button>
+
     <h2 class="section">AirPlay</h2>
     <p class="hint">Колонка видна в списке AirPlay на iPhone, iPad и Mac: Пункт управления → значок AirPlay
       (треугольник с кругами) или кнопка AirPlay в музыкальном приложении. Пока играет AirPlay, SoundCloud стоит
@@ -1296,6 +1332,37 @@ function saveLight() {
   }, 250);
 }
 
+// ---- приглушение при звонках ----
+const DUCK_HINT = {
+  smart: 'Звонки и уведомления.', calls: 'Только звонки.', notify: 'Только уведомления.',
+  manual: 'Только по команде: «Алиса, приглуши звук» или кнопкой ниже.', off: 'Ничего не приглушается.',
+};
+let duckModeNow = 'smart';
+function renderDuck(st, d) {
+  duckModeNow = st.duck_mode || 'smart';
+  document.querySelectorAll('#duckmode button').forEach(b => { b.classList.toggle('on', b.dataset.duck === duckModeNow); b.setAttribute('aria-checked', String(b.dataset.duck === duckModeNow)); });
+  $('duckhint').textContent = DUCK_HINT[duckModeNow] || '';
+  $('duckcall').value = st.duck_call_level ?? 15; $('duckcallv').textContent = $('duckcall').value + '%';
+  $('ducknot').value = st.duck_notify_level ?? 40; $('ducknotv').textContent = $('ducknot').value + '%';
+  $('ducksec').value = st.duck_notify_secs ?? 6; $('ducksecv').textContent = $('ducksec').value + ' с';
+  $('duckexcl').value = (st.duck_exclude || []).join(', ');
+}
+function renderDuckState(d) {
+  if (!d) return;
+  const ev = (d.events || []).map(e => (e.kind === 'call' ? 'звонок' : 'уведомление') + (e.app ? ' (' + e.app + ')' : '')).join(', ');
+  $('duckstate').textContent = d.level < 1 ? `Сейчас музыка приглушена до ${Math.round(d.level * 100)}%` + (ev ? ': ' + ev : ' вручную') + '.' : 'Сейчас ничего не приглушено.';
+}
+document.querySelectorAll('#duckmode button').forEach(b => b.onclick = () => { duckModeNow = b.dataset.duck; saveDuck(); });
+async function saveDuck() {
+  const r = await post('/api/settings', JSON.stringify({
+    duck_mode: duckModeNow, duck_call_level: Number($('duckcall').value), duck_notify_level: Number($('ducknot').value),
+    duck_notify_secs: Number($('ducksec').value), duck_exclude: $('duckexcl').value.split(',').map(x => x.trim()).filter(Boolean),
+  }));
+  show($('duckmsg'), r);
+  settingsLoaded = false; refresh();
+}
+async function duckCmd(c) { show($('duckmsg'), await post('/api/cmd', 'duck ' + c)); refresh(); }
+
 // ---- мастер первой настройки ----
 let wizStep = 0;
 const WIZ_STEPS = 4;
@@ -1596,6 +1663,7 @@ async function refresh() {
   $('relogin').hidden = s.login !== 'refused';
   $('loginwarn').hidden = s.login !== 'refused';
   renderNet(s.net);
+  renderDuckState(s.ducking);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
   renderVolume(s.volume);
   // The switch, the line above it and the list always show what the speaker has
@@ -1620,6 +1688,7 @@ async function refresh() {
     $('ring').checked = settings.ring !== false;
     renderLight(settings);
     renderLedOrder(settings.led_order, s.led);
+    renderDuck(settings);
     maybeWizard(settings);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';
