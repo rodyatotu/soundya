@@ -565,6 +565,21 @@ fn names_yandex(text: &str) -> bool {
         .any(|n| t.contains(n))
 }
 
+/// Things only Alice plays: Yandex Music's editorial playlists, podcasts,
+/// audiobooks. `Some(ToAlice)` so a playing SoundCloud steps aside.
+fn yandex_only(text: &str) -> Option<Intent> {
+    let (rest, named) = strip_service(text);
+    if named {
+        return None;
+    }
+    let what = PLAY_VERBS.iter().find_map(|v| rest.strip_prefix(v))?.trim();
+    const OWN: [&str; 9] = [
+        "плейлист дня", "дежавю", "премьер", "тайник", "подкаст", "аудиокниг", "книгу", "радио", "плейлист с алисой",
+    ];
+    OWN.iter().any(|p| what.starts_with(p) || what.starts_with(&format!("мой {p}")) || what.starts_with(&format!("мою {p}")))
+        .then_some(Intent::ToAlice)
+}
+
 /// Smart-home words: «включи свет» is never music.
 const HOME: [&str; 30] = [
     "свет", "освещение", "ламп", "люстр", "торшер", "ночник", "розетк", "телевизор", "тв",
@@ -587,10 +602,16 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
     if let Some(action) = pc(&normalize(text)) {
         return Some(Intent::Pc(action));
     }
-    // «Включи бонобо в яндекс музыке»: Alice's, whatever the mode.
+    // «Включи бонобо в яндекс музыке», «продолжи в яндекс музыке»: Alice's, whatever the mode.
     if names_yandex(&normalize(text)) {
         let n = normalize(text);
-        return PLAY_VERBS.iter().any(|v| n.starts_with(v)).then_some(Intent::ToAlice);
+        let music = PLAY_VERBS.iter().any(|v| n.starts_with(v)) || transport(&n).is_some();
+        return music.then_some(Intent::ToAlice);
+    }
+    // Yandex Music's own playlists, podcasts and books: never SoundCloud's
+    // unless SoundCloud is named («включи плейлист дня», «включи подкаст …»).
+    if let Some(i) = yandex_only(&normalize(text)) {
+        return Some(i);
     }
     let (norm, named) = strip_service(&normalize(text));
     if named
@@ -647,6 +668,8 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
             Some(i @ (Intent::Play(_) | Intent::Playlist(_) | Intent::Album(_) | Intent::Likes | Intent::MyPlaylist(_))) => {
                 Some(Intent::Shuffled(Box::new(i)))
             }
+            // «Включи мои лайки вперемешку» with Yandex Music by default: hers.
+            Some(Intent::ToAlice) => Some(Intent::ToAlice),
             _ => Some(Intent::Shuffle(true)),
         };
     }
@@ -674,14 +697,17 @@ fn intent_core(text: &str, keyword_only: bool) -> Option<Intent> {
         .iter()
         .find_map(|p| text.strip_prefix(p))?
         .trim();
-    // "Лайки" and "мой плейлист" only make sense for SoundCloud: taken even in keyword mode.
-    if matches!(rest, "мои лайки" | "лайки" | "мои лайкнутые треки") {
-        return Some(Intent::Likes);
-    }
-    for p in ["мой плейлист ", "мою подборку ", "мой альбом "] {
-        if let Some(q) = rest.strip_prefix(p) {
-            let q = q.trim().trim_matches('"').trim();
-            return (!q.is_empty()).then(|| Intent::MyPlaylist(q.to_owned()));
+    // With Yandex Music as the default service (keyword mode) likes and own
+    // playlists are hers too — she has both; 0.4.40 took them for SoundCloud.
+    if !keyword_only || named {
+        if matches!(rest, "мои лайки" | "лайки" | "мои лайкнутые треки") {
+            return Some(Intent::Likes);
+        }
+        for p in ["мой плейлист ", "мою подборку ", "мой альбом "] {
+            if let Some(q) = rest.strip_prefix(p) {
+                let q = q.trim().trim_matches('"').trim();
+                return (!q.is_empty()).then(|| Intent::MyPlaylist(q.to_owned()));
+            }
         }
     }
     if keyword_only && !named {
@@ -1075,7 +1101,6 @@ fn read_frames(
                 }
                 continue;
             }
-            let playing = shared.playing.load(std::sync::atomic::Ordering::Acquire);
             // SoundCloud switched off in the settings: only the PC, the TV and
             // messages are ours; all music stays Alice's.
             let music = !matches!(intent, Intent::Pc(_) | Intent::Tv(_));
@@ -1083,30 +1108,7 @@ fn read_frames(
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
                 continue;
             }
-            // Transport commands are ours only while SoundCloud owns the speaker.
-            let ours = match intent {
-                // On pause Alice's own music may be playing: «что играет», «стоп» are about hers.
-                Intent::WhatPlaying => playing || shared.airplay.is_active(),
-                Intent::Pause => playing,
-                Intent::Next | Intent::Previous if shared.keyword_only() => playing,
-                Intent::Play(_)
-                | Intent::Album(_)
-                | Intent::Playlist(_)
-                | Intent::Likes
-                | Intent::MyPlaylist(_)
-                | Intent::Shuffled(_)
-                | Intent::Default
-                | Intent::Recommend => true,
-                // «Продолжи» goes to whoever played last: Alice after her own music,
-                // otherwise SoundCloud — even with an empty queue (after a restart),
-                // where Alice could only answer «нужна подписка».
-                Intent::Resume => !shared.alice_music() || playing,
-                // Only with a PC set up in the settings; otherwise the phrase stays Alice's.
-                Intent::Pc(_) => shared.pc_configured(),
-                Intent::Tv(_) => shared.tv_configured(),
-                Intent::Shuffle(_) | Intent::Repeat(_) => shared.has_queue(),
-                _ => shared.is_active(),
-            };
+            let ours = owns(&intent, &Who::of(shared));
             if !ours {
                 eprintln!("voice: {text:?} -> {intent:?}, left to Alice (SoundCloud is not playing)");
                 continue;
@@ -1120,6 +1122,97 @@ fn read_frames(
             data = Vec::with_capacity(4096);
         }
     }
+}
+
+/// Who has the speaker right now, as far as soundya knows.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Who {
+    /// SoundCloud is playing (not paused).
+    pub playing: bool,
+    /// SoundCloud has a track loaded (playing or paused).
+    pub active: bool,
+    pub has_queue: bool,
+    /// The last music started was Alice's own.
+    pub alice_music: bool,
+    pub airplay: bool,
+    /// SoundCloud only when named (Yandex Music is the default service).
+    pub keyword_only: bool,
+    pub pc: bool,
+    pub tv: bool,
+}
+
+impl Who {
+    fn of(s: &Shared) -> Who {
+        use std::sync::atomic::Ordering::Acquire;
+        Who {
+            playing: s.playing.load(Acquire),
+            active: s.is_active(),
+            has_queue: s.has_queue(),
+            alice_music: s.alice_music(),
+            airplay: s.airplay.is_active(),
+            keyword_only: s.keyword_only(),
+            pc: s.pc_configured(),
+            tv: s.tv_configured(),
+        }
+    }
+
+    /// SoundCloud is the music the user last dealt with: playing, or paused
+    /// with nothing of Alice's started since.
+    fn ours(&self) -> bool {
+        self.playing || (self.active && !self.alice_music)
+    }
+}
+
+/// Is this phrase soundya's (true) or Alice's (false)?
+pub fn owns(intent: &Intent, w: &Who) -> bool {
+    match intent {
+        // On pause Alice's own music may be playing: «что играет», «стоп» are about hers.
+        Intent::WhatPlaying => w.playing || w.airplay,
+        Intent::Pause => w.playing,
+        Intent::Next | Intent::Previous if w.keyword_only => w.playing,
+        Intent::Play(_)
+        | Intent::Album(_)
+        | Intent::Playlist(_)
+        | Intent::Likes
+        | Intent::MyPlaylist(_)
+        | Intent::Shuffled(_)
+        | Intent::Default
+        | Intent::Recommend => true,
+        // «Продолжи» goes to whoever played last: Alice after her own music,
+        // otherwise SoundCloud — even with an empty queue after a restart
+        // (where Alice could only answer «нужна подписка»), but not when
+        // Yandex Music is the default service: there it is hers unless
+        // SoundCloud has something to continue.
+        Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
+        // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
+        Intent::Pc(_) => w.pc,
+        Intent::Tv(_) => w.tv,
+        // A paused SoundCloud track under Alice's music is not what «перемешай»,
+        // «перемотай», «повтори» mean (0.4.40 took them and cut her off).
+        Intent::Shuffle(_) | Intent::Repeat(_) => w.has_queue && (w.playing || !w.alice_music),
+        _ => w.ours(),
+    }
+}
+
+/// Where the music comes from, for the page: "soundcloud", "airplay",
+/// "alice" (her own player; soundya cannot see it, only that she started it
+/// last) or "none".
+pub fn source(w: &Who) -> &'static str {
+    if w.airplay {
+        "airplay"
+    } else if w.playing {
+        "soundcloud"
+    } else if w.alice_music {
+        "alice"
+    } else if w.active {
+        "soundcloud_paused"
+    } else {
+        "none"
+    }
+}
+
+pub fn source_of(s: &Shared) -> &'static str {
+    source(&Who::of(s))
 }
 
 pub fn watch(tx: Sender<Cmd>, shared: std::sync::Arc<Shared>) {
@@ -1286,8 +1379,8 @@ mod tests {
             ("включи случайный порядок", Intent::Shuffle(true)),
             ("алиса, решафл", Intent::Shuffle(true)),
             ("играй по порядку", Intent::Shuffle(false)),
-            ("включи мои лайки вперемешку", Intent::Shuffled(Box::new(Intent::Likes))),
-            ("перемешай мои лайки", Intent::Shuffled(Box::new(Intent::Likes))),
+            ("включи мои лайки вперемешку", Intent::ToAlice),
+            ("перемешай мои лайки", Intent::ToAlice),
             ("поставь на повтор", Intent::Repeat(true)),
             ("включи повтор", Intent::Repeat(true)),
             ("выключи повтор", Intent::Repeat(false)),
@@ -1306,7 +1399,14 @@ mod tests {
         ] {
             assert_eq!(intent(s, true), Some(want), "{s}");
         }
-        assert_eq!(intent("включи мои лайки", true), Some(Intent::Likes));
+        assert_eq!(intent("включи мои лайки вперемешку", false), Some(Intent::Shuffled(Box::new(Intent::Likes))));
+        assert_eq!(intent("перемешай мои лайки", false), Some(Intent::Shuffled(Box::new(Intent::Likes))));
+        // Yandex Music by default: likes and own playlists are hers unless SoundCloud is named.
+        assert_eq!(intent("включи мои лайки", true), Some(Intent::ToAlice));
+        assert_eq!(intent("включи мои лайки в саундклауде", true), Some(Intent::Likes));
+        assert_eq!(intent("включи мой плейлист в дорогу", true), Some(Intent::ToAlice));
+        assert_eq!(intent("включи мой плейлист в дорогу на саундклауде", true), Some(Intent::MyPlaylist("в дорогу".into())));
+        assert_eq!(intent("включи мои лайки", false), Some(Intent::Likes));
         assert_eq!(intent("включи рекомендации в саундклауде", true), Some(Intent::Recommend));
         assert_eq!(intent("включи мою волну", false), Some(Intent::Recommend));
         assert_eq!(intent("включи мою волну", true), None);
@@ -1342,6 +1442,46 @@ mod tests {
         for s in ["включи свет", "поставь таймер на пять минут", "включи блютуз", "какая погода"] {
             assert_eq!(intent(s, false), None, "{s}");
         }
+    }
+
+    #[test]
+    fn yandex_music_requests_stay_hers() {
+        for p in ["включи плейлист дня", "поставь дежавю", "включи подкаст про космос", "включи аудиокнигу",
+                  "продолжи в яндекс музыке", "включи следующий трек в яндекс музыке"] {
+            assert_eq!(intent(p, false), Some(Intent::ToAlice), "{p}");
+        }
+        // Named SoundCloud wins.
+        assert_eq!(intent("включи подкаст в саундклауде", false), Some(Intent::Play("подкаст".into())));
+        assert_eq!(intent("какая погода в яндексе", false), None);
+    }
+
+    #[test]
+    fn who_owns_the_phrase() {
+        let idle = Who::default();
+        let yandex = Who { keyword_only: true, ..idle };
+        // After a restart, nothing of anybody's: «продолжи» starts SoundCloud…
+        assert!(owns(&Intent::Resume, &idle));
+        // …but not when Yandex Music is the default service.
+        assert!(!owns(&Intent::Resume, &yandex));
+        // A paused SoundCloud track with Alice's music started after it.
+        let under_alice = Who { active: true, has_queue: true, alice_music: true, ..idle };
+        for i in [Intent::Seek(30_000), Intent::Shuffle(true), Intent::Repeat(true), Intent::Restart, Intent::Similar, Intent::Pause] {
+            assert!(!owns(&i, &under_alice), "{i:?} belongs to Alice's music");
+        }
+        assert!(!owns(&Intent::Resume, &under_alice));
+        // SoundCloud paused, nothing else since: it is ours.
+        let paused = Who { active: true, has_queue: true, ..idle };
+        for i in [Intent::Seek(30_000), Intent::Shuffle(true), Intent::Resume, Intent::Restart] {
+            assert!(owns(&i, &paused), "{i:?}");
+        }
+        assert!(!owns(&Intent::Pause, &paused), "nothing to pause");
+        let playing = Who { playing: true, active: true, has_queue: true, ..yandex };
+        assert!(owns(&Intent::Next, &playing) && owns(&Intent::Pause, &playing));
+        assert!(!owns(&Intent::Next, &yandex));
+        assert!(!owns(&Intent::Pc(PcAction::Wake), &idle));
+        assert_eq!(source(&under_alice), "alice");
+        assert_eq!(source(&playing), "soundcloud");
+        assert_eq!(source(&Who { airplay: true, ..playing }), "airplay");
     }
 
     #[test]

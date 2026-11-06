@@ -191,6 +191,8 @@
     border-radius: 12px; padding: 10px; box-sizing: border-box; }
   .modal-card.report { max-width: 560px; max-height: 92vh; overflow: auto; }
   .modal-card .field textarea { margin-top: 4px; min-height: 56px; }
+  .ledrow select { flex: 1; }
+  .ledcal summary { cursor: pointer; margin-top: 14px; font-size: 14px; }
   .bugbtn { display: block; margin: 6px 0 0 auto; font-size: 12px; color: var(--muted); }
   #fbpreview pre { max-height: 220px; overflow: auto; font-size: 11px; white-space: pre-wrap; word-break: break-word;
     background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 8px; margin: 4px 0 10px; }
@@ -557,11 +559,14 @@
     <div class="msg" id="featmsg"></div>
 
     <h2 class="section">Колонка</h2>
-    <label class="check">
-      <input type="checkbox" id="keyword">
-      <span>Только по слову «саундклауд»<br>
-        <span class="hint">«Алиса, включи Bonobo в саундклауде». Остальная музыка остаётся Алисе.</span></span>
-    </label>
+    <div class="field">Музыка по умолчанию</div>
+    <div class="seg" id="musicdefault" role="radiogroup">
+      <button data-music="soundcloud" role="radio">SoundCloud</button>
+      <button data-music="yandex" role="radio">Яндекс Музыка</button>
+    </div>
+    <p class="hint" id="musichint"></p>
+    <input type="checkbox" id="keyword" hidden>
+    <button class="link bugbtn" onclick="openReport('yandex_music')">Сообщить об ошибке</button>
     <label class="check">
       <input type="checkbox" id="stats">
       <span>Анонимная статистика<br>
@@ -652,6 +657,19 @@
         oninput="$('lightbval').textContent = this.value + '%'; lightPreview()" onchange="saveLight()">
     </label>
     <div class="msg" id="lightmsg"></div>
+    <details class="ledcal">
+      <summary>Цвета не те? Проверка цветов кольца</summary>
+      <p class="hint">Если кольцо путает цвета (например, оранжевый выглядит красным или зелёным), нажмите кнопки по очереди:
+        каждая на 6 секунд зажигает один канал светодиодов как есть. Отметьте, каким цветом горело кольцо. <span id="ledring"></span></p>
+      <div class="row ledrow"><button onclick="ledTest(0)">Канал 1</button>
+        <select id="ledseen0"><option value="r">красный</option><option value="g">зелёный</option><option value="b">синий</option></select></div>
+      <div class="row ledrow"><button onclick="ledTest(1)">Канал 2</button>
+        <select id="ledseen1"><option value="r">красный</option><option value="g" selected>зелёный</option><option value="b">синий</option></select></div>
+      <div class="row ledrow"><button onclick="ledTest(2)">Канал 3</button>
+        <select id="ledseen2"><option value="r">красный</option><option value="g">зелёный</option><option value="b" selected>синий</option></select></div>
+      <div class="row"><button class="primary" onclick="saveLedOrder()">Сохранить порядок цветов</button></div>
+      <div class="msg" id="ledmsg"></div>
+    </details>
     <button class="link bugbtn" onclick="openReport('ambilight')">Сообщить об ошибке</button>
     </div>
 
@@ -1186,6 +1204,41 @@ function saveLight() {
   }, 250);
 }
 
+// ---- музыка по умолчанию ----
+const MUSIC_HINT = {
+  soundcloud: '«Алиса, включи Bonobo» — SoundCloud. «… в яндекс музыке», плейлист дня, подкасты, радио и книги остаются Алисе.',
+  yandex: '«Алиса, включи Bonobo» — Яндекс Музыка (нужна подписка). SoundCloud — только когда он назван: «включи Bonobo в саундклауде», «включи мои лайки на саундклауде».',
+};
+function renderMusic(m) {
+  document.querySelectorAll('#musicdefault button').forEach(b => {
+    b.classList.toggle('on', b.dataset.music === m); b.setAttribute('aria-checked', String(b.dataset.music === m));
+  });
+  $('musichint').textContent = MUSIC_HINT[m] || '';
+  $('keyword').checked = m === 'yandex';
+}
+document.querySelectorAll('#musicdefault button').forEach(b => b.onclick = async () => {
+  renderMusic(b.dataset.music);
+  show($('spkmsg'), await post('/api/settings', JSON.stringify({ music_default: b.dataset.music })));
+  settingsLoaded = false; refresh();
+});
+
+// ---- проверка цветов кольца ----
+async function ledTest(ch) { show($('ledmsg'), await post('/api/cmd', 'ledtest ' + ch)); }
+function renderLedOrder(order, led) {
+  if (!order || ledOrderShown === order) return;
+  ledOrderShown = order;
+  [...order].forEach((c, i) => { $('ledseen' + i).value = c; });
+  $('ledring').textContent = led && led.ring ? `Найдено: ${led.ring}. Сейчас порядок «${order}».` : '';
+}
+let ledOrderShown = null;
+async function saveLedOrder() {
+  const order = [0, 1, 2].map(i => $('ledseen' + i).value).join('');
+  if (new Set(order).size !== 3) { show($('ledmsg'), 'error: у каждого канала должен быть свой цвет'); return; }
+  const r = await post('/api/settings', JSON.stringify({ led_order: order }));
+  show($('ledmsg'), r.startsWith('error') ? r : 'OK: сохранено. Если цвета стали правильными — сообщите об этом через «Сообщить об ошибке», чтобы это стало настройкой по умолчанию для вашей модели.');
+  ledOrderShown = null;
+}
+
 // ---- «Недавно играло» ----
 function ago(at) {
   const s = Math.max(0, Date.now() / 1000 - at);
@@ -1389,8 +1442,10 @@ async function refresh() {
   if (!settingsLoaded) {
     $('proxy').value = settings.proxy;
     $('keyword').checked = settings.keyword_only;
+    renderMusic(settings.music_default || (settings.keyword_only ? 'yandex' : 'soundcloud'));
     $('ring').checked = settings.ring !== false;
     renderLight(settings);
+    renderLedOrder(settings.led_order, s.led);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';
     $('pctoken').value = settings.pc_token || '';

@@ -369,6 +369,8 @@ impl Controller {
             "tv_on": self.settings.tv_on,
         });
         settings["eq_on"] = self.settings.eq_on.into();
+        settings["led_order"] = self.settings.led_order.clone().into();
+        settings["music_default"] = self.settings.music_default.clone().into();
         settings["eq"] = self.settings.eq.clone().into();
         let mut out = serde_json::json!({
             "state": state,
@@ -394,6 +396,8 @@ impl Controller {
             "bypass_log": *self.shared.bypass_log.lock().unwrap(),
             "bypass_busy": self.shared.bypass_busy.load(Ordering::Acquire),
             "volume": volume::level(),
+            "led": led::info(),
+            "source": alice::source_of(&self.shared),
             "zapret_presets": zapret::PRESETS.iter().enumerate().map(|(i, (name, _))| { let id = zapret::id_of(i); let e = zapret::engine(&id, "").to_string(); [id, (*name).to_owned(), e] }).collect::<Vec<_>>(),
         });
         // Through the speaker: the phone may not reach sndcdn.com itself.
@@ -540,6 +544,11 @@ impl Controller {
             *c = c.trim().to_lowercase();
         }
         new.light_bright = new.light_bright.clamp(10, 100);
+        new.sync_music(&self.settings);
+        new.led_order = new.led_order.trim().to_lowercase();
+        if !led::set_order(&new.led_order) {
+            return "error: порядок цветов — rgb, grb, brg, bgr, rbg или gbr".into();
+        }
         if new.token.contains('•') && new.token == self.settings.masked_token() {
             new.token = self.settings.token.clone();
         }
@@ -1309,6 +1318,11 @@ impl Controller {
                 });
             }
             "netcheck" => self.check_net(Some(reply)),
+            // «ledtest 0|1|2»: the ring test on the page (one raw channel file).
+            "ledtest" => send_to(&reply, match arg.parse::<usize>() {
+                Ok(c) => led::test(c).unwrap_or_else(|e| format!("error: {e}")),
+                Err(_) => "usage: ledtest 0|1|2".into(),
+            }),
             // «Удалить soundya» on the settings page: the speaker becomes plain Alice again.
             "uninstall" => {
                 let r = if luna::active() {
@@ -1895,6 +1909,9 @@ fn daemon() {
         soundcloud: AtomicBool::new(settings.soundcloud),
         light: Mutex::new({
             eq::set(settings.eq_on, &settings.eq);
+            if !led::set_order(&settings.led_order) {
+                eprintln!("led: unknown channel order {:?}; using rgb", settings.led_order);
+            }
             led::Light::from_settings(&settings)
         }),
     });

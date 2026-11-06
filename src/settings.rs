@@ -319,7 +319,7 @@ impl Settings {
             // 0 → 1 (0.5.00): new fields get their defaults from serde; the
             // music service follows the old «только по слову саундклауд»
             // switch, which stays as it was.
-            self.music_default = "soundcloud".into();
+            self.music_default = if self.keyword_only { "yandex" } else { "soundcloud" }.into();
             self.config_version = 1;
         }
         // Written by a newer soundya: left as it is (unknown keys are kept in `extra`).
@@ -410,6 +410,19 @@ impl Settings {
         any
     }
 
+    /// Keeps «Музыка по умолчанию» and the older «только по слову саундклауд»
+    /// switch in step: whichever of the two the page changed wins.
+    pub fn sync_music(&mut self, old: &Settings) {
+        if !matches!(self.music_default.as_str(), "soundcloud" | "yandex") {
+            self.music_default = old.music_default.clone();
+        }
+        if self.music_default != old.music_default {
+            self.keyword_only = self.music_default == "yandex";
+        } else if self.keyword_only != old.keyword_only {
+            self.music_default = if self.keyword_only { "yandex" } else { "soundcloud" }.into();
+        }
+    }
+
     /// Proxy with the password hidden, for showing on the page.
     pub fn masked_proxy(&self) -> String {
         let p = &self.proxy;
@@ -477,7 +490,7 @@ mod tests {
         assert_eq!(s.eq, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         assert_eq!(s.pc_contacts[0].target, "@m");
         assert_eq!(s.airplay_name, "Кухня");
-        assert_eq!(s.music_default, "soundcloud");
+        assert_eq!(s.music_default, "yandex", "follows «только по слову саундклауд»");
         assert_eq!(s.led_order, "rgb");
         // The old file is kept as it was.
         assert!(crate::fsx::read_string(&d.join("config.v0.json")).unwrap().contains("2-1-x"));
@@ -525,6 +538,20 @@ mod tests {
         assert_eq!(m.eq, vec![3; 10]);
         assert_eq!(m.config_version, s.config_version);
         assert!(s.merged(&serde_json::json!([1])).is_err());
+    }
+
+    #[test]
+    fn music_service_and_keyword_switch_agree() {
+        let old = Settings::default();
+        let mut new = Settings { music_default: "yandex".into(), ..old.clone() };
+        new.sync_music(&old);
+        assert!(new.keyword_only);
+        let mut back = Settings { keyword_only: false, ..new.clone() };
+        back.sync_music(&new);
+        assert_eq!(back.music_default, "soundcloud");
+        let mut junk = Settings { music_default: "spotify".into(), ..old.clone() };
+        junk.sync_music(&old);
+        assert_eq!(junk.music_default, "soundcloud");
     }
 
     #[test]

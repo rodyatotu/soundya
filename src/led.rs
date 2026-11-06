@@ -138,13 +138,99 @@ struct Zone {
     r: PathBuf,
     g: PathBuf,
     b: PathBuf,
+    /// Each LED's `max_brightness` (0.4.40 assumed 255 everywhere and wrote
+    /// 0..255: on a driver with a smaller range the kernel clamps, so orange
+    /// (255, 50, 0) and red (255, 12, 0) both come out wrong).
+    max: [u32; 3],
 }
 
-fn brightness(path: &Path) -> Option<u8> {
+/// Channel orders: which colour the files red, green, blue actually light.
+const ORDERS: [(&str, [usize; 3]); 6] =
+    [("rgb", [0, 1, 2]), ("grb", [1, 0, 2]), ("brg", [2, 0, 1]), ("bgr", [2, 1, 0]), ("rbg", [0, 2, 1]), ("gbr", [1, 2, 0])];
+static ORDER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Sets the order from the settings ("rgb" … "gbr"); false if unknown.
+pub fn set_order(name: &str) -> bool {
+    match ORDERS.iter().position(|(n, _)| *n == name) {
+        Some(i) => {
+            ORDER.store(i, Ordering::Release);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The ring test on the page: light one channel file (0 red, 1 green, 2 blue)
+/// of every zone as it is, without the order, for a few seconds.
+static TEST: std::sync::Mutex<Option<(usize, std::time::Instant)>> = std::sync::Mutex::new(None);
+const TEST_FOR: Duration = Duration::from_secs(6);
+
+pub fn test(channel: usize) -> Result<String, String> {
+    if channel > 2 {
+        return Err("канал 0, 1 или 2".into());
+    }
+    *TEST.lock().unwrap() = Some((channel, std::time::Instant::now()));
+    Ok(match RING.lock().unwrap().as_str() {
+        "" => "error: кольцо не найдено".into(),
+        _ => "OK: горит 6 секунд".into(),
+    })
+}
+
+/// What was found, for the page and bug reports.
+static RING: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+pub fn info() -> serde_json::Value {
+    serde_json::json!({
+        "ring": *RING.lock().unwrap(),
+        "order": ORDERS[ORDER.load(Ordering::Acquire)].0,
+    })
+}
+
+impl Zone {
+    fn open(r: PathBuf, g: PathBuf, b: PathBuf) -> Zone {
+        let max = |p: &Path| {
+            crate::fsx::read_string(&p.with_file_name("max_brightness"))
+                .and_then(|t| t.trim().parse::<u32>().ok())
+                .filter(|m| *m > 0)
+                .unwrap_or(255)
+        };
+        let m = [max(&r), max(&g), max(&b)];
+        Zone { r, g, b, max: m }
+    }
+
+    /// What the three files get for colour `c`: in the channel order, scaled to their range.
+    fn values(&self, c: Rgb) -> [u32; 3] {
+        let comp = [c.0, c.1, c.2];
+        let order = ORDERS[ORDER.load(Ordering::Acquire)].1;
+        raw(self.max, [comp[order[0]], comp[order[1]], comp[order[2]]])
+    }
+
+    fn paths(&self) -> [&Path; 3] {
+        [&self.r, &self.g, &self.b]
+    }
+
+    fn put(&self, c: Rgb) {
+        for (p, v) in self.paths().into_iter().zip(self.values(c)) {
+            write(p, v);
+        }
+    }
+
+    fn shows(&self, c: Rgb) -> bool {
+        self.paths().into_iter().zip(self.values(c)).all(|(p, v)| brightness(p) == Some(v))
+    }
+}
+
+/// 0..255 per file → 0..max_brightness.
+fn raw(max: [u32; 3], v: [u8; 3]) -> [u32; 3] {
+    let f = |i: usize| (u32::from(v[i]) * max[i] + 127) / 255;
+    [f(0), f(1), f(2)]
+}
+
+fn brightness(path: &Path) -> Option<u32> {
     crate::fsx::read_string(path)?.trim().parse().ok()
 }
 
-fn write(path: &Path, value: u8) {
+fn write(path: &Path, value: u32) {
     let _ = fs::write(path, value.to_string());
 }
 
@@ -169,7 +255,7 @@ impl Ring {
             let zones: Vec<Zone> = (1..=6)
                 .map(|z| {
                     let p = |c: &str| PathBuf::from(format!("/sys/class/leds/{board}:{c}:ring{z}/brightness"));
-                    Zone { r: p("red"), g: p("green"), b: p("blue") }
+                    Zone::open(p("red"), p("green"), p("blue"))
                 })
                 .filter(|z| crate::fsx::exists(&z.r) && crate::fsx::exists(&z.g) && crate::fsx::exists(&z.b))
                 .collect();
@@ -200,9 +286,7 @@ impl Ring {
 
     fn is(&self, (r, g, b): (u8, u8, u8)) -> bool {
         match self {
-            Ring::Sysfs(zones) => zones.iter().all(|z| {
-                brightness(&z.r) == Some(r) && brightness(&z.g) == Some(g) && brightness(&z.b) == Some(b)
-            }),
+            Ring::Sysfs(zones) => zones.iter().all(|z| z.shows((r, g, b))),
             // Neither can be read back.
             _ => false,
         }
@@ -211,9 +295,7 @@ impl Ring {
     /// The ring shows exactly `frame` (one colour per zone)?
     fn shows(&self, frame: &[Rgb]) -> bool {
         match self {
-            Ring::Sysfs(zones) => zones.iter().zip(frame.iter().cycle()).all(|(z, &(r, g, b))| {
-                brightness(&z.r) == Some(r) && brightness(&z.g) == Some(g) && brightness(&z.b) == Some(b)
-            }),
+            Ring::Sysfs(zones) => zones.iter().zip(frame.iter().cycle()).all(|(z, &c)| z.shows(c)),
             // Write-only: what we drew last is assumed to be shown (after
             // Alice's animations the loop draws again anyway).
             _ => true,
@@ -224,13 +306,11 @@ impl Ring {
     fn draw(&self, frame: &[Rgb], before: Option<&[Rgb]>) {
         match self {
             Ring::Sysfs(zones) => {
-                for (i, (z, &(r, g, b))) in zones.iter().zip(frame.iter().cycle()).enumerate() {
-                    if before.and_then(|p| p.get(i)) == Some(&(r, g, b)) {
+                for (i, (z, &c)) in zones.iter().zip(frame.iter().cycle()).enumerate() {
+                    if before.and_then(|p| p.get(i)) == Some(&c) {
                         continue;
                     }
-                    write(&z.r, r);
-                    write(&z.g, g);
-                    write(&z.b, b);
+                    z.put(c);
                 }
             }
             Ring::Mini1(chip) => {
@@ -261,9 +341,7 @@ impl Ring {
         match self {
             Ring::Sysfs(zones) => {
                 for z in zones {
-                    write(&z.r, c.0);
-                    write(&z.g, c.1);
-                    write(&z.b, c.2);
+                    z.put(c);
                 }
             }
             Ring::Mini1(chip) => {
@@ -437,7 +515,12 @@ pub fn run(shared: Arc<Shared>) {
         eprintln!("led: no ring found, light disabled");
         return;
     };
-    eprintln!("led: ring found ({} zones{})", ring.zones(), ring.name());
+    let maxes = match &ring {
+        Ring::Sysfs(z) => z.first().map(|z| format!(", max_brightness {:?}", z.max)).unwrap_or_default(),
+        _ => String::new(),
+    };
+    eprintln!("led: ring found ({} zones{}{maxes})", ring.zones(), ring.name());
+    *RING.lock().unwrap() = format!("{} zones{}{maxes}", ring.zones(), ring.name());
     // Left lit by a previous run that was stopped or crashed.
     let light = *shared.light.lock().unwrap();
     if ring.is(ORANGE) || ring.is(scale(light.quiet, light.bright)) {
@@ -480,6 +563,30 @@ pub fn run(shared: Arc<Shared>) {
                     false
                 }
             };
+            // The ring test from the page: one raw channel file, ignoring the order.
+            let test = TEST.lock().unwrap().filter(|(_, at)| at.elapsed() < TEST_FOR).map(|(c, _)| c);
+            if let (Some(ch), Ring::Sysfs(zones)) = (test, &ring) {
+                for z in zones {
+                    let mut v = [0u8; 3];
+                    v[ch] = 255;
+                    for (p, x) in z.paths().into_iter().zip(raw(z.max, v)) {
+                        write(p, x);
+                    }
+                }
+                shown = None;
+                continue;
+            }
+            if let (Some(ch), false) = (test, matches!(ring, Ring::Sysfs(_))) {
+                // Other rings take colours, not files: show the pure colour.
+                let mut c = (0, 0, 0);
+                match ch { 0 => c.0 = 255, 1 => c.1 = 255, _ => c.2 = 255 }
+                ring.set(c);
+                shown = None;
+                continue;
+            }
+            if TEST.lock().unwrap().take_if(|(_, at)| at.elapsed() >= TEST_FOR).is_some() {
+                ring.set((0, 0, 0));
+            }
             let loading = shared.fetching.load(Ordering::Acquire) || stuck;
             let want: Option<Vec<Rgb>> = if !on {
                 None
@@ -521,6 +628,21 @@ pub fn run(shared: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scales_to_the_drivers_range_and_order() {
+        // A driver with 0..31 (not 0..255): orange keeps its proportions.
+        assert_eq!(raw([31, 31, 31], [255, 50, 0]), [31, 6, 0]);
+        assert_eq!(raw([255, 255, 255], [255, 50, 0]), [255, 50, 0], "0.4.40 behaviour on 255");
+        let z = Zone { r: "r".into(), g: "g".into(), b: "b".into(), max: [255; 3] };
+        assert!(set_order("grb"));
+        assert_eq!(z.values((255, 50, 0)), [50, 255, 0], "the red file lights green");
+        assert!(set_order("bgr"));
+        assert_eq!(z.values((1, 2, 3)), [3, 2, 1]);
+        assert!(!set_order("xyz"));
+        assert!(set_order("rgb"));
+        assert_eq!(z.values((1, 2, 3)), [1, 2, 3]);
+    }
 
     #[test]
     fn mini3_frame_order() {
