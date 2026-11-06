@@ -208,6 +208,11 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             Ok(()) => ("200 OK", "application/json", serde_json::json!({"ok": true}).to_string()),
             Err(e) => ("200 OK", "application/json", serde_json::json!({"error": e}).to_string()),
         },
+        ("GET", "/api/community") => (
+            "200 OK",
+            "application/json",
+            crate::stats::community(shared.stats.load(std::sync::atomic::Ordering::Acquire)).to_string(),
+        ),
         ("GET", "/api/report/list") => ("200 OK", "application/json", crate::report::list_json(&crate::state_dir()).to_string()),
         ("POST", "/api/test") => {
             let proxy = serde_json::from_str::<Settings>(&body).map(|s| s.proxy).unwrap_or_default();

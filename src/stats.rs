@@ -23,6 +23,39 @@ pub(crate) const URL: &str = match option_env!("SOUNDYA_STATS_URL") {
 };
 const DAY: Duration = Duration::from_secs(24 * 3600);
 
+/// The community size for the panel's «100+» banner: the server's
+/// /stats.json, asked at most once an hour. Only with «Анонимная статистика»
+/// on (otherwise the speaker does not contact the server at all). The last
+/// good answer is kept; nothing is ever made up.
+static COMMUNITY: std::sync::Mutex<Option<(std::time::Instant, Option<serde_json::Value>)>> = std::sync::Mutex::new(None);
+
+pub fn community(allowed: bool) -> serde_json::Value {
+    if !allowed || URL.is_empty() {
+        return serde_json::json!({ "ok": false, "why": "статистика выключена" });
+    }
+    let mut slot = COMMUNITY.lock().unwrap();
+    let stale = slot.as_ref().is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(3600));
+    if stale {
+        let url = std::env::var("SOUNDYA_COMMUNITY_URL")
+            .unwrap_or_else(|_| URL.strip_suffix("/ping").map(|b| format!("{b}/stats.json")).unwrap_or_default());
+        let fresh = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .get(&url)
+            .call()
+            .ok()
+            .and_then(|r| r.into_json::<serde_json::Value>().ok())
+            .filter(|v| v.get("ever").and_then(serde_json::Value::as_u64).is_some());
+        let keep = fresh.or_else(|| slot.as_ref().and_then(|(_, v)| v.clone()));
+        *slot = Some((std::time::Instant::now(), keep));
+    }
+    match slot.as_ref().and_then(|(_, v)| v.as_ref()) {
+        Some(v) => serde_json::json!({ "ok": true, "ever": v["ever"], "active": v["active"] }),
+        None => serde_json::json!({ "ok": false, "why": "сервер статистики не ответил" }),
+    }
+}
+
 /// Random install number, kept in <state dir>/install_id.
 pub(crate) fn install_id(dir: &Path) -> Option<String> {
     let path = dir.join("install_id");

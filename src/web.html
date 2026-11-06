@@ -135,6 +135,22 @@
     background: var(--accent); color: #fff; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
   .updbanner.on { display: block; }
   .updbanner[hidden] { display: none; }
+  .party { position: relative; overflow: hidden; display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    margin: 0 0 12px; padding: 12px 40px 12px 14px; border-radius: 16px; color: #fff;
+    background: linear-gradient(120deg, #ff5500, #ff2f6d, #7b3bff, #ff5500); background-size: 300% 100%;
+    animation: partybg 14s ease-in-out infinite; box-shadow: 0 8px 28px rgba(255, 60, 80, .25); }
+  .party[hidden] { display: none; }
+  .party::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(115deg, transparent 35%, rgba(255,255,255,.22) 50%, transparent 65%);
+    transform: translateX(-120%); animation: partyshine 7s ease-in-out infinite; }
+  @keyframes partybg { 0%, 100% { background-position: 0 50%; } 50% { background-position: 100% 50%; } }
+  @keyframes partyshine { 0%, 60% { transform: translateX(-120%); } 85%, 100% { transform: translateX(120%); } }
+  @media (prefers-reduced-motion: reduce) { .party, .party::after { animation: none; } }
+  .partytext { flex: 1 1 220px; font-size: 14px; line-height: 1.35; }
+  .partytg { position: relative; z-index: 1; padding: 7px 12px; border-radius: 10px; background: rgba(255,255,255,.2);
+    color: #fff; text-decoration: none; font-weight: 600; font-size: 13px; white-space: nowrap; }
+  .partyx { position: absolute; z-index: 1; top: 6px; right: 6px; border: 0; background: transparent; color: #fff;
+    font-size: 20px; line-height: 1; padding: 4px 8px; cursor: pointer; }
   label.switch { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; cursor: pointer; }
   label.switch input { appearance: none; -webkit-appearance: none; flex: none; width: 42px; height: 24px; margin: 0;
     border-radius: 12px; background: var(--line); position: relative; cursor: pointer; transition: background .15s; }
@@ -396,6 +412,11 @@
     <div class="msg" id="actmsg"></div>
   </section>
 
+  <div class="party" id="party" hidden>
+    <div class="partytext">🎉 <b id="partytitle"></b> Спасибо, что пользуетесь soundya и рассказываете о ней друзьям!</div>
+    <a class="partytg" href="https://t.me/+lvaSgqYWrXUwYzA0" target="_blank" rel="noopener">Сообщество в Telegram</a>
+    <button class="partyx" onclick="closeParty()" aria-label="Закрыть">×</button>
+  </div>
   <button class="updbanner on" id="loginwarn" hidden onclick="openSettings('account')">Вход в SoundCloud устарел — лайки и плейлисты недоступны. Обновить вход</button>
   <button class="updbanner" id="updbanner" onclick="openSettings('about', 'updsection')"></button>
 
@@ -1213,6 +1234,21 @@ function saveLight() {
     if (r.startsWith('error')) show($('lightmsg'), r); else $('lightmsg').textContent = '';
   }, 250);
 }
+
+// ---- «Нас уже 100+» (число — с сервера статистики через колонку) ----
+async function loadParty() {
+  try { if (localStorage.getItem('soundya-party') === 'off') return; } catch (e) {}
+  let c;
+  try { c = await (await fetch('/api/community')).json(); } catch (e) { return; }
+  if (!c.ok || !(c.ever >= 100)) return;
+  $('partytitle').textContent = `Нас уже ${Math.floor(c.ever / 100) * 100}+!`;
+  $('party').hidden = false;
+}
+function closeParty() {
+  $('party').hidden = true;
+  try { localStorage.setItem('soundya-party', 'off'); } catch (e) {}
+}
+loadParty();
 
 // ---- музыка по умолчанию ----
 const MUSIC_HINT = {
