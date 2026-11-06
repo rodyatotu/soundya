@@ -19,13 +19,19 @@ use serde_json::{json, Value};
 
 use crate::planner::{civil, days_from_civil, local, now, offset, weekday};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Event {
     pub uid: String,
     pub title: String,
     /// Unix time UTC of the start (all-day: local midnight).
     pub start: i64,
+    /// End (iCal without DTEND: start + 1 h; all-day: the next midnight).
+    #[serde(default)]
+    pub end: i64,
     pub all_day: bool,
+    /// The calendar's name («Личный», «Работа», «iCal»).
+    #[serde(default)]
+    pub cal: String,
 }
 
 /// A VEVENT as read, before repeats are unfolded.
@@ -35,6 +41,8 @@ struct Raw {
     title: String,
     start: i64,
     all_day: bool,
+    /// DTEND − DTSTART, seconds (0 = unknown).
+    length: i64,
     rrule: String,
     exdates: Vec<i64>,
     /// RECURRENCE-ID: this one replaces that occurrence of `uid`.
@@ -51,11 +59,28 @@ struct State {
     error: String,
     fetched: i64,
     said: HashSet<(String, i64)>,
+    // ---- Google (google.rs), with the user's own OAuth client
+    g_on: bool,
+    /// Calendars to read; empty = the ones shown in Google Calendar itself.
+    g_read: Vec<String>,
+    /// Where new events go («primary» by default) and the list for new tasks.
+    g_write: String,
+    g_list: String,
+    g_cals: Vec<crate::google::Cal>,
+    g_lists: Vec<(String, String)>,
+    g_events: Vec<Event>,
+    g_tasks: Vec<crate::google::GTask>,
+    g_error: String,
+    g_fetched: i64,
 }
+
+/// What a planner write did.
+pub type Done = Result<String, String>;
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 static WAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SHARED: std::sync::OnceLock<std::sync::Arc<crate::Shared>> = std::sync::OnceLock::new();
 
 fn with<T>(f: impl FnOnce(&mut State) -> T) -> T {
     let mut g = STATE.lock().unwrap();
@@ -79,6 +104,30 @@ pub fn configure(on: bool, url: &str, remind_min: u16) {
     }
 }
 
+/// Google side: on = signed in and switched on in the settings.
+pub fn configure_google(on: bool, read: &[String], write: &str, list: &str) {
+    let changed = with(|s| {
+        let changed = s.g_on != on || s.g_read != read;
+        s.g_on = on;
+        s.g_read = read.to_vec();
+        s.g_write = if write.is_empty() { "primary".into() } else { write.to_owned() };
+        s.g_list = list.to_owned();
+        if !on {
+            s.g_events.clear();
+            s.g_tasks.clear();
+            s.g_error.clear();
+        }
+        changed
+    });
+    if changed {
+        wake();
+    }
+}
+
+pub fn google_on() -> bool {
+    with(|s| s.g_on)
+}
+
 /// Fetch again now.
 pub fn wake() {
     WAKE.store(true, std::sync::atomic::Ordering::Release);
@@ -86,7 +135,7 @@ pub fn wake() {
 
 /// On and with something loaded: «какие планы» may answer from the calendar.
 pub fn active() -> bool {
-    with(|s| s.on)
+    with(|s| s.on || s.g_on)
 }
 
 /// `https://`, `http://` or `webcal://` (Apple and Google both give these).
@@ -193,6 +242,11 @@ fn parse(text: &str, off: i64) -> Vec<Raw> {
                     r.all_day = all;
                 }
             }
+            "DTEND" => {
+                if let Some((t, _)) = parse_time(params, value, off) {
+                    r.length = t - r.start;
+                }
+            }
             "RRULE" => r.rrule = value.trim().to_ascii_uppercase(),
             "EXDATE" => {
                 for v in value.split(',') {
@@ -209,6 +263,9 @@ fn parse(text: &str, off: i64) -> Vec<Raw> {
     for r in &mut out {
         if r.title.is_empty() {
             r.title = "Событие".into();
+        }
+        if r.length <= 0 {
+            r.length = if r.all_day { 86_400 } else { 3600 };
         }
     }
     out
@@ -283,13 +340,13 @@ fn expand(raws: &[Raw], from: i64, to: i64, off: i64) -> Vec<Event> {
     for r in raws {
         if r.recurrence.is_some() {
             if !r.cancelled && r.start >= from && r.start < to {
-                out.push(Event { uid: r.uid.clone(), title: r.title.clone(), start: r.start, all_day: r.all_day });
+                out.push(Event { uid: r.uid.clone(), title: r.title.clone(), start: r.start, end: r.start + r.length, all_day: r.all_day, cal: "iCal".into() });
             }
             continue;
         }
         for t in occurrences(r, from, to, off) {
             if !overrides.contains(&(r.uid.clone(), t)) {
-                out.push(Event { uid: r.uid.clone(), title: r.title.clone(), start: t, all_day: r.all_day });
+                out.push(Event { uid: r.uid.clone(), title: r.title.clone(), start: t, end: t + r.length, all_day: r.all_day, cal: "iCal".into() });
             }
         }
     }
@@ -297,19 +354,59 @@ fn expand(raws: &[Raw], from: i64, to: i64, off: i64) -> Vec<Event> {
     out
 }
 
-/// Events of the local day `today + day` (for the planner's agenda).
-pub fn day_events(day: i64) -> Vec<Event> {
-    let (n, off) = (now(), offset());
-    let (today, _) = local(n, off);
-    let from = (today + day) * 86_400 - off;
-    with(|s| if s.on { expand(&s.raws, from, from + 86_400, off) } else { vec![] })
+/// iCal and Google together, in [from, to) by start (all-day ones by their
+/// day); the same event in both (a calendar added both ways) is said once.
+pub fn between(from: i64, to: i64) -> Vec<Event> {
+    let off = offset();
+    with(|s| merged(s, from, to, off))
+}
+
+fn merged(s: &State, from: i64, to: i64, off: i64) -> Vec<Event> {
+    let mut out = if s.on { expand(&s.raws, from, to, off) } else { vec![] };
+    if s.g_on {
+        out.extend(s.g_events.iter().filter(|e| e.start < to && (e.start >= from || (e.all_day && e.end > from))).cloned());
+    }
+    out.sort_by(|a, b| (a.start, !a.all_day, &a.title).cmp(&(b.start, !b.all_day, &b.title)));
+    out.dedup_by(|a, b| a.start == b.start && a.title.to_lowercase() == b.title.to_lowercase());
+    out
+}
+
+/// Tests: Google's events and tasks as if fetched.
+#[cfg(test)]
+pub fn test_google(events: Vec<Event>, tasks: Vec<crate::google::GTask>) {
+    with(|s| {
+        s.g_on = !events.is_empty() || !tasks.is_empty();
+        s.g_events = events;
+        s.g_tasks = tasks;
+    });
+}
+
+/// Open Google Tasks (all lists).
+pub fn google_tasks() -> Vec<crate::google::GTask> {
+    with(|s| if s.g_on { s.g_tasks.clone() } else { vec![] })
 }
 
 pub fn json() -> Value {
     let (n, off) = (now(), offset());
     with(|s| {
-        let next = if s.on { expand(&s.raws, n - 3600, n + 7 * 86_400, off) } else { vec![] };
+        let next = merged(s, n - 3600, n + 7 * 86_400, off);
+        let read: Vec<&crate::google::Cal> =
+            s.g_cals.iter().filter(|c| if s.g_read.is_empty() { c.selected } else { s.g_read.contains(&c.id) }).collect();
         json!({
+            "google": {
+                "on": s.g_on,
+                "error": s.g_error,
+                "fetched": s.g_fetched,
+                "calendars": s.g_cals.iter().map(|c| json!({
+                    "id": c.id, "name": c.name, "primary": c.primary, "writable": c.writable,
+                    "read": read.iter().any(|r| r.id == c.id),
+                })).collect::<Vec<_>>(),
+                "lists": s.g_lists.iter().map(|(id, t)| json!({ "id": id, "title": t })).collect::<Vec<_>>(),
+                "write": s.g_write,
+                "list": s.g_list,
+                "events": s.g_events.len(),
+                "tasks": s.g_tasks.len(),
+            },
             "on": s.on,
             "events": s.raws.len(),
             "error": s.error,
@@ -317,6 +414,7 @@ pub fn json() -> Value {
             "remind_min": s.remind_min,
             "next": next.iter().take(8).map(|e| json!({
                 "title": e.title,
+                "cal": e.cal,
                 "start": e.start,
                 "all_day": e.all_day,
                 "when": if e.all_day { crate::planner::say_time(e.start, n, off).replace(" в 0:00", "").replace("в 0:00", "сегодня") + ", весь день" } else { crate::planner::say_time(e.start, n, off) },
@@ -350,6 +448,7 @@ fn fetch(shared: &crate::Shared, url: &str) -> Result<String, String> {
 }
 
 fn refresh(shared: &crate::Shared) {
+    refresh_google(shared);
     let (on, url) = with(|s| (s.on, s.url.clone()));
     if !on || url.is_empty() {
         return;
@@ -374,19 +473,145 @@ fn refresh(shared: &crate::Shared) {
     }
 }
 
-/// Loads the last copy, refreshes every 15 minutes, says reminders.
+fn agent() -> Result<ureq::Agent, String> {
+    let proxy = SHARED.get().map(|s| s.proxy.lock().unwrap().clone()).unwrap_or_default();
+    crate::sc::build_agent(&proxy).map_err(|e| e.to_string())
+}
+
+fn google_cache(dir: &Path) -> PathBuf {
+    dir.join("google-cache.json")
+}
+
+/// Calendars, lists, events from yesterday to two weeks ahead, open tasks.
+fn refresh_google(shared: &crate::Shared) {
+    let (on, read) = with(|s| (s.g_on, s.g_read.clone()));
+    if !on || !crate::google::connected() {
+        return;
+    }
+    let proxy = shared.proxy.lock().unwrap().clone();
+    let r = (|| -> Result<(), String> {
+        let a = crate::sc::build_agent(&proxy).map_err(|e| e.to_string())?;
+        let off = offset();
+        let (today, _) = local(now(), off);
+        let (from, to) = ((today - 1) * 86_400 - off, (today + 15) * 86_400 - off);
+        let cals = crate::google::calendars(&a)?;
+        let mut events = Vec::new();
+        for c in cals.iter().filter(|c| if read.is_empty() { c.selected } else { read.contains(&c.id) }).take(10) {
+            for (id, title, start, end, all_day) in crate::google::events(&a, &c.id, from, to, off)? {
+                events.push(Event { uid: id, title, start, end, all_day, cal: c.name.clone() });
+            }
+        }
+        let lists = crate::google::task_lists(&a)?;
+        let mut tasks = Vec::new();
+        for (id, _) in lists.iter().take(10) {
+            tasks.extend(crate::google::tasks(&a, id)?);
+        }
+        eprintln!("google: {} calendars, {} events, {} lists, {} open tasks", cals.len(), events.len(), lists.len(), tasks.len());
+        if let Some(dir) = DIR.lock().unwrap().clone() {
+            let cache = json!({ "events": events, "tasks": tasks.iter().map(|t| json!({
+                "id": t.id, "list": t.list, "title": t.title, "notes": t.notes, "due_day": t.due_day,
+            })).collect::<Vec<_>>() });
+            let _ = crate::settings::write_synced(&google_cache(&dir), cache.to_string().as_bytes());
+        }
+        with(|s| {
+            s.g_cals = cals;
+            s.g_lists = lists;
+            s.g_events = events;
+            s.g_tasks = tasks;
+            s.g_error.clear();
+            s.g_fetched = now();
+        });
+        Ok(())
+    })();
+    if let Err(e) = r {
+        eprintln!("google: {e}");
+        with(|s| s.g_error = e);
+    }
+}
+
+/// The last Google copy, so the morning brief works before the network is up.
+fn load_google_cache(dir: &Path) {
+    let Some(v) = crate::fsx::read_string(&google_cache(dir)).and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return };
+    let events: Vec<Event> = serde_json::from_value(v["events"].clone()).unwrap_or_default();
+    let tasks: Vec<crate::google::GTask> = v["tasks"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|t| crate::google::GTask {
+                    id: t["id"].as_str().unwrap_or("").into(),
+                    list: t["list"].as_str().unwrap_or("").into(),
+                    title: t["title"].as_str().unwrap_or("").into(),
+                    notes: t["notes"].as_str().unwrap_or("").into(),
+                    due_day: t["due_day"].as_i64(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    with(|s| {
+        s.g_events = events;
+        s.g_tasks = tasks;
+    });
+}
+
+// ---------------------------------------------------------------- writing to Google
+
+/// A new event in the calendar chosen for writing.
+pub fn add_event(title: &str, start: i64, end: i64, all_day: bool) -> Done {
+    let cal = with(|s| s.g_write.clone());
+    let id = crate::google::add_event(&agent()?, &cal, title, start, end, all_day, offset())?;
+    let name = with(|s| {
+        // Shown at once, before the next refresh.
+        let name = s.g_cals.iter().find(|c| c.id == cal || (cal == "primary" && c.primary)).map_or("Google".into(), |c| c.name.clone());
+        s.g_events.push(Event { uid: id, title: title.to_owned(), start, end, all_day, cal: name.clone() });
+        name
+    });
+    wake();
+    Ok(name)
+}
+
+/// A new Google task (the list chosen in the settings, else the first).
+pub fn add_task(title: &str, due_day: Option<i64>, notes: &str) -> Done {
+    let list = with(|s| if s.g_list.is_empty() { s.g_lists.first().map(|l| l.0.clone()).unwrap_or_else(|| "@default".into()) } else { s.g_list.clone() });
+    let id = crate::google::add_task(&agent()?, &list, title, due_day, notes)?;
+    with(|s| s.g_tasks.push(crate::google::GTask { id, list: list.clone(), title: title.to_owned(), notes: notes.to_owned(), due_day }));
+    wake();
+    Ok(with(|s| s.g_lists.iter().find(|l| l.0 == list).map_or("Google Задачи".into(), |l| l.1.clone())))
+}
+
+pub fn complete_task(list: &str, id: &str) -> Done {
+    crate::google::complete_task(&agent()?, list, id)?;
+    with(|s| s.g_tasks.retain(|t| !(t.list == list && t.id == id)));
+    wake();
+    Ok(String::new())
+}
+
+pub fn delete_task(list: &str, id: &str) -> Done {
+    crate::google::delete_task(&agent()?, list, id)?;
+    with(|s| s.g_tasks.retain(|t| !(t.list == list && t.id == id)));
+    wake();
+    Ok(String::new())
+}
+
+/// Loads the last copies, refreshes (iCal every 15 minutes, Google every 5), says reminders.
 pub fn run(dir: &Path, shared: std::sync::Arc<crate::Shared>) {
     *DIR.lock().unwrap() = Some(dir.to_owned());
+    let _ = SHARED.set(shared.clone());
     if let Some(body) = crate::fsx::read_string(&cache(dir)) {
         let raws = parse(&body, offset());
         with(|s| s.raws = raws);
     }
+    load_google_cache(dir);
     thread::spawn(move || {
         let mut last: Option<std::time::Instant> = None;
+        let mut last_google: Option<std::time::Instant> = None;
         loop {
             if WAKE.swap(false, std::sync::atomic::Ordering::AcqRel) || last.is_none_or(|t| t.elapsed() > Duration::from_secs(900)) {
                 last = Some(std::time::Instant::now());
+                last_google = last;
                 refresh(&shared);
+            } else if last_google.is_none_or(|t| t.elapsed() > Duration::from_secs(300)) {
+                last_google = Some(std::time::Instant::now());
+                refresh_google(&shared);
             }
             remind();
             thread::sleep(Duration::from_secs(15));
@@ -397,12 +622,12 @@ pub fn run(dir: &Path, shared: std::sync::Arc<crate::Shared>) {
 fn remind() {
     let (n, off) = (now(), offset());
     let due: Vec<(Event, i64)> = with(|s| {
-        if !s.on || s.remind_min == 0 {
+        if !(s.on || s.g_on) || s.remind_min == 0 {
             return vec![];
         }
         let lead = i64::from(s.remind_min) * 60;
         let soon: Vec<Event> =
-            expand(&s.raws, n, n + lead + 1, off).into_iter().filter(|e| !e.all_day && !s.said.contains(&(e.uid.clone(), e.start))).collect();
+            merged(s, n, n + lead + 1, off).into_iter().filter(|e| !e.all_day && !s.said.contains(&(e.uid.clone(), e.start))).collect();
         for e in &soon {
             s.said.insert((e.uid.clone(), e.start));
         }
@@ -412,8 +637,7 @@ fn remind() {
         soon.into_iter().map(|e| (e.clone(), e.start - n)).collect()
     });
     for (e, left) in due {
-        let mins = (left + 30) / 60;
-        let text = if mins <= 1 { format!("Сейчас начинается: {}", e.title) } else { format!("Через {} минут: {}", mins, e.title) };
+        let text = if left < 90 { format!("Сейчас начинается: {}", e.title) } else { format!("{}: {}", crate::planner::in_minutes((left + 30) / 60), e.title) };
         eprintln!("calendar: {text}");
         crate::display::notify("rem");
         crate::alice::say(text);

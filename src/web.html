@@ -106,7 +106,8 @@
   }
   .heart.on { color: var(--accent); }
   .heart:hover { color: var(--accent); }
-  input[type=text], input[type=password], label.field select, ol.steps input, ol.steps select, #macroadd, #autolist select, #autolist input {
+  input[type=text], input[type=password], label.field select, ol.steps input, ol.steps select, #macroadd, #autolist select, #autolist input,
+  #tab-plans input[type=date], #tab-plans input[type=time], #tab-plans .row select {
     width: 100%; font: inherit; color: var(--ink); background: var(--bg);
     border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; outline: none;
   }
@@ -503,6 +504,18 @@
   ul.plans li.overdue small { color: var(--err); }
   ul.plans li.done .pt b { text-decoration: line-through; color: var(--muted); }
   ul.plans input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+  .daycard { background: var(--glass, var(--card)); border: 1px solid var(--line); border-radius: 18px; padding: 14px; margin: 10px 0 14px; }
+  .daytext { font-size: 15px; line-height: 1.5; margin: 12px 2px; }
+  #planview button, #addkind button { padding: 8px 4px; font-size: 14px; }
+  #tab-plans [hidden] { display: none !important; }
+  ul.timeline li .tm { flex: none; width: 4.6em; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+  ul.timeline li.grp { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding-top: 14px; border: 0; background: none; }
+  ul.timeline li .evdot { flex: none; width: 20px; height: 20px; display: grid; place-items: center; }
+  ul.timeline li .evdot::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+  ul.timeline li.overdue .pt small { color: var(--err); }
+  ul.timeline li.done .pt b { text-decoration: line-through; color: var(--muted); }
+  #gcals .check { display: flex; margin: 4px 0; }
+  #tab-plans .row input[type=date], #tab-plans .row input[type=time], #tab-plans .row select { flex: 1 1 130px; min-width: 0; width: auto; appearance: auto; }
   .palettes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
   .palettes button { height: 44px; border-radius: 14px; border: 2px solid transparent; padding: 0; }
   .palettes button.on { border-color: var(--ink); }
@@ -584,36 +597,132 @@
   </nav>
 
   <section class="tab" id="tab-plans">
-    <h2>Планы и напоминания</h2>
-    <label class="switch"><input type="checkbox" id="planon" onchange="savePlanner()"><span><b>Планировщик soundya</b></span></label>
-    <p class="hint">Включён — «Алиса, напомни через 10 минут…», «напомни завтра в 9…», «добавь задачу…», «какие планы на сегодня»
-      идут сюда, а не в напоминания Алисы. Напоминание колонка скажет голосом в нужное время.</p>
-    <p class="hint" id="plantz"></p>
+    <h2>Планы</h2>
+    <div class="daycard">
+      <div class="seg" id="planview">
+        <button data-v="today" class="on">Сегодня</button><button data-v="tomorrow">Завтра</button>
+        <button data-v="week">Неделя</button><button data-v="deadlines">Сроки</button>
+      </div>
+      <p class="daytext" id="daytext">…</p>
+      <div class="row">
+        <button onclick="speakPlan()">🔊 Сказать вслух</button>
+        <button onclick="loadPlans(true)">Обновить</button>
+      </div>
+    </div>
+    <ul class="list plans timeline" id="timeline"></ul>
+    <details class="guide"><summary>Что можно сказать Алисе</summary>
+      <ul class="hint">
+        <li>«Алиса, какие планы на сегодня?» / «…на завтра?», «…на пятницу?»</li>
+        <li>«Что мне сегодня нужно сделать?», «Какое у меня расписание?», «Что у меня дальше?»</li>
+        <li>«Какие у меня дедлайны?», «Какие планы на неделю?», «Расскажи про мой день»</li>
+        <li>«Добавь задачу сдать отчёт завтра до 18:00», «Дедлайн презентация в пятницу»</li>
+        <li>«Добавь в календарь встречу с Петей завтра в 15 на 2 часа», «Запланируй отпуск 12 марта»</li>
+        <li>«Напомни через 10 минут выключить плиту», «Отметь выполненной сдать отчёт»</li>
+      </ul>
+      <p class="hint">Вопросы о планах работают, если включён планировщик или подключён календарь. «Напомни…» — только с
+        включённым планировщиком soundya (иначе это напоминание Алисы).</p>
+    </details>
+
+    <h2 class="section">Добавить</h2>
     <div class="planadd">
+      <div class="seg" id="addkind">
+        <button data-k="task" class="on">Задача</button><button data-k="event">Событие</button><button data-k="reminder">Напоминание</button>
+      </div>
       <input type="text" id="plantitle" placeholder="Что сделать" maxlength="200">
       <div class="row">
-        <input type="datetime-local" id="plandue">
+        <input type="date" id="planday">
+        <input type="time" id="plantime">
+        <select id="planlen" hidden><option value="30">30 минут</option><option value="60" selected>1 час</option><option value="90">1,5 часа</option>
+          <option value="120">2 часа</option><option value="180">3 часа</option></select>
+      </div>
+      <div class="row" id="planwhere" hidden>
+        <label class="check"><input type="radio" name="planwhere" value="google" checked><span>В Google</span></label>
+        <label class="check"><input type="radio" name="planwhere" value="local"><span>Только на колонке</span></label>
+      </div>
+      <div class="row" id="planlocal">
         <select id="planrepeat"><option value="">Один раз</option><option value="daily">Каждый день</option>
           <option value="weekdays">По будням</option><option value="weekly">Каждую неделю</option><option value="monthly">Каждый месяц</option></select>
-      </div>
-      <div class="row">
         <select id="planprio"><option value="normal">Обычная</option><option value="high">Важная</option><option value="low">Неважная</option></select>
-        <input type="text" id="plancat" placeholder="Категория (дом, работа…)" maxlength="40">
       </div>
-      <label class="check"><input type="checkbox" id="planremind" checked><span>Напомнить голосом в это время</span></label>
+      <p class="hint" id="addhint"></p>
       <div class="row"><button class="primary" onclick="addPlan()">Добавить</button></div>
     </div>
     <div class="msg" id="planmsg"></div>
-    <h3>Сегодня</h3><ul class="list plans" id="plantoday"></ul>
-    <h3>Позже</h3><ul class="list plans" id="planlater"></ul>
-    <h3>Без даты</h3><ul class="list plans" id="plannodate"></ul>
-    <details><summary class="hint">Выполненные</summary><ul class="list plans" id="plandone"></ul></details>
-    <button class="link bugbtn" onclick="openReport('planner')">Сообщить об ошибке</button>
+    <details><summary class="hint">Выполненные на колонке</summary><ul class="list plans" id="plandone"></ul></details>
 
-    <h2 class="section">Календарь</h2>
-    <label class="switch"><input type="checkbox" id="calon" onchange="saveCal()"><span><b>Google Календарь (или другой с iCal)</b></span></label>
-    <p class="hint">Колонка читает события и называет их в «Алиса, какие планы на сегодня», а перед началом напоминает голосом.
-      Только чтение; входить в Google не нужно.</p>
+    <h2 class="section">Планировщик</h2>
+    <label class="switch"><input type="checkbox" id="planon" onchange="savePlanner()"><span><b>Планировщик soundya</b></span></label>
+    <p class="hint">Включён — «напомни…», «добавь задачу…» и вопросы о планах идут сюда, а не Алисе. Колонка скажет напоминание
+      в срок и предупредит о дедлайне заранее.</p>
+    <p class="hint" id="plantz"></p>
+    <label class="field">Предупреждать о сроке
+      <select id="planwarn"><option value="0">Не предупреждать</option><option value="10">За 10 минут</option><option value="15">За 15 минут</option>
+        <option value="30">За 30 минут</option><option value="60">За час</option><option value="120">За 2 часа</option></select>
+    </label>
+    <label class="field">Если у задачи только дата, срок —
+      <select id="plandue"><option value="720">в 12:00</option><option value="900">в 15:00</option><option value="1080">в 18:00</option>
+        <option value="1200">в 20:00</option><option value="1380">в 23:00</option><option value="1440">без времени (не предупреждать)</option></select>
+    </label>
+    <label class="switch"><input type="checkbox" id="briefon"><span><b>Утренняя сводка</b>
+      <small>Алиса сама расскажет расписание, задачи и сроки на день.</small></span></label>
+    <div class="row">
+      <input type="time" id="briefat" value="08:00">
+      <select id="briefdays"><option value="all">Каждый день</option><option value="weekdays">По будням</option></select>
+    </div>
+    <div class="row"><button class="primary" onclick="savePlanSettings()">Сохранить</button></div>
+    <div class="msg" id="plansetmsg"></div>
+
+    <h2 class="section">Google Календарь и Задачи</h2>
+    <p class="hint" id="gstate"></p>
+    <div id="gon" hidden>
+      <label class="switch"><input type="checkbox" id="guse" onchange="saveGoogle()"><span><b>Использовать Google</b></span></label>
+      <h3>Какие календари читать</h3>
+      <div id="gcals"></div>
+      <label class="field">Новые события — в календарь<select id="gwrite"></select></label>
+      <label class="field">Новые задачи — в список<select id="glist"></select></label>
+      <label class="field">Задачи, сказанные голосом
+        <select id="gtarget"><option value="google">В Google Задачи</option><option value="local">Только на колонке</option></select>
+      </label>
+      <div class="row">
+        <button onclick="refreshCal()">Обновить сейчас</button>
+        <button class="primary" onclick="saveGoogle()">Сохранить</button>
+      </div>
+      <button class="link" onclick="googleOff()">Отключить Google</button>
+    </div>
+    <div id="goff">
+      <p class="hint">Колонка будет читать события и задачи Google, добавлять новые голосом и отмечать выполненные.
+        Нужен свой ключ Google — это бесплатно и делается один раз, минут за 10.</p>
+      <details class="guide" open><summary>Как получить ключ</summary>
+        <ol class="hint">
+          <li>Откройте <b>console.cloud.google.com</b> и создайте проект (например, «soundya»).</li>
+          <li>«APIs &amp; Services» → «Library»: включите <b>Google Calendar API</b> и <b>Google Tasks API</b>.</li>
+          <li>«Google Auth Platform» (экран согласия OAuth) → «Get started»: название «soundya», ваша почта,
+            аудитория <b>External</b>. Затем в «Audience» нажмите <b>Publish app</b> — иначе Google будет отключать
+            вход каждые 7 дней.</li>
+          <li>«Clients» → «Create client» → тип <b>Desktop app</b> («Приложение для ПК»). Скопируйте сюда
+            <b>Client ID</b> и <b>Client secret</b> и нажмите «Сохранить».</li>
+          <li>«Войти в Google» → выберите аккаунт. На «Google не проверил это приложение» — «Дополнительно» →
+            «Перейти на страницу soundya» (это ваше же приложение). Разрешите доступ к календарю и задачам.</li>
+          <li>Браузер откроет <code>http://127.0.0.1:53682/…</code> и скажет, что страница недоступна — <b>так и
+            должно быть</b>. Скопируйте адрес из адресной строки целиком, вставьте ниже и нажмите «Подключить».</li>
+        </ol>
+        <p class="hint">Ключ и вход хранятся только на колонке, в панели скрыты и в отчёты об ошибках не попадают.
+          Отозвать доступ: myaccount.google.com → Безопасность → «Сторонние приложения».</p>
+      </details>
+      <label class="field">Client ID<input type="text" id="gid" placeholder="123…apps.googleusercontent.com" autocomplete="off" spellcheck="false"></label>
+      <label class="field">Client secret<input type="password" id="gsecret" placeholder="GOCSPX-…" autocomplete="off" spellcheck="false"></label>
+      <div class="row">
+        <button onclick="saveGoogleClient()">Сохранить</button>
+        <button class="primary" id="glogin" onclick="googleLogin()">Войти в Google</button>
+      </div>
+      <label class="field">Адрес из браузера после входа<input type="text" id="gpaste" placeholder="http://127.0.0.1:53682/soundya?state=…&amp;code=…" autocomplete="off" spellcheck="false"></label>
+      <div class="row"><button class="primary" onclick="googleCode()">Подключить</button></div>
+    </div>
+    <div class="msg" id="gmsg"></div>
+
+    <h2 class="section">Календарь по ссылке iCal</h2>
+    <label class="switch"><input type="checkbox" id="calon" onchange="saveCal()"><span><b>Календарь по секретному адресу</b>
+      <small>Проще, но только чтение: без входа в Google. Подходит и для iCloud, Яндекс Календаря.</small></span></label>
     <details class="guide"><summary>Где взять адрес</summary>
       <ol class="hint">
         <li>Откройте <b>calendar.google.com</b> на компьютере → шестерёнка → <b>Настройки</b>.</li>
@@ -621,13 +730,12 @@
         <li>Скопируйте <b>«Секретный адрес в формате iCal»</b> (заканчивается на <code>basic.ics</code>) и вставьте ниже.</li>
       </ol>
       <p class="hint">Адрес даёт читать календарь любому, у кого он есть: он хранится только на колонке, в панели скрыт и
-        вырезается из отчётов об ошибках. Если он утёк — в тех же настройках Google «Сбросить» и вставьте новый.
-        Подходит и iCloud («Поделиться календарём → Публичный календарь») и Яндекс Календарь (ссылка iCal).</p>
+        вырезается из отчётов об ошибках. Если он утёк — в тех же настройках Google «Сбросить» и вставьте новый.</p>
     </details>
     <label class="field">Секретный адрес iCal
       <input type="password" id="calurl" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" autocomplete="off" spellcheck="false">
     </label>
-    <label class="field">Напоминать перед событием
+    <label class="field">Напоминать перед событием (для iCal и Google)
       <select id="calremind"><option value="0">Не напоминать</option><option value="5">За 5 минут</option><option value="10">За 10 минут</option>
         <option value="15">За 15 минут</option><option value="30">За 30 минут</option><option value="60">За час</option></select>
     </label>
@@ -636,9 +744,11 @@
       <button class="primary" onclick="saveCal()">Сохранить</button>
     </div>
     <p class="hint" id="calstate"></p>
-    <ul class="list plans" id="callist"></ul>
     <div class="msg" id="calmsg"></div>
-    <button class="link bugbtn" onclick="openReport('calendar')">Сообщить об ошибке</button>
+    <div class="row">
+      <button class="link bugbtn" onclick="openReport('planner')">Ошибка в планировщике</button>
+      <button class="link bugbtn" onclick="openReport('calendar')">Ошибка в календаре</button>
+    </div>
   </section>
 
   <section class="tab on" id="tab-home">
@@ -2269,73 +2379,239 @@ async function saveTg() {
 
 // ---- планы ----
 const REPEAT_NAMES = { daily: 'каждый день', weekdays: 'по будням', weekly: 'каждую неделю', monthly: 'каждый месяц' };
-async function loadPlans() {
+let planView = 'today', planData = null, addKind = 'task';
+document.querySelectorAll('#planview button').forEach(b => b.onclick = () => {
+  planView = b.dataset.v;
+  document.querySelectorAll('#planview button').forEach(x => x.classList.toggle('on', x === b));
+  loadPlans();
+});
+document.querySelectorAll('#addkind button').forEach(b => b.onclick = () => {
+  addKind = b.dataset.k;
+  document.querySelectorAll('#addkind button').forEach(x => x.classList.toggle('on', x === b));
+  renderAddForm();
+});
+const VIEW_ASK = { today: 'today', tomorrow: 'tomorrow', week: 'week', deadlines: 'deadlines' };
+function renderAddForm() {
+  const g = planData && planData.google;
+  const toGoogle = g && addKind !== 'reminder' && document.querySelector('input[name=planwhere]:checked').value === 'google';
+  $('planwhere').hidden = !g || addKind === 'reminder';
+  $('planlen').hidden = addKind !== 'event';
+  $('planlocal').hidden = toGoogle;
+  $('plantitle').placeholder = { task: 'Что сделать', event: 'Название события', reminder: 'О чём напомнить' }[addKind];
+  $('addhint').textContent = addKind === 'event' && !g ? 'Google не подключён: событие сохранится на колонке, и она напомнит о нём.'
+    : addKind === 'task' ? 'Время — это срок (дедлайн): колонка предупредит заранее.'
+    : addKind === 'reminder' ? 'Колонка скажет это в указанное время.' : '';
+}
+document.querySelectorAll('input[name=planwhere]').forEach(r => r.onchange = renderAddForm);
+function planRow(i) {
+  const li = document.createElement('li');
+  li.className = [i.kind, i.overdue ? 'overdue' : '', i.priority === 'high' ? 'high' : ''].join(' ');
+  const time = document.createElement('span'); time.className = 'tm';
+  time.textContent = i.kind === 'event' ? (i.all_day ? 'весь день' : i.time) : i.time ? (i.kind === 'task' ? 'до ' + i.time : i.time) : '';
+  const pt = document.createElement('div'); pt.className = 'pt';
+  const b = document.createElement('b'); b.textContent = i.title; pt.appendChild(b);
+  const meta = [i.overdue ? 'просрочено' + (i.day_word ? ' · ' + i.day_word : '') : '', i.kind === 'reminder' ? '🔔 напоминание' : '',
+    i.kind === 'event' ? i.source : i.source === 'google' ? 'Google Задачи' : i.kind === 'task' ? 'на колонке' : ''].filter(Boolean).join(' · ');
+  if (meta) { const sm = document.createElement('small'); sm.textContent = meta; pt.appendChild(sm); }
+  if (i.kind === 'event') {
+    const dot = document.createElement('span'); dot.className = 'evdot';
+    li.append(dot, time, pt);
+  } else {
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.title = 'Выполнено';
+    cb.onchange = async () => {
+      cb.disabled = true;
+      const r = await post('/api/cmd', i.source === 'google' ? `plan gdone ${i.list} ${i.id}` : `plan done ${i.id}`);
+      if (r.startsWith('error')) { show($('planmsg'), r); cb.checked = false; cb.disabled = false; return; }
+      li.classList.add('done'); setTimeout(() => loadPlans(), 600);
+    };
+    const del = document.createElement('button'); del.className = 'link'; del.textContent = '✕'; del.title = 'Удалить';
+    del.onclick = async () => {
+      if (!confirm('Удалить «' + i.title + '»?')) return;
+      show($('planmsg'), await post('/api/cmd', i.source === 'google' ? `plan gdel ${i.list} ${i.id}` : `plan del ${i.id}`));
+      loadPlans();
+    };
+    li.append(cb, time, pt, del);
+  }
+  return li;
+}
+function groupHead(text) { const li = document.createElement('li'); li.className = 'grp'; li.textContent = text; return li; }
+async function loadPlans(fresh) {
+  if (fresh) { await post('/api/cmd', 'calendar'); await new Promise(r => setTimeout(r, 1500)); }
   const r = await postJSON('plan json');
   if (r.error) return;
+  planData = r;
   $('planon').checked = !!r.enabled;
   const mine = -new Date().getTimezoneOffset();
   $('plantz').innerHTML = '';
   $('plantz').append(`Часовой пояс колонки: UTC${r.offset_min >= 0 ? '+' : ''}${r.offset_min / 60}. `);
   if (mine !== r.offset_min) {
     const b = document.createElement('button'); b.className = 'link'; b.textContent = `Взять с этого устройства (UTC${mine >= 0 ? '+' : ''}${mine / 60})`;
-    b.onclick = async () => { show($('planmsg'), await post('/api/settings', JSON.stringify({ tz_offset: mine }))); loadPlans(); };
+    b.onclick = async () => { show($('plansetmsg'), await post('/api/settings', JSON.stringify({ tz_offset: mine }))); loadPlans(); };
     $('plantz').appendChild(b);
   }
-  const lists = { plantoday: [], planlater: [], plannodate: [], plandone: [] };
-  const today = new Date(); today.setHours(23, 59, 59, 999);
-  for (const t of r.tasks) {
-    const key = t.done ? 'plandone' : t.due == null ? 'plannodate' : t.due * 1000 <= today.getTime() ? 'plantoday' : 'planlater';
-    lists[key].push(t);
+  if (r.plan && document.activeElement?.closest('#tab-plans .field, #briefat') == null) {
+    $('planwarn').value = String(r.plan.warn); $('plandue').value = String(r.plan.due_time);
+    $('briefon').checked = !!r.plan.brief_on; $('briefdays').value = r.plan.brief_days;
+    $('briefat').value = `${String(Math.floor(r.plan.brief_at / 60)).padStart(2, '0')}:${String(r.plan.brief_at % 60).padStart(2, '0')}`;
   }
-  for (const [id, items] of Object.entries(lists)) {
-    const ul = $(id); ul.innerHTML = '';
-    for (const t of (id === 'plandone' ? items.slice(-20).reverse() : items)) {
-      const li = document.createElement('li');
-      li.className = [t.priority === 'high' ? 'high' : '', t.overdue ? 'overdue' : '', t.done ? 'done' : ''].join(' ');
-      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = t.done;
-      cb.onchange = async () => { await post('/api/cmd', `plan ${cb.checked ? 'done' : 'undone'} ${t.id}`); loadPlans(); };
-      const pt = document.createElement('div'); pt.className = 'pt';
-      const b = document.createElement('b'); b.textContent = t.title; pt.appendChild(b);
-      const meta = [t.when, REPEAT_NAMES[t.repeat], t.category, t.remind && !t.done ? '🔔' : ''].filter(Boolean).join(' · ');
-      if (meta) { const sm = document.createElement('small'); sm.textContent = meta; pt.appendChild(sm); }
-      const del = document.createElement('button'); del.className = 'link'; del.textContent = '✕'; del.title = 'Удалить';
-      del.onclick = async () => { await post('/api/cmd', 'plan del ' + t.id); loadPlans(); };
-      li.append(cb, pt, del); ul.appendChild(li);
+  const x = await post('/api/cmd', 'plan text ' + VIEW_ASK[planView]);
+  $('daytext').textContent = x.replace(/^OK:\s*/, '');
+  const ul = $('timeline'); ul.innerHTML = '';
+  const items = r.items || [];
+  let shown = [];
+  if (planView === 'today') {
+    const late = items.filter(i => i.overdue);
+    const today = items.filter(i => !i.overdue && i.day === 0);
+    const nodate = items.filter(i => !i.overdue && i.day == null);
+    if (late.length) { ul.appendChild(groupHead('Просрочено')); late.forEach(i => ul.appendChild(planRow(i))); }
+    ul.appendChild(groupHead('Сегодня'));
+    today.forEach(i => ul.appendChild(planRow(i)));
+    if (!today.length) { const li = document.createElement('li'); li.className = 'hint'; li.textContent = 'ничего'; ul.appendChild(li); }
+    if (nodate.length) { ul.appendChild(groupHead('Без срока')); nodate.forEach(i => ul.appendChild(planRow(i))); }
+    shown = [...late, ...today, ...nodate];
+  } else if (planView === 'tomorrow') {
+    shown = items.filter(i => !i.overdue && i.day === 1); shown.forEach(i => ul.appendChild(planRow(i)));
+  } else if (planView === 'week') {
+    let last = null;
+    for (const i of items.filter(i => !i.overdue && i.day != null && i.day < 7)) {
+      if (i.day !== last) { last = i.day; ul.appendChild(groupHead(i.day_word[0].toUpperCase() + i.day_word.slice(1))); }
+      ul.appendChild(planRow(i)); shown.push(i);
     }
-    if (!items.length && id !== 'plandone') { const li = document.createElement('li'); li.className = 'hint'; li.textContent = 'пусто'; ul.appendChild(li); }
+  } else {
+    shown = items.filter(i => i.kind === 'task' && (i.overdue || (i.day != null && i.day < 8)));
+    let last = null;
+    for (const i of shown) {
+      const g = i.overdue ? 'Просрочено' : i.day_word[0].toUpperCase() + i.day_word.slice(1);
+      if (g !== last) { last = g; ul.appendChild(groupHead(g)); }
+      ul.appendChild(planRow(i));
+    }
   }
+  if (!shown.length && planView !== 'today') { const li = document.createElement('li'); li.className = 'hint'; li.textContent = 'пусто'; ul.appendChild(li); }
+  const done = $('plandone'); done.innerHTML = '';
+  for (const x of (r.tasks || []).filter(x => x.done).slice(-20).reverse()) {
+    const li = document.createElement('li'); li.className = 'done';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = true; cb.title = 'Вернуть';
+    cb.onchange = async () => { await post('/api/cmd', `plan undone ${x.id}`); loadPlans(); };
+    const pt = document.createElement('div'); pt.className = 'pt'; const b = document.createElement('b'); b.textContent = x.title; pt.appendChild(b);
+    li.append(cb, pt); done.appendChild(li);
+  }
+  renderAddForm();
 }
+async function speakPlan() { show($('planmsg'), await post('/api/cmd', 'plan speak ' + VIEW_ASK[planView])); }
 async function addPlan() {
   const title = $('plantitle').value.trim();
-  if (!title) { show($('planmsg'), 'error: напишите, что сделать'); return; }
-  const v = $('plandue').value;
-  const body = { title, due: v ? Math.floor(new Date(v).getTime() / 1000) : null, repeat: v ? $('planrepeat').value : '',
-    priority: $('planprio').value, category: $('plancat').value.trim(), remind: !!v && $('planremind').checked };
-  show($('planmsg'), await post('/api/cmd', 'plan add ' + JSON.stringify(body)));
-  $('plantitle').value = ''; $('plandue').value = ''; loadPlans();
+  if (!title) { show($('planmsg'), 'error: напишите название'); return; }
+  const day = $('planday').value, time = $('plantime').value;
+  if (addKind !== 'task' && !day) { show($('planmsg'), 'error: выберите дату'); return; }
+  if (addKind === 'reminder' && !time) { show($('planmsg'), 'error: выберите время'); return; }
+  const g = planData && planData.google && addKind !== 'reminder' && document.querySelector('input[name=planwhere]:checked').value === 'google';
+  busy($('planmsg'), 'Добавляю…');
+  let r;
+  if (g) {
+    r = await post('/api/cmd', 'plan gadd ' + JSON.stringify({ title, day: day || null, time: time || null, event: addKind === 'event', minutes: Number($('planlen').value) }));
+  } else {
+    let due = null;
+    if (day) due = Math.floor(new Date(`${day}T${time || (addKind === 'task' ? '18:00' : '09:00')}`).getTime() / 1000);
+    r = await post('/api/cmd', 'plan add ' + JSON.stringify({ title, due, repeat: day ? $('planrepeat').value : '',
+      priority: $('planprio').value, category: '', remind: addKind !== 'task' && !!due }));
+  }
+  show($('planmsg'), r);
+  if (!r.startsWith('error')) { $('plantitle').value = ''; $('plantime').value = ''; setTimeout(loadPlans, 300); }
 }
-function renderCal(st, c) {
+async function savePlanSettings() {
+  const [h, m] = ($('briefat').value || '08:00').split(':').map(Number);
+  show($('plansetmsg'), await post('/api/settings', JSON.stringify({
+    plan_warn: Number($('planwarn').value), plan_due_time: Number($('plandue').value),
+    brief_on: $('briefon').checked, brief_at: h * 60 + m, brief_days: $('briefdays').value,
+  })));
+  loadPlans();
+}
+function renderCal(st) {
   $('calon').checked = !!st.cal_on;
   if (document.activeElement !== $('calurl')) $('calurl').value = st.cal_url || '';
   $('calremind').value = String(st.cal_remind ?? 10);
+  if (document.activeElement !== $('gid')) $('gid').value = st.g_client_id || '';
+  if (document.activeElement !== $('gsecret')) $('gsecret').value = st.g_client_secret || '';
+  $('guse').checked = !!st.g_on;
+  $('gtarget').value = st.plan_target || 'google';
+  gSettings = st;
 }
-let calSig = null;
+let gSettings = {}, gSig = null, gFetched = null;
 function renderCalState(c) {
   c = c || {};
-  const st = { cal_on: c.on };
   const t = c.fetched ? new Date(c.fetched * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
-  $('calstate').textContent = !st.cal_on ? ($('calon').checked ? 'Нет адреса.' : 'Выключен.') : c.error ? 'Ошибка: ' + c.error : t ? `Обновлён в ${t}, событий в календаре: ${c.events}. Обновляется каждые 15 минут.` : 'Загружаю…';
-  $('calstate').classList.toggle('err', !!(st.cal_on && c.error));
-  const list = (st.cal_on && c.next) || [], sig = JSON.stringify(list);
-  if (sig === calSig) return;
-  calSig = sig;
-  const ul = $('callist'); ul.innerHTML = '';
-  for (const e of list) ul.appendChild(item(e.title, e.when, '', null));
+  $('calstate').textContent = !c.on ? ($('calon').checked ? 'Нет адреса.' : 'Выключен.') : c.error ? 'Ошибка: ' + c.error : t ? `Обновлён в ${t}, событий: ${c.events}. Обновляется каждые 15 минут.` : 'Загружаю…';
+  $('calstate').classList.toggle('err', !!(c.on && c.error));
+  const g = c.google || {};
+  const connected = !!gSettings.g_connected;
+  $('gon').hidden = !connected; $('goff').hidden = connected;
+  const gt = g.fetched ? new Date(g.fetched * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+  $('gstate').textContent = !connected ? 'Не подключён.' : !g.on ? 'Подключён, но выключен.' : g.error ? 'Ошибка: ' + g.error
+    : gt ? `Подключён. Обновлено в ${gt}: событий ${g.events}, открытых задач ${g.tasks}. Обновляется каждые 5 минут.` : 'Подключён, загружаю…';
+  $('gstate').classList.toggle('err', !!(connected && g.error));
+  // New data from Google: the open «Планы» tab follows.
+  if (g.fetched && g.fetched !== gFetched) {
+    const first = gFetched !== null; gFetched = g.fetched;
+    if (first && $('tab-plans').classList.contains('on')) loadPlans();
+  }
+  const sig = JSON.stringify([g.calendars, g.lists, g.write, g.list]);
+  if (sig === gSig) return;
+  gSig = sig;
+  const box = $('gcals'); box.innerHTML = '';
+  for (const cal of g.calendars || []) {
+    const l = document.createElement('label'); l.className = 'check';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = cal.read; cb.dataset.id = cal.id;
+    const sp = document.createElement('span'); sp.textContent = cal.name + (cal.primary ? ' (основной)' : '');
+    l.append(cb, sp); box.appendChild(l);
+  }
+  $('gwrite').innerHTML = '';
+  for (const cal of (g.calendars || []).filter(c => c.writable)) {
+    const o = document.createElement('option'); o.value = cal.primary ? 'primary' : cal.id; o.textContent = cal.name; $('gwrite').appendChild(o);
+  }
+  $('gwrite').value = g.write || 'primary';
+  $('glist').innerHTML = '';
+  for (const l of g.lists || []) { const o = document.createElement('option'); o.value = l.id; o.textContent = l.title; $('glist').appendChild(o); }
+  if (g.list) $('glist').value = g.list;
 }
 async function saveCal() {
   const url = $('calurl').value.trim();
   if ($('calon').checked && !url) { show($('calmsg'), 'error: вставьте секретный адрес iCal'); $('calon').checked = false; return; }
   show($('calmsg'), await post('/api/settings', JSON.stringify({ cal_on: $('calon').checked, cal_url: url, cal_remind: Number($('calremind').value) })));
+  settingsLoaded = false; refresh();
+}
+async function saveGoogleClient() {
+  show($('gmsg'), await post('/api/settings', JSON.stringify({ g_client_id: $('gid').value.trim(), g_client_secret: $('gsecret').value.trim() })));
+  settingsLoaded = false; refresh();
+}
+async function googleLogin() {
+  const w = window.open('about:blank', '_blank');
+  await post('/api/settings', JSON.stringify({ g_client_id: $('gid').value.trim(), g_client_secret: $('gsecret').value.trim() }));
+  const r = await post('/api/cmd', 'google url');
+  if (!r.startsWith('OK ')) { if (w) w.close(); show($('gmsg'), r); return; }
+  const url = r.slice(3);
+  if (w) w.location = url; else location.href = url;
+  show($('gmsg'), 'OK: войдите в Google в открывшейся вкладке, затем вставьте сюда адрес, на котором она остановится.');
+  $('gpaste').focus();
+}
+async function googleCode() {
+  const v = $('gpaste').value.trim();
+  if (!v) { show($('gmsg'), 'error: вставьте адрес из браузера'); return; }
+  busy($('gmsg'), 'Подключаю…');
+  const r = await post('/api/cmd', 'google code ' + v);
+  show($('gmsg'), r);
+  if (r.startsWith('OK')) { $('gpaste').value = ''; settingsLoaded = false; refresh(); setTimeout(() => loadPlans(), 4000); }
+}
+async function saveGoogle() {
+  const read = [...document.querySelectorAll('#gcals input')];
+  show($('gmsg'), await post('/api/settings', JSON.stringify({
+    g_on: $('guse').checked, g_read: read.filter(cb => cb.checked).map(cb => cb.dataset.id),
+    g_write: $('gwrite').value === 'primary' ? '' : $('gwrite').value, g_list: $('glist').value || '', plan_target: $('gtarget').value,
+  })));
+  settingsLoaded = false; refresh(); setTimeout(() => loadPlans(true), 1500);
+}
+async function googleOff() {
+  if (!confirm('Отключить Google? Вход будет удалён с колонки (ключ клиента останется).')) return;
+  show($('gmsg'), await post('/api/cmd', 'google off'));
   settingsLoaded = false; refresh();
 }
 async function refreshCal() { show($('calmsg'), await post('/api/cmd', 'calendar')); setTimeout(refresh, 3000); }

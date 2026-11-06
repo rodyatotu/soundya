@@ -154,6 +154,40 @@ pub struct Settings {
     /// Say events this many minutes before; 0 = no reminders.
     #[serde(default = "ten_u16")]
     pub cal_remind: u16,
+    /// Planner: warn this many minutes before a deadline (0 = no).
+    #[serde(default = "thirty")]
+    pub plan_warn: u16,
+    /// A deadline with a date only is at this minute of the day (1440 = no time).
+    #[serde(default = "eighteen")]
+    pub plan_due_time: u16,
+    /// Morning brief: on, minute of the day, "all" | "weekdays".
+    #[serde(default)]
+    pub brief_on: bool,
+    #[serde(default = "eight")]
+    pub brief_at: u16,
+    #[serde(default = "all_days")]
+    pub brief_days: String,
+    /// New tasks by voice: "google" (when connected) or "local".
+    #[serde(default = "google_target")]
+    pub plan_target: String,
+    /// Google Calendar + Tasks with the user's own OAuth client (google.rs).
+    /// The secret and the refresh token are secrets.
+    #[serde(default)]
+    pub g_on: bool,
+    #[serde(default)]
+    pub g_client_id: String,
+    #[serde(default)]
+    pub g_client_secret: String,
+    #[serde(default)]
+    pub g_refresh: String,
+    /// Calendars to read (empty = those shown in Google Calendar itself).
+    #[serde(default)]
+    pub g_read: Vec<String>,
+    /// Calendar for new events ("" = primary) and the list for new tasks.
+    #[serde(default)]
+    pub g_write: String,
+    #[serde(default)]
+    pub g_list: String,
     /// Local time offset from UTC, minutes (the speaker's clock is UTC).
     #[serde(default = "msk")]
     pub tz_offset: i32,
@@ -292,6 +326,26 @@ fn ten() -> u8 {
 fn display_widgets() -> Vec<String> {
     vec!["clock".into(), "weather".into(), "pc".into()]
 }
+fn thirty() -> u16 {
+    30
+}
+
+fn eighteen() -> u16 {
+    18 * 60
+}
+
+fn eight() -> u16 {
+    8 * 60
+}
+
+fn all_days() -> String {
+    "all".into()
+}
+
+fn google_target() -> String {
+    "google".into()
+}
+
 fn ten_u16() -> u16 {
     10
 }
@@ -399,6 +453,19 @@ impl Default for Settings {
             cal_on: false,
             cal_url: String::new(),
             cal_remind: 10,
+            plan_warn: 30,
+            plan_due_time: 18 * 60,
+            brief_on: false,
+            brief_at: 8 * 60,
+            brief_days: "all".into(),
+            plan_target: "google".into(),
+            g_on: false,
+            g_client_id: String::new(),
+            g_client_secret: String::new(),
+            g_refresh: String::new(),
+            g_read: Vec::new(),
+            g_write: String::new(),
+            g_list: String::new(),
             tz_offset: 180,
             panel_pin: String::new(),
             onboarded: false,

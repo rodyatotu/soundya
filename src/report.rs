@@ -164,7 +164,7 @@ fn new_id() -> String {
 
 /// Values that must never leave the speaker, read from the settings.
 pub fn secrets(s: &crate::settings::Settings) -> Vec<String> {
-    let mut out = vec![s.token.clone(), s.pc_token.clone(), s.panel_pin.clone(), s.cal_url.clone()];
+    let mut out = vec![s.token.clone(), s.pc_token.clone(), s.panel_pin.clone(), s.cal_url.clone(), s.g_client_secret.clone(), s.g_refresh.clone()];
     // The calendar's secret part alone too (…/private-<hex>/…), in case it is logged in pieces.
     if let Some(p) = s.cal_url.split('/').find(|p| p.starts_with("private-")) {
         out.push(p.to_owned());
@@ -384,7 +384,7 @@ fn status_summary(shared: &Shared) -> Value {
                 "tv_host_set": set(s.get("tv_host")),
                 "contacts": s.get("pc_contacts").and_then(Value::as_array).map_or(0, Vec::len),
             });
-            for k in ["token", "proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "zapret_args", "airplay_name", "cal_url"] {
+            for k in ["token", "proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "zapret_args", "airplay_name", "cal_url", "g_client_secret", "g_refresh", "g_client_id"] {
                 s.remove(k);
             }
             s.insert("secrets".into(), facts);

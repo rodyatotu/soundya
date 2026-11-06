@@ -737,9 +737,13 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
             return Some(Intent::Planner(v));
         }
     } else if crate::calendar::active() {
-        // Only the calendar on: «какие планы на сегодня» is ours, «напомни …» stays Alice's.
-        if let Some(v @ crate::planner::Voice::Agenda(_)) = crate::planner::voice(&normalize(text)) {
-            return Some(Intent::Planner(v));
+        // Only a calendar on: questions are ours; with Google also «добавь задачу / в календарь»,
+        // «отметь выполненной»; «напомни …» stays Alice's.
+        if let Some(v) = crate::planner::voice(&normalize(text)) {
+            let ours = v.is_query() || (crate::calendar::google_on() && !matches!(v, crate::planner::Voice::Remind(_)));
+            if ours {
+                return Some(Intent::Planner(v));
+            }
         }
     }
     if let Some(d) = duck_command(&normalize(text)) {

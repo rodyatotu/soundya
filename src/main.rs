@@ -15,6 +15,7 @@ mod dns;
 mod ducking;
 mod eq;
 mod fsx;
+mod google;
 mod hello;
 mod history;
 mod ipt;
@@ -423,6 +424,19 @@ impl Controller {
         settings["cal_on"] = self.settings.cal_on.into();
         settings["cal_url"] = if self.settings.cal_url.is_empty() { String::new() } else { "•••••••• (секретный адрес сохранён)".into() }.into();
         settings["cal_remind"] = self.settings.cal_remind.into();
+        settings["plan_warn"] = self.settings.plan_warn.into();
+        settings["plan_due_time"] = self.settings.plan_due_time.into();
+        settings["brief_on"] = self.settings.brief_on.into();
+        settings["brief_at"] = self.settings.brief_at.into();
+        settings["brief_days"] = self.settings.brief_days.clone().into();
+        settings["plan_target"] = self.settings.plan_target.clone().into();
+        settings["g_on"] = self.settings.g_on.into();
+        settings["g_client_id"] = self.settings.g_client_id.clone().into();
+        settings["g_client_secret"] = if self.settings.g_client_secret.is_empty() { String::new() } else { "••••••••".into() }.into();
+        settings["g_connected"] = (!self.settings.g_refresh.is_empty()).into();
+        settings["g_read"] = self.settings.g_read.clone().into();
+        settings["g_write"] = self.settings.g_write.clone().into();
+        settings["g_list"] = self.settings.g_list.clone().into();
         settings["alice_voice_max"] = self.settings.alice_voice_max.into();
         settings["duck_mode"] = self.settings.duck_mode.clone().into();
         settings["duck_call_level"] = self.settings.duck_call_level.into();
@@ -687,6 +701,31 @@ impl Controller {
         }
         new.cal_remind = new.cal_remind.min(180);
         calendar::configure(new.cal_on, &new.cal_url, new.cal_remind);
+        // Google: the secret comes back masked; the refresh token only from «google code/off».
+        new.g_client_id = new.g_client_id.trim().to_owned();
+        new.g_client_secret = new.g_client_secret.trim().to_owned();
+        if new.g_client_secret.contains('•') {
+            new.g_client_secret = self.settings.g_client_secret.clone();
+        }
+        if new.g_client_id != self.settings.g_client_id || new.g_client_secret != self.settings.g_client_secret {
+            // Another client: the old sign-in is of no use to it.
+            if !self.settings.g_client_id.is_empty() && new.g_refresh == self.settings.g_refresh {
+                new.g_refresh.clear();
+            }
+        }
+        if !new.g_client_id.is_empty() && !new.g_client_id.ends_with(".apps.googleusercontent.com") {
+            return "error: ID клиента Google заканчивается на .apps.googleusercontent.com".into();
+        }
+        new.plan_warn = new.plan_warn.min(240);
+        new.plan_due_time = new.plan_due_time.min(1440);
+        new.brief_at = new.brief_at.min(1439);
+        if new.brief_days != "weekdays" {
+            new.brief_days = "all".into();
+        }
+        if new.plan_target != "local" {
+            new.plan_target = "google".into();
+        }
+        apply_planner(&new);
         new.led_order = new.led_order.trim().to_lowercase();
         if !led::set_order(&new.led_order) {
             return "error: порядок цветов — rgb, grb, brg, bgr, rbg или gbr".into();
@@ -1419,9 +1458,12 @@ impl Controller {
                     respond(reply, &format!("OK: {say}"), Some(say));
                 });
             }
+            // Google may take a few seconds: not on the controller's thread.
             Intent::Planner(v) => {
-                let text = planner::handle(v);
-                respond(reply, &format!("OK: {text}"), Some(text));
+                thread::spawn(move || {
+                    let text = planner::handle(v);
+                    respond(reply, &format!("OK: {text}"), Some(text));
+                });
             }
             Intent::Address => {
                 let text = hello::repeat();
@@ -1803,11 +1845,72 @@ impl Controller {
                     ("done", Some(id)) => if planner::set_done(id, true) { "OK".into() } else { "error: нет такой задачи".into() },
                     ("undone", Some(id)) => if planner::set_done(id, false) { "OK".into() } else { "error: нет такой задачи".into() },
                     ("del", Some(id)) => if planner::delete(id) { "OK".into() } else { "error: нет такой задачи".into() },
-                    ("say", _) => match planner::voice(&rest.to_lowercase()) {
-                        Some(v) => format!("OK: {}", planner::handle(v)),
+                    ("say", _) => match planner::voice(&alice::normalize_phrase(rest)) {
+                        Some(v) => {
+                            // Google may take a few seconds.
+                            thread::spawn(move || send_to(&reply, format!("OK: {}", planner::handle(v))));
+                            return;
+                        }
                         None => "error: не поняла фразу".into(),
                     },
-                    _ => "usage: plan json | add {json} | done|undone|del <id> | say <фраза>".into(),
+                    // The page's day card, and «Сказать вслух».
+                    ("text" | "speak", _) => {
+                        let text = planner::agenda_text(match rest.trim() {
+                            "tomorrow" => planner::Ask::Plans(1),
+                            "week" => planner::Ask::Week,
+                            "deadlines" => planner::Ask::Deadlines,
+                            "brief" => planner::Ask::Brief,
+                            _ => planner::Ask::Plans(0),
+                        }, planner::now(), planner::offset());
+                        if what == "speak" {
+                            alice::say(text.clone());
+                        }
+                        format!("OK: {text}")
+                    }
+                    // Google tasks from the page: «plan gdone <list> <id>», «plan gdel <list> <id>».
+                    ("gdone" | "gdel", _) => {
+                        let mut it = rest.split_whitespace();
+                        let (list, id) = (it.next().unwrap_or("").to_owned(), it.next().unwrap_or("").to_owned());
+                        let del = what == "gdel";
+                        thread::spawn(move || {
+                            let r = if del { calendar::delete_task(&list, &id) } else { calendar::complete_task(&list, &id) };
+                            send_to(&reply, r.map_or_else(|e| format!("error: {e}"), |_| "OK".into()));
+                        });
+                        return;
+                    }
+                    // New Google task or event from the page: {"title","day","time","event":bool,"minutes"}.
+                    ("gadd", _) => {
+                        let v: serde_json::Value = serde_json::from_str(rest).unwrap_or_default();
+                        let title = v["title"].as_str().unwrap_or("").trim().to_owned();
+                        if title.is_empty() {
+                            send_to(&reply, "error: нужно название".into());
+                            return;
+                        }
+                        thread::spawn(move || {
+                            let off = planner::offset();
+                            let day = v["day"].as_str().and_then(|d| {
+                                let p: Vec<i64> = d.split('-').filter_map(|x| x.parse().ok()).collect();
+                                (p.len() == 3).then(|| planner::days_from_civil(p[0], p[1] as u32, p[2] as u32))
+                            });
+                            let time = v["time"].as_str().and_then(|t| t.split_once(':')).and_then(|(h, m)| Some(h.parse::<i64>().ok()? * 3600 + m.parse::<i64>().ok()? * 60));
+                            let r = if v["event"].as_bool().unwrap_or(false) {
+                                match (day, time) {
+                                    (Some(d), Some(t)) => {
+                                        let start = d * 86_400 + t - off;
+                                        calendar::add_event(&title, start, start + v["minutes"].as_i64().unwrap_or(60).clamp(5, 1440) * 60, false)
+                                    }
+                                    (Some(d), None) => calendar::add_event(&title, d * 86_400 - off, 0, true),
+                                    _ => Err("для события нужна дата".into()),
+                                }
+                            } else {
+                                let notes = time.map(|t| format!("до {}:{:02}", t / 3600, t / 60 % 60)).unwrap_or_default();
+                                calendar::add_task(&title, day, &notes)
+                            };
+                            send_to(&reply, r.map_or_else(|e| format!("error: {e}"), |w| format!("OK: добавлено в «{w}»")));
+                        });
+                        return;
+                    }
+                    _ => "usage: plan json | add {json} | done|undone|del <id> | say <фраза> | speak today|tomorrow|week|deadlines|brief | gadd {json} | gdone|gdel <list> <id>".into(),
                 };
                 send_to(&reply, r);
             }
@@ -1854,8 +1957,46 @@ impl Controller {
                 send_to(&reply, r);
             }
             // «ledtest 0|1|2»: the ring test on the page (one raw channel file).
+            // Google sign-in: «google url», «google code <адрес из браузера>», «google off».
+            "google" => {
+                let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                match what {
+                    "url" => send_to(&reply, if self.settings.g_client_id.is_empty() || self.settings.g_client_secret.is_empty() {
+                        "error: сначала сохраните ID и секрет клиента".into()
+                    } else {
+                        format!("OK {}", google::auth_url(&self.settings.g_client_id))
+                    }),
+                    "code" => {
+                        let (id, secret) = (self.settings.g_client_id.clone(), self.settings.g_client_secret.clone());
+                        let (shared, tx, pasted) = (self.shared.clone(), self.tx.clone(), rest.to_owned());
+                        thread::spawn(move || {
+                            let proxy = shared.proxy.lock().unwrap().clone();
+                            let r = sc::build_agent(&proxy).map_err(|e| e.to_string()).and_then(|a| google::exchange(&a, &id, &secret, &pasted));
+                            let text = match r {
+                                Ok(refresh) => {
+                                    let (rtx, rrx) = mpsc::channel();
+                                    let _ = tx.send(Cmd::Settings(serde_json::json!({ "g_refresh": refresh, "g_on": true }), rtx));
+                                    let _ = rrx.recv_timeout(Duration::from_secs(10));
+                                    eprintln!("google: signed in");
+                                    "OK: Google подключён".to_owned()
+                                }
+                                Err(e) => format!("error: {e}"),
+                            };
+                            send_to(&reply, text);
+                        });
+                    }
+                    "off" => {
+                        let mut new = self.settings.clone();
+                        new.g_refresh.clear();
+                        new.g_on = false;
+                        let r = self.apply_settings(new);
+                        send_to(&reply, if r.starts_with("error") { r } else { "OK: Google отключён".into() });
+                    }
+                    _ => send_to(&reply, "usage: google url | code <адрес> | off".into()),
+                }
+            }
             // «Обновить сейчас» in «Планы» → «Календарь».
-            "calendar" => send_to(&reply, if calendar::active() {
+            "calendar" => send_to(&reply, if calendar::active() || calendar::google_on() {
                 calendar::wake();
                 "OK: обновляю календарь".into()
             } else {
@@ -2293,6 +2434,20 @@ fn display_widgets(s: &Settings) -> display::Widgets {
 }
 
 /// The speaker, for the panel's home page (read once).
+/// Planner, Google sign-in and which calendars to read, from the settings.
+fn apply_planner(s: &Settings) {
+    planner::configure_plan(planner::Plan {
+        warn: s.plan_warn,
+        due_time: s.plan_due_time,
+        brief_on: s.brief_on,
+        brief_at: s.brief_at,
+        brief_days: s.brief_days.clone(),
+        target: s.plan_target.clone(),
+    });
+    google::configure(google::Config { client_id: s.g_client_id.clone(), secret: s.g_client_secret.clone(), refresh: s.g_refresh.clone() });
+    calendar::configure_google(s.g_on && !s.g_refresh.is_empty(), &s.g_read, &s.g_write, &s.g_list);
+}
+
 fn device_info() -> serde_json::Value {
     static INFO: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     INFO.get_or_init(|| {
@@ -2575,6 +2730,7 @@ fn daemon() {
     planner::configure(settings.planner_on, settings.tz_offset);
     planner::run(&dir);
     calendar::configure(settings.cal_on, &settings.cal_url, settings.cal_remind);
+    apply_planner(&settings);
     calendar::run(&dir, shared.clone());
     // Optional panel PIN and its saved browser sessions.
     auth::init(&dir, &settings.panel_pin);
