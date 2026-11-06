@@ -100,7 +100,8 @@ done
 note "Устанавливаю… (до двух минут, музыка прервётся)"
 # Установщик работает на колонке сам: обрыв adb ему не помешает.
 "$ADB" -s "$DEV" shell "cd /tmp && rm -rf /tmp/soundya /tmp/soundya-install.done && tar -xf soundya-armv7.tar && \
-    (nohup setsid sh -c 'sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done' </dev/null >/dev/null 2>&1 &)" >>"$LOG" 2>&1
+    trap '' HUP; (trap '' HUP; nohup setsid sh -c 'sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done' </dev/null >/dev/null 2>&1 &); \
+    i=0; while [ \$i -lt 10 ] && [ ! -e /tmp/soundya-install.log ]; do sleep 1; i=\$((i+1)); done" >>"$LOG" 2>&1
 for i in $(seq 1 90); do
     sleep 2
     "$ADB" connect "$DEV" >/dev/null 2>&1

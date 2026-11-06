@@ -528,14 +528,20 @@ fn connect_max(host: &str, key: &Key, confirm_wait: Duration) -> Result<(TcpStre
 
 /// Runs `command` in the TV's shell and returns what it printed.
 pub fn shell(host: &str, key: &Key, command: &str, confirm_wait: Duration) -> Result<String, Error> {
+    shell_for(host, key, command, confirm_wait, Duration::from_secs(30))
+}
+
+/// `shell` that may run up to `total` (a foreground install takes minutes).
+pub fn shell_for(host: &str, key: &Key, command: &str, confirm_wait: Duration, total: Duration) -> Result<String, Error> {
     let mut s = connect(host, key, confirm_wait)?;
+    let _ = s.set_read_timeout(Some(total.min(Duration::from_secs(600))));
     let local = 1u32;
     let mut service = format!("shell:{command}").into_bytes();
     service.push(0);
     send(&mut s, OPEN, local, 0, &service)?;
     let mut remote = 0u32;
     let mut out = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + total;
     while Instant::now() < deadline {
         let m = match recv(&mut s) {
             Ok(m) => m,

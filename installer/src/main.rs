@@ -43,7 +43,16 @@ use std::{
 use serde_json::{json, Value};
 
 /// The speaker build (scripts/build-installer.sh puts it there before building).
-static TAR: &[u8] = include_bytes!("../../dist/soundya-armv7.tar");
+static BUILT_IN: &[u8] = include_bytes!("../../dist/soundya-armv7.tar");
+
+/// The speaker's package; tests give another one (an x86 build) with SOUNDYA_INSTALLER_TAR.
+fn tar() -> &'static [u8] {
+    static T: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    match std::env::var("SOUNDYA_INSTALLER_TAR") {
+        Ok(p) => T.get_or_init(|| std::fs::read(p).unwrap_or_else(|_| BUILT_IN.to_vec())),
+        Err(_) => BUILT_IN,
+    }
+}
 static PAGE: &str = include_str!("wizard.html");
 static CARGO: &str = include_str!("../../Cargo.toml");
 #[cfg(windows)]
@@ -225,6 +234,29 @@ fn job_json(j: &Job) -> Value {
             "result": j.result, "reason": j.reason, "version": j.version })
 }
 
+/// What install.sh is run as, on the speaker.
+const RUN_INSTALL: &str = "sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done";
+
+/// Where install.sh is, from its own log lines: (percent, what is happening).
+fn progress_of(lines: &[&str]) -> (u32, &'static str) {
+    let has = |p: &str| lines.iter().any(|l| l.contains(p));
+    if has("update: ok") || has("Installed soundya") {
+        (96, "Готово, проверяю…")
+    } else if has("rolling back") || has("update: rolledback") {
+        (90, "Новая версия не запустилась — возвращаю прежнюю…")
+    } else if has("soundya started") {
+        (85, "Жду, пока soundya запустится и скажет, что готова…")
+    } else if has("soundya stopped") {
+        (78, "Заменяю программу…")
+    } else if has("backup:") {
+        (74, "Сохранил копию программы и настроек…")
+    } else if has("package:") {
+        (70, "Архив проверен, делаю копию настроек…")
+    } else {
+        (66, "Запускаю установку на колонке…")
+    }
+}
+
 fn install(ip: String, features: Option<Value>, job: Arc<Mutex<Job>>) {
     let set = |phase: &str, pct: u32| {
         let mut j = job.lock().unwrap();
@@ -244,10 +276,10 @@ fn install(ip: String, features: Option<Value>, job: Arc<Mutex<Job>>) {
         Err(e) => return fail(e),
     };
     set("Загружаю soundya на колонку…", 2);
-    let total = TAR.len();
+    let total = tar().len();
     let mut pushed = false;
     for attempt in 1..=4 {
-        let r = adb::push(&ip, &key, TAR, "/tmp/soundya-armv7.tar", |sent| {
+        let r = adb::push(&ip, &key, tar(), "/tmp/soundya-armv7.tar", |sent| {
             job.lock().unwrap().percent = 2 + (sent as u64 * 60 / total.max(1) as u64) as u32;
         });
         match r {
@@ -278,44 +310,111 @@ fn install(ip: String, features: Option<Value>, job: Arc<Mutex<Job>>) {
         let _ = adb::shell(&ip, &key, &format!("printf '{text}' > /tmp/soundya-features"), Duration::from_secs(5));
     }
     set("Устанавливаю: копия настроек, замена программы, проверка запуска…", 64);
-    let started = adb::shell(
+    // install.sh runs on the speaker by itself, so a dropped ADB link does not
+    // break it. The ADB «shell:» service runs commands on a terminal: when the
+    // session ends, the terminal's process group gets SIGHUP — a background job
+    // that has not reached nohup/setsid yet dies with it, silently (0.5.00
+    // betas «hung» at 95 % because of this). So SIGHUP is ignored before the
+    // job starts (an ignored signal stays ignored across exec), and the log
+    // must exist before the session closes.
+    let started = adb::shell_for(
         &ip,
         &key,
-        "cd /tmp && rm -rf /tmp/soundya /tmp/soundya-install.done /tmp/soundya-install.log && tar -xf soundya-armv7.tar && \
-         (nohup setsid sh -c 'sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done' \
-         </dev/null >/dev/null 2>&1 &) && echo STARTED",
+        &format!(
+            "cd /tmp && rm -rf /tmp/soundya /tmp/soundya-install.done /tmp/soundya-install.log && tar -xf soundya-armv7.tar && \
+             [ -f /tmp/soundya/install.sh ] && {{ trap '' HUP; (trap '' HUP; nohup setsid sh -c '{RUN_INSTALL}' </dev/null >/dev/null 2>&1 &); \
+             i=0; while [ $i -lt 10 ] && [ ! -e /tmp/soundya-install.log ]; do sleep 1; i=$((i+1)); done; \
+             if [ -e /tmp/soundya-install.log ]; then echo STARTED; else echo NOTSTARTED; fi; }}"
+        ),
         Duration::from_secs(10),
+        Duration::from_secs(60),
     )
-    .unwrap_or_default();
-    if !started.contains("STARTED") {
+    .unwrap_or_else(|e| format!("error: {e}"));
+    let foreground = if started.contains("NOTSTARTED") {
+        true
+    } else if started.contains("STARTED") {
+        false
+    } else {
         return fail(format!("архив не распаковался на колонке: {}", started.trim()));
-    }
-    // The installer runs on the speaker by itself; follow its log.
-    let t0 = Instant::now();
-    let mut seen = 0usize;
-    let mut done = false;
-    while t0.elapsed() < Duration::from_secs(300) {
-        thread::sleep(Duration::from_secs(2));
-        let out = match adb::shell(&ip, &key, "cat /tmp/soundya-install.log 2>/dev/null; [ -f /tmp/soundya-install.done ] && echo __DONE__", Duration::from_secs(5)) {
-            Ok(o) => o,
-            Err(_) => continue,
-        };
-        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty() && *l != "__DONE__").collect();
-        {
-            let mut j = job.lock().unwrap();
-            for l in lines.iter().skip(seen) {
-                j.log.push(l.trim().to_owned());
+    };
+    if foreground {
+        // The background start did not take: run it in this session and wait (up to 6 minutes).
+        job.lock().unwrap().log.push("Фоновый запуск не удался — устанавливаю в обычном режиме, не закрывайте окно…".into());
+        let out = adb::shell_for(
+            &ip,
+            &key,
+            "sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; echo __RC=$?; touch /tmp/soundya-install.done; cat /tmp/soundya-install.log",
+            Duration::from_secs(10),
+            Duration::from_secs(360),
+        );
+        let mut j = job.lock().unwrap();
+        match out {
+            Ok(o) => {
+                for l in o.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("__RC=")) {
+                    j.log.push(l.trim().to_owned());
+                }
             }
-            seen = lines.len().max(seen);
-            j.percent = (64 + t0.elapsed().as_secs() as u32 / 2).min(95);
+            Err(e) => j.log.push(format!("связь с колонкой оборвалась ({e}); проверяю результат…")),
         }
-        if out.contains("__DONE__") {
-            done = true;
-            break;
+    } else {
+        // Follow its log; the bar moves with install.sh's own steps.
+        let t0 = Instant::now();
+        let mut seen = 0usize;
+        let mut done = false;
+        let mut misses = 0;
+        let mut last_new = Instant::now();
+        while t0.elapsed() < Duration::from_secs(420) {
+            thread::sleep(Duration::from_secs(2));
+            let out = match adb::shell(
+                &ip,
+                &key,
+                "cat /tmp/soundya-install.log 2>/dev/null; [ -f /tmp/soundya-install.done ] && echo __DONE__; \
+                 ps >/dev/null 2>&1 && echo __PS__; ps 2>/dev/null | grep -q '[i]nstall.sh' && echo __ALIVE__; true",
+                Duration::from_secs(5),
+            ) {
+                Ok(o) => {
+                    misses = 0;
+                    o
+                }
+                Err(e) => {
+                    misses += 1;
+                    if misses == 3 {
+                        job.lock().unwrap().log.push(format!("колонка не отвечает ({e}), продолжаю ждать…"));
+                    }
+                    continue;
+                }
+            };
+            let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("__")).collect();
+            {
+                let mut j = job.lock().unwrap();
+                if lines.len() > seen {
+                    last_new = Instant::now();
+                }
+                for l in lines.iter().skip(seen) {
+                    j.log.push(l.trim().to_owned());
+                }
+                seen = lines.len().max(seen);
+                let (pct, phase) = progress_of(&lines);
+                j.percent = pct;
+                let waited = t0.elapsed().as_secs();
+                j.phase = format!("{phase} ({waited} с)");
+            }
+            if out.contains("__DONE__") {
+                done = true;
+                break;
+            }
+            // Nothing new for a while and install.sh is gone (and no «done»): it died; say so now.
+            if out.contains("__PS__") && !out.contains("__ALIVE__") && last_new.elapsed() > Duration::from_secs(45) {
+                let tail: Vec<&str> = lines.iter().rev().take(3).rev().copied().collect();
+                return fail(format!(
+                    "установщик на колонке остановился без результата{}",
+                    if tail.is_empty() { String::new() } else { format!(": {}", tail.join(" / ")) }
+                ));
+            }
         }
-    }
-    if !done {
-        return fail("установщик на колонке не закончил за 5 минут — посмотрите /tmp/soundya-install.log".into());
+        if !done {
+            return fail("установщик на колонке не закончил за 7 минут — журнал: adb shell cat /tmp/soundya-install.log".into());
+        }
     }
     let res = adb::shell(&ip, &key, "cat /data/opt/soundya/update-result 2>/dev/null", Duration::from_secs(5)).unwrap_or_default();
     let field = |k: &str| res.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or("").trim().to_owned();

@@ -143,8 +143,8 @@ Ok 'загружено'
 
 # Runs on the speaker by itself, so a dropped connection cannot stop it halfway.
 $start = "cd /tmp && rm -rf soundya /tmp/soundya-install.done /tmp/soundya-install.log && tar -xf soundya-armv7.tar && " +
-    "nohup setsid sh -c 'sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done' " +
-    "</dev/null >/dev/null 2>&1 & sleep 1; [ -f /tmp/soundya-install.log ] && echo started"
+    "trap '' HUP; nohup setsid sh -c 'sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done' " +
+    "</dev/null >/dev/null 2>&1 & sleep 2; [ -f /tmp/soundya-install.log ] && echo started"
 $started = $false
 for ($try = 1; $try -le 5 -and -not $started; $try++) {
     Run-Adb connect $dev | Out-Null

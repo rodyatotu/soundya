@@ -44,8 +44,8 @@ start_install() {
     # keeps running when adb disconnects.
     adb -s "$DEV" shell "cd /tmp && rm -rf soundya /tmp/soundya-install.done /tmp/soundya-install.log && \
         tar -xf soundya-armv7.tar && \
-        nohup setsid sh -c 'sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done' \
-        </dev/null >/dev/null 2>&1 & sleep 1; [ -f /tmp/soundya-install.log ]"
+        trap '' HUP; nohup setsid sh -c 'sh /tmp/soundya/install.sh > /tmp/soundya-install.log 2>&1; touch /tmp/soundya-install.done' \
+        </dev/null >/dev/null 2>&1 & sleep 2; [ -f /tmp/soundya-install.log ]"
 }
 
 installed() {

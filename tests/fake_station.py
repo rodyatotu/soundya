@@ -3,7 +3,12 @@
 (CNXN without auth, shell:, sync: SEND/DATA/DONE), the panel on :8765.
 Files pushed and settings received are written to the directory given.
 
-    python3 tests/fake_station.py <dir> [--existing]
+    python3 tests/fake_station.py <dir> [--existing] [--exec <root>]
+
+--exec runs shell commands for real (install.sh included, with its test
+overrides pointing into <root>), the way the speaker's adbd does with the
+«shell:» service: on a terminal, so when a session ends its process group
+gets SIGHUP. A background job not protected from that dies, as on a speaker.
 """
 import http.server
 import json
@@ -16,6 +21,7 @@ import time
 
 OUT = sys.argv[1]
 EXISTING = "--existing" in sys.argv
+EXEC = sys.argv[sys.argv.index("--exec") + 1] if "--exec" in sys.argv else None
 os.makedirs(OUT, exist_ok=True)
 A_CNXN, A_OPEN, A_OKAY, A_CLSE, A_WRTE = (struct.unpack("<I", x)[0] for x in (b"CNXN", b"OPEN", b"OKAY", b"CLSE", b"WRTE"))
 MAXDATA = 4096
@@ -44,8 +50,37 @@ def recv(c):
     return cmd, a0, a1, d
 
 
+def run_real(cmd):
+    import signal
+    import subprocess
+    cmd = cmd.replace("/data/opt/soundya", os.path.join(EXEC, "opt"))
+    env = dict(os.environ, SOUNDYA_INSTALL_DIR=os.path.join(EXEC, "opt"), SOUNDYA_INIT=os.path.join(EXEC, "init"),
+               SOUNDYA_RUN=os.path.join(EXEC, "run"), SOUNDYA_HEALTH_WAIT="20", SOUNDYA_HEALTH_HOLD="2")
+    p = subprocess.Popen(["sh", "-c", cmd], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         preexec_fn=os.setpgrp, env=env)
+    out = b""
+    while True:
+        chunk = p.stdout.read1(65536) if hasattr(p.stdout, "read1") else p.stdout.read(65536)
+        if not chunk:
+            break
+        out += chunk
+        if p.poll() is not None and not chunk:
+            break
+    p.wait()
+    # The terminal hangs up: SIGHUP to the session's process group, as adbd's pty does.
+    try:
+        os.killpg(p.pid, signal.SIGHUP)
+    except ProcessLookupError:
+        pass
+    with open(os.path.join(OUT, "shell.log"), "a") as f:
+        f.write(f"$ {cmd[:160]}\n{out.decode(errors='replace')[:400]}\n")
+    return out.decode(errors="replace")
+
+
 def shell(cmd):
     tar = os.path.join(OUT, "soundya-armv7.tar")
+    if EXEC and not cmd.startswith("id -u"):
+        return run_real(cmd)
     if cmd.startswith("id -u"):
         v = "0.4.40" if EXISTING else ""
         return f"0\nQUASAR\nHOST=yandexmini_2\nMODEL=\nSOUNDYA={'soundya ' + v if v else ''}\n" + ("CONFIG\n" if EXISTING else "")
@@ -109,8 +144,9 @@ def serve(c):
                         st["buf"] = st["buf"][8 + n:]
                     elif tag == b"DONE":
                         st["buf"] = st["buf"][8:]
-                        name = os.path.basename(st["path"].split(",")[0])
-                        open(os.path.join(OUT, name), "wb").write(st["data"])
+                        path = st["path"].split(",")[0]
+                        name = os.path.basename(path)
+                        open(path if EXEC else os.path.join(OUT, name), "wb").write(st["data"])
                         c.sendall(pkt(A_WRTE, a1, a0, b"OKAY\0\0\0\0"))
                     elif tag == b"QUIT":
                         st["buf"] = st["buf"][8:]
