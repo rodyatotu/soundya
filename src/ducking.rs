@@ -187,6 +187,8 @@ pub fn run(shared: Arc<Shared>) {
     thread::spawn(move || loop {
         let level = level_now(&mut STATE.lock().unwrap(), Instant::now());
         shared.duck.set_external(level);
+        // Browser listeners whose page closed stop counting after 12 s.
+        shared.duck.set_listening(crate::web::listeners() > 0);
         thread::sleep(Duration::from_millis(250));
     });
 }

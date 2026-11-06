@@ -423,6 +423,13 @@ impl Controller {
             "volume": volume::level(),
             "led": led::info(),
             "ducking": ducking::json(),
+            "listen": serde_json::json!({
+                "listeners": web::listeners(),
+                "muted": self.shared.duck.listening(),
+                "gen": web::LISTEN_GEN.load(Ordering::Acquire),
+                // MP3/AAC start in the browser where the speaker is; MP4 from the beginning.
+                "seekable": current.and_then(Track::transcoding).is_some_and(|(_, k)| k != sc::Kind::Mp4),
+            }),
             "onboarding": serde_json::json!({
                 "stage": format!("{:?}", hello::stage()),
                 "phase": led::install_phase().map(|p| format!("{p:?}")),

@@ -210,6 +210,10 @@
   .modal-card .field textarea { margin-top: 4px; min-height: 56px; }
   .hint, .msg, ul.reports li, pre.notes { overflow-wrap: anywhere; }
   .ledrow select { flex: 1; }
+  .outrow { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+  .outrow .seg { flex: 1; margin-top: 0; }
+  #listennote { margin-top: 8px; }
+  #listennote button { margin-left: 6px; }
   a.bookmarklet { display: inline-block; padding: 4px 10px; border-radius: 10px; background: var(--accent); color: var(--accent-ink);
     text-decoration: none; font-weight: 600; cursor: grab; }
   ol.steps { padding-left: 22px; margin: 8px 0; }
@@ -423,7 +427,16 @@
       <ul class="list" id="pickerlist"></ul>
     </div>
     <div class="msg" id="actmsg"></div>
-  </section>
+      <div class="outrow">
+      <span class="hint">Где играет</span>
+      <div class="seg out" id="outseg" role="radiogroup">
+        <button data-out="speaker" role="radio" class="on">Колонка</button>
+        <button data-out="here" role="radio">Здесь</button>
+      </div>
+    </div>
+    <div class="hint" id="listennote" hidden></div>
+    <audio id="listenaudio" preload="none"></audio>
+</section>
 
   <div class="party" id="party" hidden>
     <div class="partytext">🎉 <b id="partytitle"></b> Спасибо, что пользуетесь soundya и рассказываете о ней друзьям!</div>
@@ -1533,6 +1546,65 @@ async function saveMacro() {
   if (!r.startsWith('error')) { macroEditing = phrase; loadMacros(); }
 }
 
+// ---- «Где играет»: колонка или этот браузер ----
+// The speaker keeps the queue and the clock (and fades its own sound out);
+// this page plays the same track from the same place and follows it.
+const tabId = Math.random().toString(36).slice(2, 12);
+let listening = false, listenTrack = null, listenOffset = 0, listenGen = null, listenBeat = null;
+const la = () => $('listenaudio');
+async function beat(on) {
+  try { const r = await authed('/api/listen', { method: 'POST', body: JSON.stringify({ id: tabId, on }) }); return r.ok; } catch (e) { return false; }
+}
+async function setOutput(where) {
+  document.querySelectorAll('#outseg button').forEach(b => b.classList.toggle('on', b.dataset.out === where));
+  if (where === 'here' && !listening) {
+    if (!(await beat(true))) { setOutput('speaker'); return; }
+    listening = true; listenTrack = null; listenGen = null;
+    listenBeat = setInterval(() => beat(true), 5000);
+    refresh();
+  } else if (where === 'speaker' && listening) {
+    listening = false; clearInterval(listenBeat);
+    la().pause(); la().removeAttribute('src'); la().load();
+    beat(false); refresh();
+  }
+}
+document.querySelectorAll('#outseg button').forEach(b => b.onclick = () => setOutput(b.dataset.out));
+async function stopAllListeners() {
+  await authed('/api/listen', { method: 'POST', body: JSON.stringify({ all: 'stop' }) });
+  refresh();
+}
+function syncListen(s) {
+  const L = s.listen || { listeners: 0 };
+  const others = L.listeners - (listening ? 1 : 0);
+  const note = $('listennote');
+  note.hidden = !(L.listeners > 0);
+  if (!note.hidden) {
+    note.innerHTML = '';
+    note.append(listening ? (others > 0 ? `Звучит здесь и ещё в ${others} браузере(ах); колонка молчит.` : 'Звучит здесь; колонка молчит.')
+      : `Музыка звучит в браузере у ${L.listeners} слушател${L.listeners === 1 ? 'я' : 'ей'}; колонка молчит.`);
+    const b = document.createElement('button'); b.className = 'link'; b.textContent = 'Вернуть звук на колонку'; b.onclick = stopAllListeners;
+    note.appendChild(b);
+  }
+  if (!listening) return;
+  if (listenGen === null) listenGen = L.gen;
+  else if (L.gen !== listenGen) { setOutput('speaker'); $('listennote').hidden = false; $('listennote').textContent = 'Звук вернули на колонку.'; return; }
+  const a = la();
+  if (s.state === 'stopped' || !s.current_id) { a.pause(); return; }
+  const est = listenOffset + a.currentTime * 1000;
+  const drift = Math.abs(est - s.position_ms);
+  if (s.current_id !== listenTrack || (s.state === 'playing' && L.seekable && !a.paused && drift > 4000)) {
+    listenTrack = s.current_id;
+    listenOffset = L.seekable ? s.position_ms : 0;
+    a.src = `/api/stream?id=${s.current_id}&t=${listenOffset}`;
+    if (!L.seekable) note.append(' Этот трек в браузере начнётся с начала.');
+  }
+  if (s.state === 'playing' && a.paused) a.play().catch(e => notePageError('listen: ' + e));
+  if (s.state === 'paused' && !a.paused) a.pause();
+}
+window.addEventListener('pagehide', () => {
+  if (listening) fetch('/api/listen', { method: 'POST', body: JSON.stringify({ id: tabId, on: false }), keepalive: true }).catch(() => {});
+});
+
 // ---- приглушение при звонках ----
 const DUCK_HINT = {
   smart: 'Звонки и уведомления.', calls: 'Только звонки.', notify: 'Только уведомления.',
@@ -1912,6 +1984,7 @@ async function refresh() {
   $('loginwarn').hidden = s.login !== 'refused';
   renderNet(s.net);
   renderDuckState(s.ducking);
+  syncListen(s);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
   renderVolume(s.volume);
   // The switch, the line above it and the list always show what the speaker has

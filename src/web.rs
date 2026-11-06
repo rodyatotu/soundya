@@ -17,6 +17,21 @@ use crate::{
 };
 
 #[cfg(test)]
+mod listen_tests {
+    #[test]
+    fn listeners_come_and_go() {
+        assert_eq!(super::listen("tabA", true), 1);
+        assert_eq!(super::listen("tabB", true), 2);
+        assert_eq!(super::listen("tabA", true), 2, "a heartbeat is not a new listener");
+        assert_eq!(super::listen("tabA", false), 1);
+        let g = super::LISTEN_GEN.load(std::sync::atomic::Ordering::Acquire);
+        super::stop_listeners();
+        assert_eq!(super::listeners(), 0);
+        assert_eq!(super::LISTEN_GEN.load(std::sync::atomic::Ordering::Acquire), g + 1);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::allowed;
 
@@ -64,6 +79,43 @@ pub fn serve(port: u16, tx: Sender<Cmd>, shared: Arc<Shared>, client: Client) {
             });
         }
     });
+}
+
+/// Browsers listening right now («Слушать здесь»): tab id → last heartbeat.
+static LISTENERS: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = std::sync::Mutex::new(None);
+/// Bumped by «Вернуть звук на колонку»: every listening tab stops.
+pub static LISTEN_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const LISTEN_TTL: Duration = Duration::from_secs(12);
+static STREAMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const MAX_STREAMS: usize = 6;
+
+/// How many browsers listen now (expired heartbeats dropped).
+pub fn listeners() -> usize {
+    let mut g = LISTENERS.lock().unwrap();
+    let map = g.get_or_insert_with(Default::default);
+    map.retain(|_, at| at.elapsed() < LISTEN_TTL);
+    map.len()
+}
+
+/// A tab starts (`on`), keeps (`on` again within 12 s) or stops listening.
+pub fn listen(id: &str, on: bool) -> usize {
+    let id: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).take(40).collect();
+    {
+        let mut g = LISTENERS.lock().unwrap();
+        let map = g.get_or_insert_with(Default::default);
+        if on && !id.is_empty() {
+            map.insert(id, std::time::Instant::now());
+        } else {
+            map.remove(&id);
+        }
+    }
+    listeners()
+}
+
+/// «Вернуть звук на колонку».
+pub fn stop_listeners() {
+    LISTENERS.lock().unwrap().get_or_insert_with(Default::default).clear();
+    LISTEN_GEN.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
 static OPEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -161,24 +213,51 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             }
         };
     }
-    // Live audio of the playing track, piped to the browser through the speaker
-    // (so it plays even where SoundCloud is blocked for the browser's network).
-    // A plain progressive stream — no seeking.
+    // «Слушать здесь»: the playing track piped to the browser through the
+    // speaker (it plays even where SoundCloud is blocked for the browser's
+    // network). `id` must be the track playing now; `t` (ms) starts it there:
+    // MP3 and ADTS streams resync on frame headers, so the bytes before are
+    // skipped (by the bitrate SoundCloud uses: 128 / 160 kbit/s); MP4 starts
+    // from the beginning (the page knows from `stream_seekable`).
     if method == "GET" && (path == "/api/stream" || path.starts_with("/api/stream?")) {
         let mut out = &conn;
+        let query = path.split_once('?').map_or("", |(_, q)| q);
+        let param = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).unwrap_or("");
         let track = shared.now_track.lock().unwrap().clone();
         let Some(track) = track else {
-            write!(out, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")?;
-            return out.flush();
+            return reply(&conn, "404 Not Found", "text/plain", "nothing playing");
         };
+        if !param("id").is_empty() && param("id") != track.id.to_string() {
+            return reply(&conn, "409 Conflict", "text/plain", "another track is playing");
+        }
+        if STREAMS.fetch_add(1, std::sync::atomic::Ordering::AcqRel) >= MAX_STREAMS {
+            STREAMS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            return reply(&conn, "503 Service Unavailable", "text/plain; charset=utf-8", "слишком много слушателей");
+        }
+        struct Release;
+        impl Drop for Release {
+            fn drop(&mut self) {
+                STREAMS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+        let _release = Release;
         match client.open(&track) {
             Ok((mut src, kind)) => {
-                let mime = match kind {
-                    Kind::Mp4 => "audio/mp4",
-                    Kind::Adts => "audio/aac",
-                    _ => "audio/mpeg",
+                let (mime, bytes_per_ms) = match kind {
+                    Kind::Mp4 => ("audio/mp4", 0),
+                    Kind::Adts => ("audio/aac", 20),
+                    _ => ("audio/mpeg", 16),
                 };
-                write!(out, "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")?;
+                let t: u64 = param("t").parse().unwrap_or(0);
+                let skip = t * bytes_per_ms;
+                if skip > 0 {
+                    let _ = std::io::copy(&mut (&mut src).take(skip), &mut std::io::sink());
+                }
+                write!(
+                    out,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nX-Soundya-Offset: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                    if bytes_per_ms > 0 { t } else { 0 }
+                )?;
                 let mut buf = [0u8; 16 * 1024];
                 loop {
                     match src.read(&mut buf) {
@@ -191,8 +270,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             }
             Err(e) => {
                 eprintln!("web: stream: {e}");
-                write!(out, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
-                return out.flush();
+                return reply(&conn, "502 Bad Gateway", "text/plain", "cannot open the track");
             }
         }
     }
@@ -265,6 +343,18 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
                 }
             }
             ("200 OK", "text/plain; charset=utf-8", r)
+        }
+        // «Слушать здесь»: {"id": "<tab>", "on": true} every few seconds; «"all": "stop"» brings the sound back.
+        ("POST", "/api/listen") => {
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            if v["all"] == "stop" {
+                stop_listeners();
+            } else {
+                listen(v["id"].as_str().unwrap_or(""), v["on"].as_bool().unwrap_or(false));
+            }
+            let n = listeners();
+            shared.duck.set_listening(n > 0);
+            ("200 OK", "application/json", serde_json::json!({"listeners": n, "gen": LISTEN_GEN.load(std::sync::atomic::Ordering::Acquire)}).to_string())
         }
         ("GET", "/api/community") => (
             "200 OK",
