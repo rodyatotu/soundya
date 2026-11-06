@@ -398,6 +398,8 @@ impl Controller {
             "repeat": self.repeat,
             "settings": settings,
             "user": self.user,
+            // none | ok | checking (saved, not confirmed yet) | refused (sign in again)
+            "login": login_state(self.client.has_token(), self.client.token_refused(), self.user.is_some()),
             "loading": self.loading.lock().unwrap().clone(),
             "airplay": self.shared.airplay.json(),
             "update": self.shared.updates.json(),
@@ -1830,6 +1832,15 @@ impl Controller {
     }
 }
 
+fn login_state(token: bool, refused: bool, confirmed: bool) -> &'static str {
+    match (token, refused, confirmed) {
+        (false, ..) => "none",
+        (true, true, _) => "refused",
+        (true, false, true) => "ok",
+        (true, false, false) => "checking",
+    }
+}
+
 fn state_dir() -> PathBuf {
     PathBuf::from(std::env::var("SOUNDYA_DIR").unwrap_or_else(|_| "/data/opt/soundya".into()))
 }
@@ -2313,6 +2324,9 @@ mod macro_tests {
         for bad in ["uninstall", "update install", "bypass off", "macro run x", "pc do x\nuninstall"] {
             assert!(super::macro_lines(bad).is_err(), "{bad}");
         }
+        assert_eq!(super::login_state(true, true, true), "refused");
+        assert_eq!(super::login_state(true, false, false), "checking");
+        assert_eq!(super::login_state(false, true, false), "none");
         assert_eq!(super::norm_phrase("Алиса, Включи вечерний режим, пожалуйста!"), "включи вечерний режим");
     }
 }

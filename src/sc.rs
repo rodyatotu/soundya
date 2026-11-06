@@ -339,6 +339,11 @@ impl Client {
         self.token.lock().unwrap().is_some()
     }
 
+    /// SoundCloud stopped accepting the saved token (expired, logged out on the site).
+    pub fn token_refused(&self) -> bool {
+        self.has_token() && self.token_bad.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Switches all later requests (API and audio) to a new proxy; "" means direct.
     pub fn set_proxy(&self, proxy: &str) -> Res<()> {
         let agent = build_agent(proxy)?;

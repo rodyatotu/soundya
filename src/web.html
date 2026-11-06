@@ -134,6 +134,7 @@
   .updbanner { display: none; width: 100%; margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; border: 0;
     background: var(--accent); color: #fff; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
   .updbanner.on { display: block; }
+  .updbanner[hidden] { display: none; }
   label.switch { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; cursor: pointer; }
   label.switch input { appearance: none; -webkit-appearance: none; flex: none; width: 42px; height: 24px; margin: 0;
     border-radius: 12px; background: var(--line); position: relative; cursor: pointer; transition: background .15s; }
@@ -395,6 +396,7 @@
     <div class="msg" id="actmsg"></div>
   </section>
 
+  <button class="updbanner on" id="loginwarn" hidden onclick="openSettings('account')">Вход в SoundCloud устарел — лайки и плейлисты недоступны. Обновить вход</button>
   <button class="updbanner" id="updbanner" onclick="openSettings('about', 'updsection')"></button>
 
   <nav>
@@ -534,6 +536,13 @@
       <div class="who">
         <div><span class="hint">Вы вошли как</span><br><b id="username"></b></div>
         <button onclick="logout()">Выйти</button>
+      </div>
+      <div class="notice warn" id="relogin" hidden>
+        <b>Вход в SoundCloud устарел.</b> SoundCloud больше не принимает сохранённый токен (вы вышли на сайте или он
+        истёк). Поиск и музыка работают, а лайки, плейлисты и рекомендации — нет. Возьмите новый <code>oauth_token</code>
+        так же, как в первый раз, и вставьте сюда — остальные настройки не изменятся.
+        <div class="row"><input type="password" id="token2" placeholder="новый oauth_token" autocomplete="off" spellcheck="false"></div>
+        <div class="row"><button class="primary" onclick="relogin()">Обновить вход</button></div>
       </div>
     </div>
     <div class="msg" id="loginmsg"></div>
@@ -1421,7 +1430,10 @@ async function refresh() {
   $('mineloggedout').style.display = logged ? 'none' : 'block';
   $('mineloggedin').style.display = logged ? 'block' : 'none';
   $('likesbtn').style.display = logged ? '' : 'none';
-  $('username').textContent = s.user || (logged ? 'токен сохранён, вход не подтверждён' : '');
+  $('username').textContent = s.user || (s.login === 'refused' ? 'токен больше не принимается'
+    : logged ? 'токен сохранён, проверяю…' : '');
+  $('relogin').hidden = s.login !== 'refused';
+  $('loginwarn').hidden = s.login !== 'refused';
   renderNet(s.net);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
   renderVolume(s.volume);
@@ -1582,6 +1594,14 @@ async function login() {
   $('token').value = '';
   await refresh();
   if (settings.token) library();
+}
+
+async function relogin() {
+  const t = $('token2').value.trim();
+  if (!t) { show($('loginmsg'), 'error: вставьте токен'); return; }
+  show($('loginmsg'), await post('/api/settings', JSON.stringify({ token: t })));
+  $('token2').value = '';
+  settingsLoaded = false; refresh();
 }
 
 async function logout() {
