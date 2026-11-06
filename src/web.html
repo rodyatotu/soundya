@@ -380,9 +380,90 @@
   .colors input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
   .colors input[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; }
   .colors input[type=color]::-moz-color-swatch { border: 0; border-radius: 50%; }
+
+  /* ---- 0.5.00: Liquid Glass ---- */
+  :root { --bg-speed: 1; --bg-int: .6; --b1: #ff7a1a; --b2: #ff2f6d; --b3: #7b3bff; --b4: #2aa8ff; --glass-blur: 28px; }
+  html { background: var(--page); }
+  body::before, body::after { display: none; }
+  .bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+  .bg i { position: absolute; border-radius: 50%; filter: blur(80px); opacity: var(--bg-int); will-change: transform;
+    animation: float calc(28s / var(--bg-speed)) ease-in-out infinite alternate; }
+  .bg i:nth-child(1) { width: 55vmax; height: 55vmax; left: -15vmax; top: -18vmax; background: radial-gradient(circle, var(--b1), transparent 66%); }
+  .bg i:nth-child(2) { width: 50vmax; height: 50vmax; right: -18vmax; top: 10vh; background: radial-gradient(circle, var(--b2), transparent 66%); animation-delay: calc(-7s / var(--bg-speed)); animation-duration: calc(34s / var(--bg-speed)); }
+  .bg i:nth-child(3) { width: 60vmax; height: 60vmax; left: 10vw; bottom: -30vmax; background: radial-gradient(circle, var(--b3), transparent 66%); animation-delay: calc(-15s / var(--bg-speed)); animation-duration: calc(40s / var(--bg-speed)); }
+  .bg i:nth-child(4) { width: 34vmax; height: 34vmax; right: 8vw; bottom: 5vh; background: radial-gradient(circle, var(--b4), transparent 66%); animation-delay: calc(-21s / var(--bg-speed)); animation-duration: calc(31s / var(--bg-speed)); }
+  @keyframes float {
+    0% { transform: translate(0, 0) scale(1); }
+    50% { transform: translate(8vw, 6vh) scale(1.12); }
+    100% { transform: translate(-6vw, 10vh) scale(.94); }
+  }
+  html.bg-static .bg i { animation: none; }
+  html.bg-off .bg { display: none; }
+  @media (prefers-reduced-motion: reduce) { .bg i { animation: none; } }
+  section, .modalcard, .modal-card, nav {
+    position: relative;
+    background: linear-gradient(160deg, rgba(255,255,255,.16), rgba(255,255,255,.04) 40%), var(--card);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(185%); backdrop-filter: blur(var(--glass-blur)) saturate(185%);
+    box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255,255,255,.35), inset 0 -1px 0 rgba(255,255,255,.06);
+    border-radius: 26px;
+  }
+  html.glass-lite { --glass-blur: 12px; }
+  /* A soft reflection along the top edge. */
+  section::before, .modal-card::before {
+    content: ""; position: absolute; left: 14px; right: 14px; top: 0; height: 42%; border-radius: 26px 26px 50% 50% / 26px 26px 18px 18px;
+    background: linear-gradient(180deg, rgba(255,255,255,.22), transparent); pointer-events: none; opacity: .55;
+  }
+  @media (prefers-color-scheme: dark) { section::before, .modal-card::before { opacity: .18; } }
+  section > *, .modal-card > * { position: relative; }
+  .tab { animation: rise .32s cubic-bezier(.2, .8, .2, 1); }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+  @media (prefers-reduced-motion: reduce) { .tab { animation: none; } }
+  nav { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  @media (max-width: 560px) { nav { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  nav button.on, nav button.on:hover:not(:disabled) { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); color: #fff; box-shadow: 0 6px 18px rgba(255, 80, 40, .35); }
+  .subnav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  @media (max-width: 560px) { .subnav { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  ul.list li { transition: transform .15s, background .15s; }
+  ul.list li:hover { transform: translateY(-1px); }
+  h2 { letter-spacing: .04em; }
+  /* Home */
+  .homegrid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+  @media (min-width: 720px) { .homegrid { grid-template-columns: 1fr 1fr; } .homegrid .release { grid-column: 1 / -1; } }
+  .tile { padding: 14px; border-radius: 20px; background: var(--bg); border: 1px solid var(--glass-edge);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.25); }
+  .tilehead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .tilehead b { font-size: 16px; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 12px;
+    background: var(--bg); border: 1px solid var(--glass-edge); color: var(--muted); white-space: nowrap; }
+  .chip.accent { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); color: #fff; border-color: transparent; }
+  ul.news { margin: 0; padding-left: 18px; }
+  ul.news li { margin: 4px 0; }
+  .statusgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
+  .stat { display: flex; flex-direction: column; gap: 2px; padding: 9px 11px; border-radius: 14px; background: var(--field);
+    border: 1px solid var(--glass-edge); cursor: pointer; text-align: left; font: inherit; color: inherit; }
+  .stat .k { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .stat .v { font-size: 14px; font-weight: 600; }
+  .devlist .dev { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+  .devlist .dev + .dev { border-top: 1px solid var(--line); }
+  .devlist .dev div { flex: 1; min-width: 0; }
+  .devlist .dev small { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .devlist .dev button { padding: 6px 12px; font-size: 13px; }
+  .quick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  details.guide { border-top: 1px solid var(--line); padding: 10px 0; }
+  details.guide summary { cursor: pointer; font-weight: 600; }
+  table.cmds { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.cmds td { padding: 6px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+  table.cmds td:first-child { width: 48%; }
+  .stat { border-color: var(--line); box-shadow: 0 1px 2px rgba(20, 16, 30, .05); }
+  .stat:hover { transform: translateY(-1px); }
+  @media (min-width: 1100px) { main { max-width: 980px; } }
+  .palettes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
+  .palettes button { height: 44px; border-radius: 14px; border: 2px solid transparent; padding: 0; }
+  .palettes button.on { border-color: var(--ink); }
 </style>
 </head>
 <body>
+<div class="bg" id="bg" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
 <main>
   <header>
     <h1>sound<span>ya</span></h1>
@@ -447,13 +528,49 @@
   <button class="updbanner" id="updbanner" onclick="openSettings('about', 'updsection')"></button>
 
   <nav>
-    <button data-tab="search" class="on">Поиск</button>
+    <button data-tab="home" class="on">Главная</button>
+    <button data-tab="search">Поиск</button>
     <button data-tab="mine">Моя музыка</button>
     <button data-tab="queue">Очередь</button>
     <button data-tab="settings">Настройки</button>
+    <button data-tab="help">Помощь</button>
   </nav>
 
-  <section class="tab on" id="tab-search">
+  <section class="tab on" id="tab-home">
+    <div class="homegrid">
+      <div class="tile release">
+        <div class="tilehead"><b>soundya <span id="homever"></span></b><span class="chip accent">Что нового</span></div>
+        <ul class="hint news">
+          <li><b>Безопасное обновление</b> — копия программы и настроек, откат, если новая версия не запустилась.</li>
+          <li><b>Сообщить об ошибке</b> в каждом разделе: видно всё, что уйдёт, без токенов и ключей.</li>
+          <li><b>Где играет</b>: музыку можно слушать в браузере, колонка затихнет.</li>
+          <li><b>Приглушение при звонках</b> на компьютере и <b>сценарии</b> для ТВ и ПК.</li>
+          <li><b>Музыка по умолчанию</b>: SoundCloud или Яндекс Музыка.</li>
+          <li>Эквалайзер больше не делает тише остальное; цвета кольца Мини 2; PIN для панели.</li>
+        </ul>
+      </div>
+      <div class="tile">
+        <div class="tilehead"><b>Сервисы</b></div>
+        <div class="statusgrid" id="homeservices"></div>
+      </div>
+      <div class="tile">
+        <div class="tilehead"><b>Устройства</b></div>
+        <div class="devlist" id="homedevices"></div>
+        <div class="msg" id="homemsg"></div>
+      </div>
+      <div class="tile">
+        <div class="tilehead"><b>Быстро</b></div>
+        <div class="quick">
+          <button onclick="openWizard()">Мастер настройки</button>
+          <button onclick="openTab('help')">Гайды</button>
+          <button onclick="openReport('general')">Сообщить об ошибке</button>
+          <button onclick="openSettings('look')">Вид и фон</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-search">
     <div class="search">
       <input type="text" id="query" placeholder="Трек, исполнитель или ссылка soundcloud.com" autocomplete="off">
       <button class="primary" onclick="search()">Найти</button>
@@ -500,6 +617,29 @@
       <button data-sub="light">Ambilight</button>
       <button data-sub="devices">Устройства</button>
       <button data-sub="about">Обновления</button>
+      <button data-sub="look">Вид</button>
+    </div>
+    <div class="sub" data-sub="look">
+    <h2>Фон и анимации</h2>
+    <p class="hint">Только для этого браузера. Анимация рисуется на вашем телефоне или компьютере — колонку она не нагружает.
+      На слабых устройствах выберите «Без движения».</p>
+    <div class="field">Фон</div>
+    <div class="seg" id="bgmode" role="radiogroup">
+      <button data-bg="anim" role="radio">Живой</button>
+      <button data-bg="static" role="radio">Без движения</button>
+      <button data-bg="off" role="radio">Простой</button>
+    </div>
+    <div class="field">Палитра</div>
+    <div class="palettes" id="bgpal"></div>
+    <label class="field">Скорость <b id="bgspeedv"></b>
+      <input type="range" id="bgspeed" min="0.25" max="2.5" step="0.25" class="range">
+    </label>
+    <label class="field">Яркость пятен <b id="bgintv"></b>
+      <input type="range" id="bgint" min="0.2" max="1" step="0.05" class="range">
+    </label>
+    <label class="check"><input type="checkbox" id="bgglass"><span>Сильное размытие стекла
+      <span class="hint">Красивее, но тяжелее для старых телефонов.</span></span></label>
+    <div class="row"><button onclick="resetBg()">Как было</button></div>
     </div>
     <div class="sub on" data-sub="net">
     <h2>Соединение с SoundCloud</h2>
@@ -913,6 +1053,64 @@
       <div class="msg" id="uninstmsg"></div>
     </details>
     </div>
+  </section>
+
+  <section class="tab" id="tab-help">
+    <h2>Гайды</h2>
+    <details class="guide" open><summary>С чего начать</summary>
+      <ol class="hint">
+        <li>Пройдите <button class="link" onclick="openWizard()">мастер настройки</button> — пара минут.</li>
+        <li>Закрепите адрес колонки в роутере (DHCP reservation): Keenetic — «Список устройств» → «Постоянный IP-адрес»;
+          TP-Link — Advanced → Network → DHCP Server → Address Reservation; ASUS — «ЛВС» → «DHCP-сервер». То же для ПК и ТВ.</li>
+        <li>Забыли адрес панели — «Алиса, повтори адрес».</li>
+      </ol></details>
+    <details class="guide"><summary>Голосовые команды</summary>
+      <table class="cmds">
+        <tr><td>«Алиса, включи Bonobo»</td><td>поиск и воспроизведение (сервис — в «Музыка по умолчанию»)</td></tr>
+        <tr><td>«… в саундклауде» / «… в яндекс музыке»</td><td>явно выбрать сервис</td></tr>
+        <tr><td>«включи мои лайки», «мой плейлист осень»</td><td>ваша музыка SoundCloud</td></tr>
+        <tr><td>«пауза», «дальше», «перемешай», «на повтор», «перемотай на 30 секунд»</td><td>управление</td></tr>
+        <tr><td>«что сейчас играет»</td><td>название трека</td></tr>
+        <tr><td>«приглуши звук», «верни громкость»</td><td>приглушение музыки soundya</td></tr>
+        <tr><td>«включи компьютер», «открой телеграм на компьютере»</td><td>компьютер</td></tr>
+        <tr><td>«открой ютуб на телевизоре», «пауза на проекторе»</td><td>телевизор</td></tr>
+        <tr><td>«повтори адрес»</td><td>адрес этой страницы</td></tr>
+      </table></details>
+    <details class="guide"><summary>Вход в SoundCloud</summary>
+      <p class="hint">Удобнее всего — закладкой в один клик: «Настройки» → «Аккаунт». Колонка сама перепроверяет вход и не
+        забывает его из-за случайной ошибки SoundCloud. Заново входить нужно, только если вы вышли на сайте.</p>
+      <button class="link" onclick="openSettings('account')">Открыть «Аккаунт»</button></details>
+    <details class="guide"><summary>Слушать в браузере</summary>
+      <p class="hint">В плеере «Где играет» → «Здесь»: этот компьютер или телефон играет ту же музыку с того же места, колонка
+        затихает. Пауза и «дальше» работают как обычно. Закрыли вкладку — колонка через несколько секунд зазвучит сама.
+        «Вернуть звук на колонку» останавливает все браузеры.</p></details>
+    <details class="guide"><summary>AirPlay</summary>
+      <p class="hint">Колонка в списке AirPlay на iPhone, iPad и Mac как «Яндекс Станция» (имя — в «Колонка»). Это классический
+        AirPlay: без групп с HomePod. Пока играет AirPlay, SoundCloud на паузе.</p></details>
+    <details class="guide"><summary>Компьютер (Windows)</summary>
+      <p class="hint">Скачайте проект с GitHub, в папке <code>pc</code> запустите <code>install.cmd</code>. Он покажет адрес,
+        ключ и MAC — впишите их в «Устройства». Для «включи компьютер» нужен кабель и Wake-on-LAN в BIOS. Программа также
+        сообщает о звонках для приглушения.</p>
+      <button class="link" onclick="openSettings('devices')">Открыть «Устройства»</button></details>
+    <details class="guide"><summary>Телевизор и сценарии</summary>
+      <p class="hint">На Android TV включите «Отладку по USB/сети», впишите IP в «Устройства» и подтвердите запрос на экране.
+        В «Сценарии» соберите цепочку: разбудить → подождать → открыть приложение.</p></details>
+    <details class="guide"><summary>Обновления и откат</summary>
+      <p class="hint">«Обновления» → «Установить». Перед установкой сохраняются программа и настройки; если новая версия не
+        запустится, вернётся прежняя. Итог виден там же.</p></details>
+    <details class="guide"><summary>Если что-то не работает</summary>
+      <ul class="hint">
+        <li>Музыка не включается — «Настройки» → «Соединение»: пинг и скорость; прокси или обход блокировок.</li>
+        <li>Алиса говорит «нужна подписка» — фразу забрала Алиса; проверьте «Музыка по умолчанию».</li>
+        <li>Цвета кольца не те — «Ambilight» → «Проверка цветов кольца».</li>
+        <li>Не помогло — «Сообщить об ошибке»: журнал приложится сам.</li>
+      </ul></details>
+    <h2 class="section">Обратная связь</h2>
+    <div class="row">
+      <button onclick="openReport('general')">Сообщить об ошибке</button>
+      <button onclick="openReport('general', 'feedback')">Предложить идею</button>
+    </div>
+    <p class="hint">Статус отправленных отчётов — в «Настройки» → «Обновления».</p>
   </section>
 
 
@@ -1605,6 +1803,95 @@ window.addEventListener('pagehide', () => {
   if (listening) fetch('/api/listen', { method: 'POST', body: JSON.stringify({ id: tabId, on: false }), keepalive: true }).catch(() => {});
 });
 
+// ---- фон и стекло (только этот браузер) ----
+const PALETTES = {
+  soundya: ['#ff7a1a', '#ff2f6d', '#7b3bff', '#2aa8ff'],
+  ocean: ['#00c6ff', '#0072ff', '#00e0b0', '#6a5cff'],
+  aurora: ['#3cffb4', '#2ad4ff', '#a45cff', '#ff5ca8'],
+  sunset: ['#ffb347', '#ff5f6d', '#ffc371', '#c94b4b'],
+  mono: ['#8e8e9a', '#c9c9d3', '#5e5e6a', '#a8a8b8'],
+};
+const BG_DEFAULT = { mode: 'anim', pal: 'soundya', speed: 1, int: 0.6, glass: true };
+function bgLoad() { try { return Object.assign({}, BG_DEFAULT, JSON.parse(localStorage.getItem('soundya-bg') || '{}')); } catch (e) { return Object.assign({}, BG_DEFAULT); } }
+function bgApply(b) {
+  const r = document.documentElement;
+  const c = PALETTES[b.pal] || PALETTES.soundya;
+  c.forEach((v, i) => r.style.setProperty('--b' + (i + 1), v));
+  r.style.setProperty('--bg-speed', b.speed);
+  r.style.setProperty('--bg-int', b.int);
+  r.classList.toggle('bg-static', b.mode === 'static');
+  r.classList.toggle('bg-off', b.mode === 'off');
+  r.classList.toggle('glass-lite', !b.glass);
+}
+function bgSave(b) { try { localStorage.setItem('soundya-bg', JSON.stringify(b)); } catch (e) {} bgApply(b); bgRender(b); }
+function bgRender(b) {
+  document.querySelectorAll('#bgmode button').forEach(x => x.classList.toggle('on', x.dataset.bg === b.mode));
+  document.querySelectorAll('#bgpal button').forEach(x => x.classList.toggle('on', x.dataset.pal === b.pal));
+  $('bgspeed').value = b.speed; $('bgspeedv').textContent = '×' + b.speed;
+  $('bgint').value = b.int; $('bgintv').textContent = Math.round(b.int * 100) + '%';
+  $('bgglass').checked = b.glass;
+}
+(function () {
+  for (const [k, c] of Object.entries(PALETTES)) {
+    const btn = document.createElement('button'); btn.dataset.pal = k; btn.title = k;
+    btn.style.background = `linear-gradient(135deg, ${c[0]}, ${c[1]} 45%, ${c[2]})`;
+    btn.onclick = () => bgSave(Object.assign(bgLoad(), { pal: k }));
+    $('bgpal').appendChild(btn);
+  }
+  document.querySelectorAll('#bgmode button').forEach(x => x.onclick = () => bgSave(Object.assign(bgLoad(), { mode: x.dataset.bg })));
+  $('bgspeed').oninput = () => bgSave(Object.assign(bgLoad(), { speed: Number($('bgspeed').value) }));
+  $('bgint').oninput = () => bgSave(Object.assign(bgLoad(), { int: Number($('bgint').value) }));
+  $('bgglass').onchange = () => bgSave(Object.assign(bgLoad(), { glass: $('bgglass').checked }));
+  const b = bgLoad(); bgApply(b); bgRender(b);
+})();
+function resetBg() { bgSave(Object.assign({}, BG_DEFAULT)); }
+
+// ---- главная: сервисы и устройства ----
+const MODEL_NAMES = { yandexmicro: 'Станция Лайт', yandexmini: 'Станция Мини', yandexmini_2: 'Станция Мини 2', yandexmini3: 'Станция Мини 3',
+  yandexstation_2: 'Станция 2', yandexmidi: 'Станция Миди' };
+function modelName(m) { m = (m || '').toLowerCase(); for (const k of Object.keys(MODEL_NAMES).sort((a, b) => b.length - a.length)) if (m.includes(k)) return MODEL_NAMES[k]; return m || 'Яндекс Станция'; }
+function stat(key, value, cls, go) {
+  const b = document.createElement('button'); b.className = 'stat'; b.onclick = go;
+  b.innerHTML = '<span class="k"><i class="dot ' + (cls || '') + '"></i></span><span class="v"></span>';
+  b.querySelector('.k').append(key); b.querySelector('.v').textContent = value; return b;
+}
+function renderHome(s) {
+  const st = s.settings || {};
+  $('homever').textContent = (s.update && s.update.current) || '';
+  const net = s.net || {}, login = s.login;
+  const g = $('homeservices'); g.innerHTML = '';
+  g.append(
+    stat('SoundCloud', !st.soundcloud ? 'выключен' : login === 'refused' ? 'вход устарел' : s.user ? s.user : login === 'checking' ? 'проверяю вход' : 'без входа',
+      !st.soundcloud ? '' : login === 'refused' ? 'bad' : s.user ? 'good' : 'slow', () => openSettings('account')),
+    stat('Соединение', { good: 'хорошее', slow: 'медленное', bad: 'плохое', down: 'нет связи', unknown: 'проверяю' }[net.level] || '—',
+      net.level === 'good' ? 'good' : net.level === 'slow' ? 'slow' : net.level === 'unknown' ? '' : 'bad', () => openSettings('net')),
+    stat('Музыка по умолчанию', st.music_default === 'yandex' ? 'Яндекс Музыка' : 'SoundCloud', 'good', () => openSettings('speaker')),
+    stat('AirPlay', !st.airplay ? 'выключен' : s.airplay && s.airplay.active ? 'играет' : 'готов', st.airplay ? 'good' : '', () => openSettings('speaker', 'airplay')),
+    stat('Приглушение', { smart: 'умное', calls: 'звонки', notify: 'уведомления', manual: 'вручную', off: 'выключено' }[st.duck_mode] || '—',
+      st.duck_mode === 'off' ? '' : 'good', () => openSettings('speaker', 'ducksection')),
+    stat('Обновления', s.update && s.update.available ? 'есть ' + s.update.latest : 'последняя версия', s.update && s.update.available ? 'slow' : 'good', () => openSettings('about', 'updsection')),
+    stat('Защита', st.pin_on ? 'PIN включён' : 'без PIN', st.pin_on ? 'good' : 'slow', () => openSettings('about')),
+    stat('Где играет', s.listen && s.listen.listeners ? 'в браузере (' + s.listen.listeners + ')' : 'колонка', 'good', () => window.scrollTo({ top: 0, behavior: 'smooth' })),
+  );
+  const d = $('homedevices'); d.innerHTML = '';
+  const dev = (title, sub, btn, fn) => {
+    const row = document.createElement('div'); row.className = 'dev';
+    const t = document.createElement('div'); t.append(title); const sm = document.createElement('small'); sm.textContent = sub; t.appendChild(sm);
+    row.appendChild(t);
+    if (btn) { const b = document.createElement('button'); b.textContent = btn; b.onclick = fn; row.appendChild(b); }
+    d.appendChild(row);
+  };
+  const dv = s.device || {};
+  dev(modelName(dv.model), `soundya ${dv.version || ''}${dv.firmware ? ' · прошивка ' + dv.firmware : ''}${s.led && s.led.ring ? ' · кольцо: ' + s.led.ring.split(',')[0] : ''}${dv.display ? ' · экран-часы' : ''}`);
+  const pcOn = st.pc_on && (st.pc_host || st.pc_mac);
+  dev('Компьютер', pcOn ? (st.pc_host || 'только включение по сети') : 'не настроен', pcOn ? 'Проверить' : 'Настроить',
+    pcOn ? async () => { busy($('homemsg'), 'Проверяю компьютер…'); show($('homemsg'), await post('/api/cmd', 'pc ping')); } : () => openSettings('devices'));
+  const tvOn = st.tv_on && st.tv_host;
+  dev('Телевизор / проектор', tvOn ? st.tv_host : 'не настроен', tvOn ? 'Проверить' : 'Настроить',
+    tvOn ? async () => { busy($('homemsg'), 'Проверяю телевизор…'); show($('homemsg'), await post('/api/cmd', 'tv ping')); } : () => openSettings('devices'));
+  if (s.airplay && s.airplay.active) dev('Телефон по AirPlay', 'сейчас играет на колонке');
+}
+
 // ---- приглушение при звонках ----
 const DUCK_HINT = {
   smart: 'Звонки и уведомления.', calls: 'Только звонки.', notify: 'Только уведомления.',
@@ -1985,6 +2272,7 @@ async function refresh() {
   renderNet(s.net);
   renderDuckState(s.ducking);
   syncListen(s);
+  renderHome(s);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
   renderVolume(s.volume);
   // The switch, the line above it and the list always show what the speaker has

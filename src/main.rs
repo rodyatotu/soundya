@@ -422,6 +422,7 @@ impl Controller {
             "bypass_busy": self.shared.bypass_busy.load(Ordering::Acquire),
             "volume": volume::level(),
             "led": led::info(),
+            "device": device_info(),
             "ducking": ducking::json(),
             "listen": serde_json::json!({
                 "listeners": web::listeners(),
@@ -1990,6 +1991,20 @@ impl Controller {
             web::prefetch_cover(self.shared.clone());
         }
     }
+}
+
+/// The speaker, for the panel's home page (read once).
+fn device_info() -> serde_json::Value {
+    static INFO: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    INFO.get_or_init(|| {
+        serde_json::json!({
+            "model": stats::model(),
+            "firmware": report::firmware(),
+            "version": env!("CARGO_PKG_VERSION"),
+            "display": display::Clock::detect().is_some(),
+        })
+    })
+    .clone()
 }
 
 fn login_state(token: bool, refused: bool, confirmed: bool) -> &'static str {
