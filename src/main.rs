@@ -29,6 +29,7 @@ mod stats;
 mod tv;
 mod update;
 mod vis;
+mod voice;
 mod volume;
 mod zapret;
 mod web;
@@ -386,6 +387,8 @@ impl Controller {
         settings["led_order"] = self.settings.led_order.clone().into();
         settings["onboarded"] = self.settings.onboarded.into();
         settings["pin_on"] = (!self.settings.panel_pin.is_empty()).into();
+        settings["alice_voice"] = self.settings.alice_voice.into();
+        settings["alice_voice_max"] = self.settings.alice_voice_max.into();
         settings["duck_mode"] = self.settings.duck_mode.clone().into();
         settings["duck_call_level"] = self.settings.duck_call_level.into();
         settings["duck_notify_level"] = self.settings.duck_notify_level.into();
@@ -424,6 +427,7 @@ impl Controller {
             "led": led::info(),
             "device": device_info(),
             "ducking": ducking::json(),
+            "voice": voice::json(),
             "listen": serde_json::json!({
                 "listeners": web::listeners(),
                 "muted": self.shared.duck.listening(),
@@ -598,6 +602,9 @@ impl Controller {
         new.duck_exclude = new.duck_exclude.iter().map(|a| a.trim().to_owned()).filter(|a| !a.is_empty()).take(30).collect();
         ducking::configure(ducking::Config::from_settings(&new));
         hello::set_voice(new.voice_hello);
+        new.alice_voice = new.alice_voice.clamp(10, 100);
+        new.alice_voice_max = new.alice_voice_max.min(10);
+        voice::configure(new.alice_voice, new.alice_voice_max);
         new.led_order = new.led_order.trim().to_lowercase();
         if !led::set_order(&new.led_order) {
             return "error: порядок цветов — rgb, grb, brg, bgr, rbg или gbr".into();
@@ -1226,6 +1233,20 @@ impl Controller {
                 };
                 respond(reply, &format!("OK: {text}"), Some(text.into()));
             }
+            Intent::VoiceLevel(by) => {
+                let mut s = self.settings.clone();
+                s.alice_voice = (i16::from(s.alice_voice) + i16::from(by)).clamp(10, 100) as u8;
+                let pct = s.alice_voice;
+                let r = self.apply_settings(s);
+                let text = if r.starts_with("error") {
+                    "Не получилось поменять громкость голоса".to_owned()
+                } else if pct >= 100 {
+                    "Говорю как обычно".to_owned()
+                } else {
+                    format!("Хорошо. Мой голос — {pct} процентов от громкости")
+                };
+                respond(reply, &format!("OK: {text}"), Some(text));
+            }
             Intent::Address => {
                 let text = hello::repeat();
                 respond(reply, &format!("OK: {text}"), None);
@@ -1523,6 +1544,11 @@ impl Controller {
                 });
             }
             "netcheck" => self.check_net(Some(reply)),
+            // The panel's «Проверить»: Alice says a sentence at the chosen voice volume.
+            "voicetest" => {
+                alice::say("Так звучит мой голос. Музыка при этом остаётся на прежней громкости.".into());
+                send_to(&reply, "OK: слушайте".into());
+            }
             // «duck down | restore | auto on|off» — the page's buttons, same as the voice commands.
             "duck" => {
                 let cmd = match arg.as_str() {
@@ -2266,6 +2292,9 @@ fn daemon() {
     luna::run(tx.clone(), shared.clone());
     // zapret (nfqws) with the saved strategy, before anything talks to SoundCloud.
     zapret::restore(&dir, settings.active_bypass(), &settings.zapret_args);
+    // «Громкость голоса Алисы»: a volume left lowered by a crash comes back first.
+    voice::recover();
+    voice::configure(settings.alice_voice, settings.alice_voice_max);
     // Optional panel PIN and its saved browser sessions.
     auth::init(&dir, &settings.panel_pin);
     // Smart Ducking: calls and notifications from devices lower soundya's music.

@@ -65,6 +65,8 @@ pub enum Intent {
     Duck(DuckCmd),
     /// «Повтори адрес»: where the panel is (hello.rs).
     Address,
+    /// «Говори тише / громче»: only her voice (voice.rs), by this many %.
+    VoiceLevel(i8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -672,6 +674,15 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
     ) {
         return Some(Intent::Address);
     }
+    match normalize(text).as_str() {
+        "говори тише" | "говори потише" | "сделай голос тише" | "сделай свой голос тише" | "говори тише пожалуйста" => {
+            return Some(Intent::VoiceLevel(-15))
+        }
+        "говори громче" | "сделай голос громче" | "сделай свой голос громче" | "говори громче пожалуйста" => {
+            return Some(Intent::VoiceLevel(15))
+        }
+        _ => {}
+    }
     if let Some(d) = duck_command(&normalize(text)) {
         return Some(Intent::Duck(d));
     }
@@ -1140,6 +1151,8 @@ fn read_frames(
         socket.read_exact(&mut data)?;
         if let Some(busy) = alice_busy(&data) {
             shared.duck.set_busy(busy);
+            // «Громкость голоса Алисы»: the mixer down while she listens and speaks.
+            crate::voice::alice_busy(busy);
         }
         if alice_state(&data) == Some(2)
             && (suppress_until.is_some_and(|t| std::time::Instant::now() < t) || quiet())
@@ -1193,7 +1206,7 @@ fn read_frames(
             }
             // SoundCloud switched off in the settings: only the PC, the TV and
             // messages are ours; all music stays Alice's.
-            let music = !matches!(intent, Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::Duck(_));
+            let music = !matches!(intent, Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::Duck(_) | Intent::VoiceLevel(_));
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
                 continue;
@@ -1276,7 +1289,7 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
-        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address => true,
+        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::VoiceLevel(_) => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
         Intent::Pc(_) => w.pc,
@@ -1323,6 +1336,7 @@ pub fn watch(tx: Sender<Cmd>, shared: std::sync::Arc<Shared>) {
                 Err(_) => {}
             }
             shared.duck.set_busy(false);
+            crate::voice::alice_busy(false);
             thread::sleep(Duration::from_secs(2));
         }
     });
@@ -1588,6 +1602,8 @@ mod tests {
         assert_eq!(intent("отключи автоматическое приглушение", false), Some(Intent::Duck(DuckCmd::Auto(false))));
         assert_eq!(intent("включи автоматическое приглушение", false), Some(Intent::Duck(DuckCmd::Auto(true))));
         assert_eq!(intent("Алиса, повтори адрес", false), Some(Intent::Address));
+        assert_eq!(intent("Алиса, говори тише", true), Some(Intent::VoiceLevel(-15)));
+        assert_eq!(intent("сделай голос громче", false), Some(Intent::VoiceLevel(15)));
         assert_eq!(intent("какой адрес саундя", true), Some(Intent::Address));
         // Her own volume stays hers.
         assert_eq!(intent("сделай потише", false), None);

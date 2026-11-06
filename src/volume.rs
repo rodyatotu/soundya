@@ -155,6 +155,17 @@ fn mixer_value(level: i32, learnt: &[Option<u32>; 11]) -> u32 {
     learnt[level].unwrap_or(((level as u32 * 10 * 255) + 50) / 100)
 }
 
+/// For voice.rs: the mixer now, a new value, and the value of one of her levels.
+pub fn read_mixer_value() -> Option<u32> {
+    read_mixer()
+}
+pub fn write_mixer_value(value: u32) -> bool {
+    write_mixer(value.min(255))
+}
+pub fn mixer_for_level(level: i32) -> u32 {
+    mixer_value(level, &learnt())
+}
+
 /// After Alice's own «громкость N»: note which value she set.
 fn learn_later(n: i32) {
     std::thread::spawn(move || {

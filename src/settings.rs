@@ -132,6 +132,12 @@ pub struct Settings {
     /// Apps whose events are ignored.
     #[serde(default)]
     pub duck_exclude: Vec<String>,
+    /// «Громкость голоса Алисы» (voice.rs): her voice as % of the volume
+    /// (100 = as it is) and never above this level of hers (10 = no cap).
+    #[serde(default = "hundred")]
+    pub alice_voice: u8,
+    #[serde(default = "ten")]
+    pub alice_voice_max: u8,
     /// Optional PIN for changing anything from the panel ("" = no PIN).
     /// Never sent to the page; `soundya pin off` on the speaker removes it.
     #[serde(default)]
@@ -203,6 +209,13 @@ fn speaker() -> String {
     "speaker".into()
 }
 
+fn hundred() -> u8 {
+    100
+}
+fn ten() -> u8 {
+    10
+}
+
 fn duck_mode() -> String {
     "smart".into()
 }
@@ -267,6 +280,8 @@ impl Default for Settings {
             duck_notify_level: duck_notify_level(),
             duck_notify_secs: duck_notify_secs(),
             duck_exclude: Vec::new(),
+            alice_voice: 100,
+            alice_voice_max: 10,
             panel_pin: String::new(),
             onboarded: false,
             voice_hello: true,

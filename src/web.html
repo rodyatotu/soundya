@@ -795,6 +795,25 @@
     <div class="msg" id="eqmsg"></div>
     <button class="link bugbtn" onclick="openReport('eq')">Сообщить об ошибке</button>
 
+    <h2 class="section" id="voicesection">Громкость голоса Алисы</h2>
+    <p class="hint">Алиса говорит тише музыки: пока она слушает и отвечает, колонка убавляет общий звук до выбранного уровня,
+      потом возвращает как было. Если вы сами поменяли громкость во время ответа — оставит вашу. Голосом:
+      «Алиса, говори тише» / «говори громче».</p>
+    <label class="field">Голос — <b id="voicepctv"></b> от громкости колонки
+      <input type="range" id="voicepct" min="10" max="100" step="5" class="range"
+        oninput="$('voicepctv').textContent = this.value == 100 ? 'как есть (100%)' : this.value + '%'" onchange="saveVoice()">
+    </label>
+    <label class="field">И не громче деления
+      <select id="voicemax" onchange="saveVoice()">
+        <option value="10">без ограничения</option>
+        <option value="8">8 из 10</option><option value="6">6 из 10</option><option value="5">5 из 10</option>
+        <option value="4">4 из 10</option><option value="3">3 из 10</option><option value="2">2 из 10</option>
+      </select>
+    </label>
+    <p class="hint" id="voicestate"></p>
+    <div class="row"><button onclick="voiceTest()">Проверить</button></div>
+    <div class="msg" id="voicemsg"></div>
+
     <h2 class="section" id="ducksection">Приглушение при звонках и уведомлениях</h2>
     <p class="hint">Музыка soundya (SoundCloud и AirPlay) становится тише, пока идёт звонок на компьютере или пришло важное
       уведомление, и возвращается сама. Колонка не слушает комнату и ничего не записывает: о звонке сообщает сам компьютер
@@ -1892,6 +1911,19 @@ function renderHome(s) {
   if (s.airplay && s.airplay.active) dev('Телефон по AirPlay', 'сейчас играет на колонке');
 }
 
+// ---- громкость голоса Алисы ----
+function renderVoice(st, v) {
+  $('voicepct').value = st.alice_voice ?? 100;
+  $('voicepctv').textContent = $('voicepct').value == 100 ? 'как есть (100%)' : $('voicepct').value + '%';
+  $('voicemax').value = String(st.alice_voice_max ?? 10);
+  $('voicestate').textContent = v && v.available === false ? 'На этой колонке нет доступа к микшеру — настройка не сработает.' : '';
+}
+async function saveVoice() {
+  show($('voicemsg'), await post('/api/settings', JSON.stringify({ alice_voice: Number($('voicepct').value), alice_voice_max: Number($('voicemax').value) })));
+  settingsLoaded = false; refresh();
+}
+async function voiceTest() { show($('voicemsg'), await post('/api/cmd', 'voicetest')); }
+
 // ---- приглушение при звонках ----
 const DUCK_HINT = {
   smart: 'Звонки и уведомления.', calls: 'Только звонки.', notify: 'Только уведомления.',
@@ -2299,6 +2331,7 @@ async function refresh() {
     renderLedOrder(settings.led_order, s.led);
     renderDuck(settings);
     renderPin(settings);
+    renderVoice(settings, s.voice);
     maybeWizard(settings);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';
