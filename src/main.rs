@@ -18,6 +18,7 @@ mod luna;
 mod mdns;
 mod pc;
 mod player;
+mod report;
 mod sc;
 mod settings;
 mod stats;
@@ -1911,6 +1912,8 @@ fn daemon() {
     luna::run(tx.clone(), shared.clone());
     // zapret (nfqws) with the saved strategy, before anything talks to SoundCloud.
     zapret::restore(&dir, settings.active_bypass(), &settings.zapret_args);
+    // Bug reports queued on flash: delivered when the server answers.
+    report::run(dir.clone(), shared.clone());
     // Looks for a newer soundya on GitHub; the page offers to install it.
     update::run(shared.clone());
     // A wrong clock breaks every HTTPS site (GitHub first): set it from the web.

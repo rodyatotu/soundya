@@ -189,6 +189,15 @@
   .modal-card textarea { width: 100%; margin-top: 10px; min-height: 120px; resize: vertical;
     font: inherit; border: 1px solid var(--line); background: transparent; color: var(--ink);
     border-radius: 12px; padding: 10px; box-sizing: border-box; }
+  .modal-card.report { max-width: 560px; max-height: 92vh; overflow: auto; }
+  .modal-card .field textarea { margin-top: 4px; min-height: 56px; }
+  .bugbtn { display: block; margin: 6px 0 0 auto; font-size: 12px; color: var(--muted); }
+  #fbpreview pre { max-height: 220px; overflow: auto; font-size: 11px; white-space: pre-wrap; word-break: break-word;
+    background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 8px; margin: 4px 0 10px; }
+  #fbpreview details summary { cursor: pointer; font-size: 13px; padding: 4px 0; }
+  ul.reports li { display: block; font-size: 13px; }
+  ul.reports .st { font-weight: 600; }
+  ul.reports .st.sent { color: var(--ok); } ul.reports .st.failed { color: var(--err); }
   .headright { display: flex; align-items: center; gap: 10px; }
   .netpill {
     display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; font-size: 12px;
@@ -497,6 +506,7 @@
       </div>
       <pre class="bypasslog" id="bypasslog" hidden></pre>
       <div class="msg" id="bypassmsg"></div>
+    <button class="link bugbtn" onclick="openReport('network')">Сообщить об ошибке</button>
     </div>
 
     </div>
@@ -524,6 +534,7 @@
       </div>
     </div>
     <div class="msg" id="loginmsg"></div>
+    <button class="link bugbtn" onclick="openReport('soundcloud')">Сообщить об ошибке</button>
 
     </div>
     <div class="sub" data-sub="speaker">
@@ -561,6 +572,7 @@
       <button class="primary" onclick="saveSettings('spkmsg')">Сохранить</button>
     </div>
     <div class="msg" id="spkmsg"></div>
+    <button class="link bugbtn" onclick="openReport('voice')">Сообщить об ошибке</button>
 
     <h2 class="section">Эквалайзер</h2>
     <p class="hint">Для SoundCloud и AirPlay, звук Алисы он не трогает. Сильный подъём самых низких полос (31–62 Гц)
@@ -572,6 +584,7 @@
     <div class="presets" id="eqpresets"></div>
     <div class="eq off" id="eqbands"></div>
     <div class="msg" id="eqmsg"></div>
+    <button class="link bugbtn" onclick="openReport('eq')">Сообщить об ошибке</button>
 
     <h2 class="section">AirPlay</h2>
     <p class="hint">Колонка видна в списке AirPlay на iPhone, iPad и Mac: Пункт управления → значок AirPlay
@@ -600,6 +613,7 @@
       <button class="primary" onclick="saveSettings('airplaymsg')">Сохранить</button>
     </div>
     <div class="msg" id="airplaymsg"></div>
+    <button class="link bugbtn" onclick="openReport('airplay')">Сообщить об ошибке</button>
 
     </div>
     <div class="sub" data-sub="light">
@@ -638,6 +652,7 @@
         oninput="$('lightbval').textContent = this.value + '%'; lightPreview()" onchange="saveLight()">
     </label>
     <div class="msg" id="lightmsg"></div>
+    <button class="link bugbtn" onclick="openReport('ambilight')">Сообщить об ошибке</button>
     </div>
 
     <div class="sub" data-sub="devices">
@@ -665,6 +680,7 @@
       <button class="primary" onclick="savePc()">Сохранить</button>
     </div>
     <div class="msg" id="pcmsg"></div>
+    <button class="link bugbtn" onclick="openReport('pc')">Сообщить об ошибке</button>
 
     <h2 class="section">Телевизор / проектор</h2>
     <p class="hint">Android TV голосом: «включи проектор», «открой ютуб на проекторе», «найди фильм дюна на телевизоре»,
@@ -678,6 +694,7 @@
       <button class="primary" onclick="testTv()" id="tvtestbtn">Сохранить и подключить</button>
     </div>
     <div class="msg" id="tvmsg"></div>
+    <button class="link bugbtn" onclick="openReport('tv')">Сообщить об ошибке</button>
 
     </div>
     <div class="sub" data-sub="about">
@@ -692,13 +709,18 @@
       <button class="primary" onclick="installUpdate()" id="updinstall" hidden>Установить обновление</button>
     </div>
     <div class="msg" id="updmsg"></div>
+    <button class="link bugbtn" onclick="openReport('update')">Сообщить об ошибке</button>
 
-    <h2 class="section">Обратная связь</h2>
-    <p class="hint">Напишите, что улучшить или что не работает. Отправляется анонимно: имя, аккаунт и адрес колонки не передаются. Если хотите ответ — оставьте в тексте свой Telegram.</p>
+    <h2 class="section" id="reportsection">Обратная связь и ошибки</h2>
+    <p class="hint">«Сообщить об ошибке» есть в каждом разделе. Перед отправкой видно, что именно уйдёт автору:
+      токены, ключи, пароль прокси, контакты и номера телефонов вырезаются из всех файлов, распознанные фразы —
+      по желанию. Звук не записывается и не отправляется. Если сервер недоступен, отчёт ждёт на колонке и уходит позже,
+      в том числе после перезагрузки.</p>
     <div class="row">
-      <button onclick="openFeedback()" id="fbopen">Написать автору</button>
+      <button onclick="openReport('general')" id="fbopen">Сообщить об ошибке</button>
+      <button onclick="openReport('general', 'feedback')">Предложить идею</button>
     </div>
-
+    <ul class="list reports" id="reportlist"></ul>
 
     <details class="danger">
       <summary>Удалить soundya с колонки</summary>
@@ -712,10 +734,39 @@
 
 
   <div class="modal" id="fbmodal" hidden>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="fbtitle">
-      <h2 id="fbtitle">Обратная связь</h2>
-      <p class="hint">Анонимно — без имени, аккаунта и адреса. Автору прилетит только текст. Хотите ответ на жалобу или предложение — напишите в сообщении свой Telegram (@ник).</p>
-      <textarea id="fbtext" rows="5" maxlength="2000" placeholder="Что улучшить, что не работает, пожелания…"></textarea>
+    <div class="modal-card report" role="dialog" aria-modal="true" aria-labelledby="fbtitle">
+      <h2 id="fbtitle">Сообщить об ошибке</h2>
+      <div class="seg" id="fbkind" role="radiogroup">
+        <button data-kind="bug" role="radio">Ошибка</button>
+        <button data-kind="feedback" role="radio">Идея / отзыв</button>
+      </div>
+      <label class="field">Раздел
+        <select id="fbmodule"></select>
+      </label>
+      <label class="field">Что случилось
+        <textarea id="fbtext" rows="3" maxlength="3000" placeholder="Например: после «Алиса, включи Bonobo» играет Яндекс Музыка"></textarea>
+      </label>
+      <div id="fbbugonly">
+        <label class="field">Что ожидали
+          <textarea id="fbexpected" rows="2" maxlength="1500"></textarea>
+        </label>
+        <label class="field">Что произошло на самом деле
+          <textarea id="fbactual" rows="2" maxlength="1500"></textarea>
+        </label>
+        <label class="field">Скриншот (необязательно, до 3 МБ)
+          <input type="file" id="fbshot" accept="image/png,image/jpeg">
+        </label>
+      </div>
+      <label class="check"><input type="checkbox" id="fblogs"><span>Приложить журнал и диагностику
+        <span class="hint">system.log, error.log, diagnostics.json — без токенов и ключей</span></span></label>
+      <label class="check"><input type="checkbox" id="fbphrases"><span>Оставить в журнале распознанные фразы
+        <span class="hint">Иначе они заменяются на «фраза скрыта»</span></span></label>
+      <label class="check"><input type="checkbox" id="fbid"><span>Передать номер установки
+        <span class="hint">Случайный номер, тот же, что в анонимной статистике: автор сможет понять, что отчёты с одной колонки</span></span></label>
+      <div class="row">
+        <button onclick="previewReport()" id="fbprevbtn">Что будет отправлено</button>
+      </div>
+      <div id="fbpreview" hidden></div>
       <div class="msg" id="fbmsg"></div>
       <div class="row">
         <button onclick="closeFeedback()">Отмена</button>
@@ -764,18 +815,117 @@ function show(el, text, isErr) {
 
 function busy(el, text) { el.className = 'msg'; el.textContent = text; }
 
-// ---- обратная связь ----
-function openFeedback() { $('fbmsg').textContent = ''; $('fbmsg').className = 'msg'; $('fbtext').value = ''; $('fbmodal').hidden = false; $('fbtext').focus(); }
+// ---- ошибки страницы: прикладываются к отчёту ----
+const pageErrors = [];
+function notePageError(text) {
+  pageErrors.push(new Date().toISOString() + ' ' + String(text).slice(0, 500));
+  if (pageErrors.length > 40) pageErrors.shift();
+}
+window.addEventListener('error', e => notePageError(`${e.message} at ${e.filename}:${e.lineno}:${e.colno}` + (e.error && e.error.stack ? '\n' + e.error.stack : '')));
+window.addEventListener('unhandledrejection', e => notePageError('unhandled: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
+
+// ---- отчёты об ошибках и обратная связь ----
+let fbKind = 'bug';
+let fbModules = [];
+function setFbKind(k) {
+  fbKind = k;
+  document.querySelectorAll('#fbkind button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.kind === k)));
+  document.querySelectorAll('#fbkind button').forEach(b => b.classList.toggle('on', b.dataset.kind === k));
+  $('fbbugonly').hidden = k !== 'bug';
+  $('fbtitle').textContent = k === 'bug' ? 'Сообщить об ошибке' : 'Идея или отзыв';
+  $('fblogs').checked = k === 'bug';
+  $('fbpreview').hidden = true;
+}
+document.querySelectorAll('#fbkind button').forEach(b => b.onclick = () => setFbKind(b.dataset.kind));
+async function openReport(module, kind) {
+  $('fbmsg').textContent = ''; $('fbmsg').className = 'msg';
+  for (const id of ['fbtext', 'fbexpected', 'fbactual', 'fbshot']) $(id).value = '';
+  $('fbphrases').checked = false; $('fbid').checked = false;
+  if (!fbModules.length) {
+    try { fbModules = (await (await fetch('/api/report/list')).json()).modules || []; } catch (e) { notePageError('report list: ' + e); }
+  }
+  $('fbmodule').innerHTML = '';
+  for (const [k, v] of fbModules) { const o = document.createElement('option'); o.value = k; o.textContent = v; $('fbmodule').appendChild(o); }
+  $('fbmodule').value = module || 'general';
+  setFbKind(kind || 'bug');
+  $('fbmodal').hidden = false; $('fbtext').focus();
+}
+function openFeedback() { openReport('general', 'feedback'); }
 function closeFeedback() { $('fbmodal').hidden = true; }
+async function readShot() {
+  const f = $('fbshot').files && $('fbshot').files[0];
+  if (!f || fbKind !== 'bug') return { screenshot: '', screenshot_type: '' };
+  if (f.size > 3 * 1024 * 1024) throw new Error('скриншот больше 3 МБ');
+  const data = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = fail; r.readAsDataURL(f); });
+  return { screenshot: String(data).split(',')[1] || '', screenshot_type: f.type };
+}
+async function reportBody() {
+  return Object.assign({
+    kind: fbKind, module: $('fbmodule').value, description: $('fbtext').value.trim(),
+    expected: fbKind === 'bug' ? $('fbexpected').value.trim() : '', actual: fbKind === 'bug' ? $('fbactual').value.trim() : '',
+    logs: $('fblogs').checked, phrases: $('fbphrases').checked, install_id: $('fbid').checked,
+    frontend_errors: pageErrors.slice(),
+  }, await readShot());
+}
+async function previewReport() {
+  const box = $('fbpreview');
+  busy($('fbmsg'), 'Собираю…');
+  let body;
+  try { body = await reportBody(); } catch (e) { show($('fbmsg'), 'error: ' + e.message); return; }
+  const shot = body.screenshot ? Math.round(body.screenshot.length * 3 / 4 / 1024) : 0;
+  body.screenshot = '';
+  let r;
+  try { r = await (await fetch('/api/report/preview', { method: 'POST', body: JSON.stringify(body) })).json(); }
+  catch (e) { show($('fbmsg'), 'error: нет связи с колонкой'); return; }
+  if (r.error) { show($('fbmsg'), 'error: ' + r.error); return; }
+  box.innerHTML = '';
+  const add = (title, text, open) => {
+    const d = document.createElement('details'); if (open) d.open = true;
+    const sm = document.createElement('summary'); sm.textContent = title; d.appendChild(sm);
+    const pre = document.createElement('pre'); pre.textContent = text; d.appendChild(pre); box.appendChild(d);
+  };
+  add('Сообщение в Telegram', r.message, true);
+  for (const f of r.files) add(`${f.name} — ${Math.ceil(f.size / 1024)} КБ`, f.text ?? '(изображение)');
+  if (shot) add(`screenshot — ${shot} КБ`, 'ваше изображение, как есть');
+  const p = document.createElement('p'); p.className = 'hint';
+  p.textContent = r.url ? `Отправится на сервер проекта (${r.url}) и оттуда в Telegram автору.` : 'В этой сборке не задан сервер для отчётов: отправить не получится.';
+  box.appendChild(p);
+  box.hidden = false;
+  $('fbmsg').textContent = '';
+}
 async function sendFeedback() {
-  const t = $('fbtext').value.trim();
-  if (!t) { show($('fbmsg'), 'error: напишите сообщение'); return; }
+  if (!$('fbtext').value.trim()) { show($('fbmsg'), 'error: опишите, что случилось'); return; }
+  let body;
+  try { body = await reportBody(); } catch (e) { show($('fbmsg'), 'error: ' + e.message); return; }
   $('fbsend').disabled = true;
-  busy($('fbmsg'), 'Отправляю…');
-  const r = await post('/api/feedback', t);
+  busy($('fbmsg'), 'Сохраняю отчёт…');
+  let r;
+  try { r = await (await fetch('/api/report', { method: 'POST', body: JSON.stringify(body) })).json(); }
+  catch (e) { r = { error: 'нет связи с колонкой' }; }
   $('fbsend').disabled = false;
-  if (r.startsWith('error')) show($('fbmsg'), r);
-  else { show($('fbmsg'), 'Спасибо! Отправлено.', false); setTimeout(closeFeedback, 1200); }
+  if (r.error) { show($('fbmsg'), 'error: ' + r.error); return; }
+  show($('fbmsg'), `OK: отчёт ${r.id} сохранён и отправляется. Статус — в «Обновления» → «Обратная связь».`, false);
+  loadReports();
+  setTimeout(closeFeedback, 2500);
+}
+const REPORT_STATUS = { queued: 'ждёт отправки', sent: 'доставлен', failed: 'не доставлен' };
+async function loadReports() {
+  let r;
+  try { r = await (await fetch('/api/report/list')).json(); } catch (e) { return; }
+  fbModules = r.modules || fbModules;
+  const ul = $('reportlist'); ul.innerHTML = '';
+  for (const x of (r.reports || []).slice(0, 8)) {
+    const li = document.createElement('li');
+    const st = document.createElement('span'); st.className = 'st ' + x.status; st.textContent = REPORT_STATUS[x.status] || x.status;
+    li.append(`${x.id} · ${x.module} · ${new Date(x.created * 1000).toLocaleString()} — `, st);
+    if (x.error && x.status !== 'sent') li.append(` (${x.error}${x.status === 'queued' ? ', попытка ' + x.attempts : ''})`);
+    if (x.status === 'failed') {
+      const b = document.createElement('button'); b.className = 'link'; b.textContent = ' повторить';
+      b.onclick = async () => { const t = await post('/api/report/retry', x.id); if (t.includes('error')) show($('updmsg'), 'error: ' + JSON.parse(t).error); loadReports(); };
+      li.appendChild(b);
+    }
+    ul.appendChild(li);
+  }
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('fbmodal').hidden) closeFeedback(); });
 document.getElementById('fbmodal').addEventListener('click', (e) => { if (e.target.id === 'fbmodal') closeFeedback(); });
@@ -785,6 +935,7 @@ async function post(url, body) {
     const r = await fetch(url, { method: 'POST', body });
     return (await r.text()).trim();
   } catch (e) {
+    notePageError(`POST ${url} failed: ${e}`);
     return 'error: нет связи с колонкой';
   }
 }
@@ -850,6 +1001,7 @@ function openSub(name) {
   document.querySelectorAll('.subnav button').forEach(b => b.classList.toggle('on', b.dataset.sub === name));
   document.querySelectorAll('.sub').forEach(x => x.classList.toggle('on', x.dataset.sub === name));
   try { localStorage.setItem('soundya-sub', name); } catch (e) {}
+  if (name === 'about') loadReports();
 }
 document.querySelectorAll('.subnav button').forEach(b => b.addEventListener('click', () => openSub(b.dataset.sub)));
 try { const sub = localStorage.getItem('soundya-sub'); if (sub && document.querySelector('.sub[data-sub="' + sub + '"]')) openSub(sub); } catch (e) {}

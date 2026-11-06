@@ -6,10 +6,14 @@ Each speaker sends once a day (soundya src/stats.rs):
                  "airplay": true, "pc": false}
 Nothing else is stored: no IP addresses, no tracks, no accounts.
 
-Anonymous feedback from the web panel is forwarded to a Telegram bot:
-    POST /feedback {"text": "...", "version": "0.4.40", "model": "yandexmini"}
+Bug reports and feedback from the web panel are forwarded to a Telegram bot:
+    POST /report   (soundya 0.5.00+, src/report.rs) {"id": "SY-…", "message": "BUG REPORT #…",
+                   "files": [{"name": "system.log", "data": "<base64>"}], …}
+                   → one message plus each file as a document in reply to it.
+                   The same id is delivered once: the speaker retries until it gets 200.
+    POST /feedback (0.4.40) {"text": "...", "version": "0.4.40", "model": "yandexmini"}
 Set SOUNDYA_TG_TOKEN (bot token from @BotFather) and SOUNDYA_TG_CHAT (your
-chat id) to enable it; without them /feedback replies 503. No IP is stored.
+chat id) to enable it; without them both reply 503. No IP is stored.
 
 Pages:
     GET /badge.svg   "работает на 47 колонках" for the README
@@ -21,6 +25,8 @@ Python 3.8+, standard library only. Run:  python3 stats.py --port 8787 --db /var
 """
 
 import argparse
+import base64
+import binascii
 import collections
 import datetime as dt
 import html
@@ -72,6 +78,11 @@ TEXT_RE = re.compile(r"^[\w.\- ]{0,40}$")
 # Telegram bot for anonymous feedback from the web panel (set in the environment).
 TG_TOKEN = os.environ.get("SOUNDYA_TG_TOKEN", "").strip()
 TG_CHAT = os.environ.get("SOUNDYA_TG_CHAT", "").strip()
+# Only for tests (a fake Telegram); the real one by default.
+TG_API = os.environ.get("SOUNDYA_TG_API", "https://api.telegram.org").rstrip("/")
+REPORT_MAX = 8 << 20  # bytes of JSON (a screenshot of up to 3 MB in base64, logs)
+REPORT_FILES = {"system.log", "error.log", "diagnostics.json", "screenshot.png", "screenshot.jpg"}
+REPORT_ID_RE = re.compile(r"^SY-[0-9A-F]{8}$")
 FEEDBACK_MAX = 2000  # characters
 # Simple in-memory limits so the bot cannot be flooded (nothing is persisted).
 _fb_lock = threading.Lock()
@@ -99,6 +110,7 @@ def open_db(path):
             id TEXT PRIMARY KEY, first_seen TEXT, last_seen TEXT,
             version TEXT, model TEXT, airplay INTEGER, pc INTEGER);
         CREATE TABLE IF NOT EXISTS days (day TEXT, id TEXT, PRIMARY KEY (day, id));
+        CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, received TEXT, message_id INTEGER);
         """
     )
     return con
@@ -210,24 +222,104 @@ def looks_like_insult(text):
     return any(w.replace("ё", "е") in low for w in INSULT_WORDS)
 
 
+def tg_call(method, data=None, files=None):
+    """Calls the Bot API. Returns the decoded result or raises."""
+    url = f"{TG_API}/bot{TG_TOKEN}/{method}"
+    if files:
+        boundary = "soundya" + os.urandom(8).hex()
+        parts = []
+        for k, v in (data or {}).items():
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+        for field, (name, content) in files.items():
+            parts.append(
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{name}"\r\n'
+                f"Content-Type: application/octet-stream\r\n\r\n".encode() + content + b"\r\n"
+            )
+        parts.append(f"--{boundary}--\r\n".encode())
+        body, kind = b"".join(parts), f"multipart/form-data; boundary={boundary}"
+    else:
+        body, kind = json.dumps(data or {}).encode(), "application/json"
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": kind})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        out = json.loads(r.read() or b"{}")
+    if not out.get("ok"):
+        raise RuntimeError(out.get("description", "telegram error"))
+    return out.get("result")
+
+
 def send_telegram(text, html=False):
     """Posts the text to the Telegram bot. Returns True on success."""
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     body = {"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}
     if html:
         body["parse_mode"] = "HTML"
-    data = json.dumps(body).encode()
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return r.status == 200
+        tg_call("sendMessage", body)
+        return True
     except Exception as e:  # network, bad token, wrong chat id
         print(f"feedback: telegram error: {e}", flush=True)
         return False
 
 
-def accept_feedback(ip):
-    """In-memory rate check: at most 1 per 20 s per sender, 30 per hour total."""
+def sender_key(handler):
+    """Who is sending, for the rate limit only (memory, never stored). Behind
+    Caddy every request comes from 127.0.0.1: then its X-Forwarded-For counts."""
+    ip = handler.client_address[0] if handler.client_address else "?"
+    if ip in ("127.0.0.1", "::1"):
+        fwd = handler.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if fwd:
+            return fwd
+    return ip
+
+
+def deliver_report(p):
+    """Sends a report to Telegram. Returns (http code, text)."""
+    rid = str(p.get("id", ""))
+    if not REPORT_ID_RE.match(rid):
+        return 400, "bad id"
+    with db_lock:
+        done = db.execute("SELECT 1 FROM reports WHERE id = ?", (rid,)).fetchone()
+    if done:
+        return 200, "already delivered"
+    message = str(p.get("message", "")).strip()
+    if not message:
+        return 400, "empty"
+    files = []
+    for f in p.get("files") or []:
+        name = str(f.get("name", ""))
+        if name not in REPORT_FILES:
+            return 400, f"unexpected file {name[:40]}"
+        try:
+            files.append((name, base64.b64decode(str(f.get("data", "")), validate=True)))
+        except (ValueError, binascii.Error):
+            return 400, f"bad file {name}"
+    text = message[:3900]
+    if looks_like_insult(message):
+        body = {"chat_id": TG_CHAT, "parse_mode": "HTML", "disable_web_page_preview": True,
+                "text": "⚠️ <tg-spoiler>" + html.escape(text) + "</tg-spoiler>"}
+    else:
+        body = {"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}
+    try:
+        msg = tg_call("sendMessage", body)
+        mid = msg.get("message_id") if isinstance(msg, dict) else None
+        for name, content in files:
+            data = {"chat_id": TG_CHAT, "caption": f"{rid} · {name}"}
+            if mid:
+                data["reply_to_message_id"] = mid
+            tg_call("sendDocument", data, {"document": (name, content)})
+    except Exception as e:
+        print(f"report {rid}: telegram error: {e}", flush=True)
+        return 502, "not delivered"
+    with db_lock:
+        db.execute("INSERT OR IGNORE INTO reports VALUES (?, ?, ?)", (rid, now().isoformat(), mid))
+        db.commit()
+    print(f"report {rid}: delivered with {len(files)} files", flush=True)
+    return 200, "ok"
+
+
+def accept_feedback(ip, record=True):
+    """In-memory rate check: at most 1 per 20 s per sender, 30 per hour total.
+    record=False only checks; note_feedback() then counts a delivered one, so a
+    delivery that failed (Telegram down) does not block the speaker's retry."""
     nowt = time.monotonic()
     with _fb_lock:
         while _fb_times and nowt - _fb_times[0] > 3600:
@@ -239,9 +331,17 @@ def accept_feedback(ip):
         # Forget old per-sender entries so the dict stays small.
         for k in [k for k, t in _fb_last.items() if nowt - t > 3600]:
             del _fb_last[k]
+        if record:
+            _fb_last[ip] = nowt
+            _fb_times.append(nowt)
+    return True
+
+
+def note_feedback(ip):
+    with _fb_lock:
+        nowt = time.monotonic()
         _fb_last[ip] = nowt
         _fb_times.append(nowt)
-    return True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -279,6 +379,8 @@ class Handler(BaseHTTPRequestHandler):
         route = self.path.split("?")[0]
         if route == "/feedback":
             return self.do_feedback()
+        if route == "/report":
+            return self.do_report()
         if route != "/ping":
             return self.send(404, "not found", "text/plain")
         try:
@@ -315,7 +417,7 @@ class Handler(BaseHTTPRequestHandler):
         if not text:
             return self.send(400, "empty", "text/plain")
         # The sender ip is used only for the rate limit, held in memory, never stored.
-        ip = self.client_address[0] if self.client_address else "?"
+        ip = sender_key(self)
         if not accept_feedback(ip):
             return self.send(429, "too many", "text/plain")
         version = str(p.get("version", ""))[:20]
@@ -329,6 +431,28 @@ class Handler(BaseHTTPRequestHandler):
         else:
             ok = send_telegram(head + "\n\n" + text)
         self.send(200, "ok", "text/plain") if ok else self.send(502, "not delivered", "text/plain")
+
+
+    def do_report(self):
+        if not TG_TOKEN or not TG_CHAT:
+            return self.send(503, "reports disabled", "text/plain")
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length > REPORT_MAX:
+            return self.send(413, "too large", "text/plain")
+        try:
+            p = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            return self.send(400, "bad report", "text/plain")
+        # Retries of a delivered report are answered without counting them.
+        with db_lock:
+            seen = db.execute("SELECT 1 FROM reports WHERE id = ?", (str(p.get("id", "")),)).fetchone()
+        key = sender_key(self)
+        if not seen and not accept_feedback(key, record=False):
+            return self.send(429, "too many", "text/plain")
+        code, text = deliver_report(p)
+        if code == 200 and not seen:
+            note_feedback(key)
+        self.send(code, text, "text/plain")
 
 
 def main():

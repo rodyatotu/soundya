@@ -84,6 +84,34 @@ pub(crate) fn base64(data: &[u8]) -> String {
 }
 
 /// "AA:BB:CC:DD:EE:FF", "aa-bb-cc-dd-ee-ff" or "aabbccddeeff".
+/// Standard base64 back to bytes (the page's screenshot); None if malformed.
+pub(crate) fn unbase64(text: &str) -> Option<Vec<u8>> {
+    let text = text.split_once("base64,").map_or(text, |(_, b)| b);
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut acc = 0u32;
+    let mut bits = 0;
+    for c in text.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' => break,
+            b'\r' | b'\n' | b' ' => continue,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
 pub fn parse_mac(text: &str) -> Option<[u8; 6]> {
     let hex: String = text.chars().filter(|c| !matches!(c, ':' | '-' | '.' | ' ')).collect();
     if hex.len() != 12 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -127,6 +155,15 @@ fn fmt_mac(mac: [u8; 6]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_round_trip() {
+        for data in [&b""[..], b"a", b"ab", b"abc", b"\x00\xff\x10 hello world"] {
+            assert_eq!(unbase64(&base64(data)).unwrap(), data);
+        }
+        assert_eq!(unbase64("data:image/png;base64,aGk=").unwrap(), b"hi");
+        assert!(unbase64("a$b").is_none());
+    }
 
     #[test]
     fn mac_formats() {

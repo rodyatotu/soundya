@@ -12,6 +12,25 @@ use std::sync::Arc;
 
 use crate::{settings::Settings, Cmd, Shared};
 
+#[cfg(test)]
+mod tests {
+    use super::allowed;
+
+    #[test]
+    fn only_the_panel_may_change_things() {
+        assert!(allowed("192.168.0.20:8765", "http://192.168.0.20:8765").is_ok());
+        assert!(allowed("soundya.local:8765", "http://soundya.local:8765").is_ok());
+        assert!(allowed("192.168.0.20:8765", "").is_ok(), "curl, no Origin");
+        assert!(allowed("station:8765", "http://station:8765").is_ok());
+        assert!(allowed("[fe80::1]:8765", "http://[fe80::1]:8765").is_ok());
+        // Another site in the same browser (CSRF).
+        assert!(allowed("192.168.0.20:8765", "https://evil.example").is_err());
+        // DNS rebinding: the attacker's name points at the speaker.
+        assert!(allowed("evil.example:8765", "http://evil.example:8765").is_err());
+        assert!(allowed("evil.example:8765", "").is_err());
+    }
+}
+
 const PAGE: &str = include_str!("web.html");
 
 pub fn serve(port: u16, tx: Sender<Cmd>, shared: Arc<Shared>) {
@@ -52,6 +71,8 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
     let method = parts.next().unwrap_or("").to_owned();
     let path = parts.next().unwrap_or("/").to_owned();
     let mut length = 0usize;
+    let mut host = String::new();
+    let mut origin = String::new();
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
@@ -59,8 +80,25 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
         }
         if let Some((k, v)) = line.split_once(':') {
             if k.eq_ignore_ascii_case("content-length") {
-                length = v.trim().parse().unwrap_or(0).min(64 * 1024);
+                length = v.trim().parse().unwrap_or(0);
+            } else if k.eq_ignore_ascii_case("host") {
+                host = v.trim().to_owned();
+            } else if k.eq_ignore_ascii_case("origin") {
+                origin = v.trim().to_owned();
             }
+        }
+    }
+    // Bug reports carry a screenshot; everything else is small.
+    let limit = if path.starts_with("/api/report") { 6 << 20 } else { 64 * 1024 };
+    if length > limit {
+        return reply(&conn, "413 Payload Too Large", "text/plain; charset=utf-8", "error: слишком большой запрос");
+    }
+    // Commands only from the panel itself: another site open in the browser
+    // (CSRF) or a DNS-rebinding name must not uninstall or reconfigure the speaker.
+    if method != "GET" {
+        if let Err(why) = allowed(&host, &origin) {
+            eprintln!("web: refused {method} {path}: {why}");
+            return reply(&conn, "403 Forbidden", "text/plain; charset=utf-8", &format!("error: {why}"));
         }
     }
     let mut body = vec![0; length];
@@ -107,13 +145,30 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
             Ok(_) => ("400 Bad Request", "text/plain; charset=utf-8", "error: ожидается объект JSON".to_owned()),
             Err(e) => ("400 Bad Request", "text/plain; charset=utf-8", format!("error: {e}")),
         },
+        // 0.4.40 page: plain text, anonymous. Now queued like a report (no logs, no id).
         ("POST", "/api/feedback") => {
-            let text = body.trim();
-            match crate::stats::feedback(text) {
-                Ok(()) => ("200 OK", "text/plain; charset=utf-8", "ok".to_owned()),
+            let req = crate::report::Request { kind: "feedback".into(), description: body.trim().to_owned(), ..Default::default() };
+            match crate::report::submit(&crate::state_dir(), shared, &req) {
+                Ok(_) => ("200 OK", "text/plain; charset=utf-8", "ok".to_owned()),
                 Err(e) => ("200 OK", "text/plain; charset=utf-8", format!("error: {e}")),
             }
         }
+        ("POST", "/api/report/preview") => match serde_json::from_str::<crate::report::Request>(&body) {
+            Ok(req) => ("200 OK", "application/json", crate::report::preview(&crate::state_dir(), shared, &req).to_string()),
+            Err(e) => ("400 Bad Request", "application/json", serde_json::json!({"error": e.to_string()}).to_string()),
+        },
+        ("POST", "/api/report") => match serde_json::from_str::<crate::report::Request>(&body) {
+            Ok(req) => match crate::report::submit(&crate::state_dir(), shared, &req) {
+                Ok(r) => ("200 OK", "application/json", serde_json::json!({"ok": true, "id": r.id, "status": r.status}).to_string()),
+                Err(e) => ("200 OK", "application/json", serde_json::json!({"error": e}).to_string()),
+            },
+            Err(e) => ("400 Bad Request", "application/json", serde_json::json!({"error": e.to_string()}).to_string()),
+        },
+        ("POST", "/api/report/retry") => match crate::report::retry(&crate::state_dir(), body.trim()) {
+            Ok(()) => ("200 OK", "application/json", serde_json::json!({"ok": true}).to_string()),
+            Err(e) => ("200 OK", "application/json", serde_json::json!({"error": e}).to_string()),
+        },
+        ("GET", "/api/report/list") => ("200 OK", "application/json", crate::report::list_json(&crate::state_dir()).to_string()),
         ("POST", "/api/test") => {
             let proxy = serde_json::from_str::<Settings>(&body).map(|s| s.proxy).unwrap_or_default();
             ("200 OK", "text/plain; charset=utf-8", ask(tx, |r| Cmd::TestProxy(proxy, r), 40))
@@ -128,6 +183,57 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
     )?;
     out.write_all(reply.as_bytes())?;
     out.flush()
+}
+
+fn reply(conn: &TcpStream, status: &str, kind: &str, text: &str) -> std::io::Result<()> {
+    let mut out = conn;
+    write!(
+        out,
+        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{text}",
+        text.len()
+    )?;
+    out.flush()
+}
+
+/// A name the speaker can honestly be reached by on the home network: an IP
+/// address, localhost, a single-label name, a .local/.lan/.home/.internal/
+/// .home.arpa name, or one listed in SOUNDYA_WEB_HOSTS (soundya.env).
+fn local_host(host: &str) -> bool {
+    let name = if host.starts_with('[') {
+        return true; // IPv6 literal
+    } else {
+        host.rsplit_once(':').map_or(host, |(h, p)| if p.chars().all(|c| c.is_ascii_digit()) { h } else { host })
+    }
+    .trim_end_matches('.')
+    .to_ascii_lowercase();
+    if name.is_empty() || name.parse::<std::net::Ipv4Addr>().is_ok() || name == "localhost" || !name.contains('.') {
+        return true;
+    }
+    if [".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain"].iter().any(|s| name.ends_with(s)) {
+        return true;
+    }
+    std::env::var("SOUNDYA_WEB_HOSTS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|h| h.trim().to_ascii_lowercase())
+        .any(|h| !h.is_empty() && h == name)
+}
+
+/// Checks a state-changing request: the page must come from this very address.
+pub fn allowed(host: &str, origin: &str) -> Result<(), String> {
+    if !local_host(host) {
+        return Err(format!("адрес «{host}» не похож на адрес колонки в домашней сети (добавьте его в SOUNDYA_WEB_HOSTS в soundya.env)"));
+    }
+    if origin.is_empty() || origin == "null" && host.is_empty() {
+        // Not a browser (curl, the PC tray), or a very old one.
+        return Ok(());
+    }
+    let from = origin.split_once("://").map_or(origin, |(_, rest)| rest).trim_end_matches('/');
+    if from.eq_ignore_ascii_case(host) {
+        Ok(())
+    } else {
+        Err(format!("запрос со стороннего сайта ({origin}) отклонён"))
+    }
 }
 
 /// Fetches the new track's cover in the background.
