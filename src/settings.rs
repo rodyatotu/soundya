@@ -183,6 +183,13 @@ pub struct Settings {
     pub display_lat: Option<f64>,
     #[serde(default)]
     pub display_lon: Option<f64>,
+    /// Autostart: scenarios (macro phrases) run after start, in this order.
+    #[serde(default)]
+    pub autostart: Vec<Autostart>,
+    /// Music that was playing when soundya stopped (reboot, crash, update)
+    /// goes on where it was, if it is under 20 minutes ago.
+    #[serde(default)]
+    pub resume_music: bool,
     /// Optional PIN for changing anything from the panel ("" = no PIN).
     /// Never sent to the page; `soundya pin off` on the speaker removes it.
     #[serde(default)]
@@ -202,6 +209,19 @@ pub struct Settings {
     /// Voice macros: a phrase that runs a script of panel commands.
     #[serde(default)]
     pub macros: Vec<Macro>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct Autostart {
+    /// The scenario's phrase (settings.macros).
+    #[serde(default)]
+    pub phrase: String,
+    /// Seconds after the previous one (or after start).
+    #[serde(default)]
+    pub delay: u16,
+    /// "boot": only after the speaker was switched on; "always": every start.
+    #[serde(default)]
+    pub when: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -350,6 +370,8 @@ impl Default for Settings {
             duck_exclude: Vec::new(),
             alice_voice: 100,
             alice_voice_max: 10,
+            autostart: Vec::new(),
+            resume_music: false,
             display_on: false,
             display_widgets: display_widgets(),
             display_secs: 10,
@@ -612,6 +634,19 @@ fn mask(secret: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn autostart_is_off_by_default() {
+        // An old config without the new keys: nothing autostarts, nothing resumes.
+        let s: super::Settings = serde_json::from_str(r#"{"device":"default"}"#).unwrap();
+        assert!(s.autostart.is_empty());
+        assert!(!s.resume_music);
+        let s: super::Settings =
+            serde_json::from_str(r#"{"autostart":[{"phrase":"доброе утро","delay":5,"when":"boot"}],"resume_music":true}"#).unwrap();
+        assert_eq!(s.autostart[0].phrase, "доброе утро");
+        assert_eq!(s.autostart[0].when, "boot");
+        assert!(s.resume_music);
+    }
+
     use super::*;
 
     #[test]

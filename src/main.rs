@@ -221,6 +221,11 @@ struct Controller {
     asked: Option<(String, String)>,
     /// When a refused SoundCloud token was last asked again (every 10 minutes).
     token_checked: Option<std::time::Instant>,
+    /// The command that loaded the queue now («play bonobo», «likes»…), for resuming.
+    source_cmd: Option<String>,
+    /// After a restart: (queue position, ms) to start at when the queue is loaded again.
+    resume_at: Option<(usize, u64)>,
+    resume_saved: Option<std::time::Instant>,
 }
 
 fn fmt_ms(ms: u64) -> String {
@@ -395,6 +400,8 @@ impl Controller {
         settings["alice_voice"] = self.settings.alice_voice.into();
         settings["planner_on"] = self.settings.planner_on.into();
         settings["tg_on"] = self.settings.tg_on.into();
+        settings["autostart"] = serde_json::to_value(&self.settings.autostart).unwrap_or_default();
+        settings["resume_music"] = self.settings.resume_music.into();
         settings["display_on"] = self.settings.display_on.into();
         settings["display_widgets"] = self.settings.display_widgets.clone().into();
         settings["display_secs"] = self.settings.display_secs.into();
@@ -655,6 +662,14 @@ impl Controller {
         new.display_secs = new.display_secs.clamp(3, 120);
         new.display_bright = new.display_bright.clamp(10, 100);
         display::configure(display_widgets(&new), new.display_bright, &new);
+        new.autostart.retain(|a| !a.phrase.trim().is_empty());
+        new.autostart.truncate(10);
+        for a in &mut new.autostart {
+            a.delay = a.delay.min(600);
+            if a.when != "boot" {
+                a.when = "always".into();
+            }
+        }
         planner::configure(new.planner_on, new.tz_offset);
         new.led_order = new.led_order.trim().to_lowercase();
         if !led::set_order(&new.led_order) {
@@ -801,9 +816,18 @@ impl Controller {
                 self.queue = tracks;
                 self.failures = 0;
                 if let Some((name, cmd)) = self.asked.take() {
+                    self.source_cmd = Some(cmd.clone());
                     self.history.set(name, cmd);
                 }
-                self.start(0);
+                match self.resume_at.take() {
+                    // After a restart: where it was.
+                    Some((pos, ms)) if pos < self.queue.len() => {
+                        eprintln!("resume: track {} at {}", pos + 1, fmt_ms(ms));
+                        self.retries = 0;
+                        self.start_at(pos, ms.saturating_sub(2_000), 0);
+                    }
+                    _ => self.start(0),
+                }
                 pause_native_again(&self.shared);
                 respond(reply, &format!("OK {}", self.status()), None);
             }
@@ -860,7 +884,77 @@ impl Controller {
         self.publish();
     }
 
+    /// What plays now, for «продолжить музыку после перезагрузки»: every 15 s while
+    /// it plays; a pause or a stop by the user is saved too (then nothing resumes).
+    fn save_resume(&mut self) {
+        // While a resume is still loading (resume_saved is set 2 minutes ahead),
+        // the old file stays as it was; a load that never came is forgotten.
+        if !self.settings.resume_music || self.resume_saved.is_some_and(|t| t.elapsed() < Duration::from_secs(15)) {
+            return;
+        }
+        self.resume_at = None;
+        self.resume_saved = Some(std::time::Instant::now());
+        let playing = self.flags.as_ref().is_some_and(|f| !f.paused.load(Ordering::Acquire));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let v = serde_json::json!({
+            "playing": playing && self.source_cmd.is_some(),
+            "cmd": self.source_cmd,
+            "pos": self.pos,
+            "track": self.current().map(|t| t.id),
+            "ms": self.flags.as_ref().map_or(0, |f| f.position_ms.load(Ordering::Acquire)),
+            "at": now,
+        });
+        let _ = settings::write_synced(&self.dir.join("resume.json"), v.to_string().as_bytes());
+    }
+
+    /// At start: music that was playing under 20 minutes ago goes on.
+    fn resume_after_restart(&mut self) {
+        if !self.settings.resume_music {
+            return;
+        }
+        let Some(v) = fsx::read_string(&self.dir.join("resume.json")).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return };
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let fresh = now.saturating_sub(v["at"].as_u64().unwrap_or(0)) < 20 * 60;
+        let (Some(cmd), true, true) = (v["cmd"].as_str(), v["playing"].as_bool().unwrap_or(false), fresh) else { return };
+        eprintln!("resume: «{cmd}» was playing before the restart; going on");
+        self.resume_at = Some((v["pos"].as_u64().unwrap_or(0) as usize, v["ms"].as_u64().unwrap_or(0)));
+        self.resume_saved = Some(std::time::Instant::now() + Duration::from_secs(120));
+        let (tx, _rx) = mpsc::channel();
+        self.control(cmd, tx);
+    }
+
+    /// Autostart scenarios, in order, each after its delay; «boot» ones only
+    /// when the speaker itself was just switched on.
+    fn autostart(&self) {
+        let boot = fsx::read_string(std::path::Path::new("/proc/uptime"))
+            .and_then(|u| u.split('.').next().and_then(|s| s.parse::<u64>().ok()))
+            .is_some_and(|up| up < 600);
+        let list: Vec<settings::Autostart> =
+            self.settings.autostart.iter().filter(|a| !a.phrase.trim().is_empty() && (a.when != "boot" || boot)).cloned().collect();
+        if list.is_empty() {
+            return;
+        }
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            // Let the network and Alice come up first.
+            thread::sleep(Duration::from_secs(20));
+            for a in list {
+                thread::sleep(Duration::from_secs(u64::from(a.delay.min(600))));
+                eprintln!("autostart: «{}»", a.phrase);
+                let (rtx, rrx) = mpsc::channel();
+                if tx.send(Cmd::Control(format!("macro run {}", a.phrase), rtx)).is_err() {
+                    break;
+                }
+                let _ = rrx.recv_timeout(Duration::from_secs(30));
+            }
+        });
+    }
+
     fn halt(&mut self) {
+        // A stop is written at once, so a reboot right after it plays nothing.
+        if self.resume_at.is_none() {
+            self.resume_saved = None;
+        }
         if let Some(f) = self.flags.take() {
             f.stop.store(true, Ordering::Release);
         }
@@ -1925,8 +2019,10 @@ impl Controller {
         }
     }
 
-    fn start_up(self, rx: Receiver<Cmd>) {
+    fn start_up(mut self, rx: Receiver<Cmd>) {
         self.check_login();
+        self.resume_after_restart();
+        self.autostart();
         self.run(rx);
     }
 
@@ -1936,6 +2032,7 @@ impl Controller {
                 self.net_checked = Some(std::time::Instant::now());
                 self.check_net(None);
             }
+            self.save_resume();
             // A refused SoundCloud token is asked again now and then: when it
             // works (it was a passing 401), the login comes back by itself.
             if self.client.token_refused() && self.token_checked.is_none_or(|t| t.elapsed() > Duration::from_secs(600)) {
@@ -2526,6 +2623,9 @@ fn daemon() {
         repicked: None,
         asked: None,
         token_checked: None,
+        source_cmd: None,
+        resume_at: None,
+        resume_saved: None,
         rng: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
