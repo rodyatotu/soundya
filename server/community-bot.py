@@ -12,6 +12,16 @@
                          каждому выдаётся ОДНОРАЗОВАЯ ссылка (member_limit=1),
                          иначе отправляется SOUNDYA_CHANNEL_INVITE
   SOUNDYA_CONSENTS       файл журнала согласий (по умолчанию ./consents.jsonl)
+  SOUNDYA_DECLINES       файл журнала отказов (по умолчанию ./declines.jsonl)
+  SOUNDYA_ADMINS         Telegram ID администраторов через запятую: /stats, /ban, /unban
+
+Заявки на вступление (0.5.00). Сделайте в группе/канале пригласительную ссылку
+с «Одобрением администратором» (creates_join_request) и укажите её в
+SOUNDYA_CHANNEL_INVITE: тогда по ней в группу попасть нельзя, пока бот не
+одобрит заявку. Бот (админ группы с правом «Добавлять участников») получает
+заявку, пишет человеку в личку правила с кнопками «Соглашаюсь» / «Не соглашаюсь»
+и одобряет или отклоняет заявку. Согласие пишется в журнал: Telegram ID,
+username, имя, время (UTC), версия правил.
 
 Запуск:  SOUNDYA_BOT_TOKEN=123:abc python3 community-bot.py
 """
@@ -26,6 +36,10 @@ TOKEN = os.environ.get("SOUNDYA_BOT_TOKEN", "").strip()
 CHANNEL_INVITE = os.environ.get("SOUNDYA_CHANNEL_INVITE", "https://t.me/+lvaSgqYWrXUwYzA0").strip()
 TARGET_CHAT = os.environ.get("SOUNDYA_TARGET_CHAT", "").strip()
 CONSENTS = os.environ.get("SOUNDYA_CONSENTS", "consents.jsonl")
+DECLINES = os.environ.get("SOUNDYA_DECLINES", "declines.jsonl")
+ADMINS = {int(x) for x in os.environ.get("SOUNDYA_ADMINS", "").replace(" ", "").split(",") if x.lstrip("-").isdigit()}
+# Заявки, ждущие ответа: user_id -> chat_id группы (в памяти; Telegram хранит заявки сам).
+PENDING = {}
 
 # Версия соглашения. Поднимите её при существенном изменении правил —
 # согласие старой версии перестанет считаться действующим.
@@ -53,7 +67,7 @@ RULES = (
 
 WELCOME = "Привет! Это бот приёма в сообщество soundya. Прочитайте правила ниже и подтвердите согласие."
 
-API = f"https://api.telegram.org/bot{TOKEN}"
+API = os.environ.get("SOUNDYA_TG_API", "https://api.telegram.org").rstrip("/") + f"/bot{TOKEN}"
 
 
 def api(method, **params):
@@ -75,7 +89,26 @@ def api(method, **params):
 
 
 def agree_keyboard():
-    return {"inline_keyboard": [[{"text": "✅ Соглашаюсь", "callback_data": f"agree:{AGREEMENT_VERSION}"}]]}
+    return {"inline_keyboard": [[
+        {"text": "✅ Соглашаюсь", "callback_data": f"agree:{AGREEMENT_VERSION}"},
+        {"text": "✖️ Не соглашаюсь", "callback_data": "decline"},
+    ]]}
+
+
+def append(path, row):
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"journal {path}: {e}")
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(l) for l in f if l.strip()]
+    except FileNotFoundError:
+        return []
 
 
 def log_consent(user):
@@ -127,6 +160,15 @@ def on_agree(cq):
         api("answerCallbackQuery", callback_query_id=cq["id"], text="Правила обновились — откройте бота заново: /start", show_alert=True)
         return
     log_consent(user)
+    group = PENDING.pop(user["id"], None)
+    if group is not None:
+        # A join request is waiting: approve it — the user is in, no link needed.
+        res = api("approveChatJoinRequest", chat_id=group, user_id=user["id"])
+        api("answerCallbackQuery", callback_query_id=cq["id"], text="Спасибо! Заявка одобрена.")
+        text = "Согласие принято ✅\nЗаявка одобрена — добро пожаловать в soundya!" if res.get("ok") else \
+            "Согласие принято ✅, но одобрить заявку не вышло (возможно, она устарела). Отправьте заявку ещё раз."
+        api("sendMessage", chat_id=chat_id, text=text)
+        return
     link = invite_link()
     api("answerCallbackQuery", callback_query_id=cq["id"], text="Спасибо! Ссылка отправлена.")
     api(
@@ -137,6 +179,63 @@ def on_agree(cq):
     )
 
 
+def on_decline(cq):
+    user = cq["from"]
+    append(DECLINES, {"ts": datetime.now(timezone.utc).isoformat(), "user_id": user.get("id"),
+                      "username": user.get("username"), "version": AGREEMENT_VERSION})
+    group = PENDING.pop(user["id"], None)
+    if group is not None:
+        api("declineChatJoinRequest", chat_id=group, user_id=user["id"])
+    api("answerCallbackQuery", callback_query_id=cq["id"], text="Понятно.")
+    api("sendMessage", chat_id=cq["message"]["chat"]["id"],
+        text="Без согласия с правилами доступа в сообщество нет. Передумаете — нажмите /start.")
+
+
+def on_join_request(req):
+    """Someone asked to join through the request link: rules first."""
+    user = req["from"]
+    PENDING[user["id"]] = req["chat"]["id"]
+    # user_chat_id: the bot may write to them for 5 minutes after the request.
+    dm = req.get("user_chat_id", user["id"])
+    api("sendMessage", chat_id=dm, text=WELCOME)
+    api("sendMessage", chat_id=dm, text=RULES, parse_mode="HTML", reply_markup=agree_keyboard())
+
+
+def stats_text():
+    consents, declines = read(CONSENTS), read(DECLINES)
+    now = datetime.now(timezone.utc)
+    week = [c for c in consents if (now - datetime.fromisoformat(c["ts"])).days < 7]
+    users = {c.get("user_id") for c in consents}
+    current = {c.get("user_id") for c in consents if c.get("version") == AGREEMENT_VERSION}
+    by_version = {}
+    for c in consents:
+        by_version[c.get("version")] = by_version.get(c.get("version"), 0) + 1
+    versions = ", ".join(f"v{k}: {v}" for k, v in sorted(by_version.items(), key=lambda kv: str(kv[0]))) or "—"
+    return (f"📊 Сообщество soundya\n"
+            f"Согласились: {len(users)} (с текущими правилами v{AGREEMENT_VERSION}: {len(current)})\n"
+            f"За 7 дней: {len(week)}\nОтказались: {len({d.get('user_id') for d in declines})}\n"
+            f"Ждут ответа на заявку: {len(PENDING)}\nПо версиям правил: {versions}")
+
+
+def on_admin(msg, text):
+    chat = msg["chat"]["id"]
+    if msg["from"]["id"] not in ADMINS:
+        return False
+    cmd, _, arg = text.partition(" ")
+    if cmd == "/stats":
+        api("sendMessage", chat_id=chat, text=stats_text())
+    elif cmd in ("/ban", "/unban"):
+        if not TARGET_CHAT or not arg.strip().lstrip("-").isdigit():
+            api("sendMessage", chat_id=chat, text=f"{cmd} <Telegram ID> (нужен SOUNDYA_TARGET_CHAT)")
+        else:
+            method = "banChatMember" if cmd == "/ban" else "unbanChatMember"
+            res = api(method, chat_id=_chat_id(TARGET_CHAT), user_id=int(arg.strip()))
+            api("sendMessage", chat_id=chat, text=("✅ " if res.get("ok") else "❌ ") + f"{cmd} {arg.strip()}: {res.get('description', 'готово')}")
+    else:
+        return False
+    return True
+
+
 def main():
     if not TOKEN:
         raise SystemExit("нет SOUNDYA_BOT_TOKEN: создайте бота у @BotFather и задайте токен")
@@ -145,7 +244,7 @@ def main():
         print(f"бот @{me['result'].get('username')} запущен; соглашение версии {AGREEMENT_VERSION}")
     offset = 0
     while True:
-        res = api("getUpdates", offset=offset, timeout=50, allowed_updates=["message", "callback_query"])
+        res = api("getUpdates", offset=offset, timeout=50, allowed_updates=["message", "callback_query", "chat_join_request"])
         if not res.get("ok"):
             time.sleep(3)
             continue
@@ -155,12 +254,19 @@ def main():
                 if "message" in upd:
                     msg = upd["message"]
                     text = (msg.get("text") or "").strip()
-                    if text.startswith("/start"):
+                    if text.startswith("/") and on_admin(msg, text):
+                        pass
+                    elif text.startswith("/start"):
                         on_start(msg["chat"]["id"])
+                elif "chat_join_request" in upd:
+                    on_join_request(upd["chat_join_request"])
                 elif "callback_query" in upd:
                     cq = upd["callback_query"]
-                    if (cq.get("data") or "").startswith("agree:"):
+                    data = cq.get("data") or ""
+                    if data.startswith("agree:"):
                         on_agree(cq)
+                    elif data == "decline":
+                        on_decline(cq)
             except Exception as e:
                 print(f"update {upd.get('update_id')}: {e}")
 
