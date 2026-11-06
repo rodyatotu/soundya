@@ -100,6 +100,15 @@ soundya подключается к локальному интерфейсу А
 ## Установка
 
 > [!TIP]
+> **Проще всего — графический установщик** (колонка уже с root, шаг 1 ниже):
+> `soundya-setup-windows.exe` (Windows 10/11) или `soundya-setup-mac.zip` → «Установка soundya.app» (Intel и Apple Silicon).
+> Он сам найдёт колонку в сети, установит soundya (с копией настроек и откатом), спросит, что включить и какую музыку
+> играть по умолчанию, а на Windows подключит и сам компьютер. adb ставить не нужно.
+> Собрать: `sh scripts/build-installer.sh`. Установщики не подписаны сертификатом разработчика:
+> Windows покажет «Windows защитила ваш компьютер» → «Подробнее» → «Выполнить в любом случае»;
+> на Mac один раз выполните в Терминале `xattr -cr ~/Downloads/"Установка soundya.app"` и откройте приложение.
+
+> [!TIP]
 > **Уже стоят [YAM](https://github.com/nyakokitsu/yam) и [Luna](https://github.com/nyakokitsu/luna)?** Тогда всё ставится одной командой на колонке:
 > ```sh
 > yam install rodyatotu/soundya
