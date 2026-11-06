@@ -63,6 +63,8 @@ pub enum Intent {
     Tv(TvAction),
     /// Smart Ducking by voice (ducking.rs).
     Duck(DuckCmd),
+    /// «Повтори адрес»: where the panel is (hello.rs).
+    Address,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -663,6 +665,13 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
     if let Some(action) = tv(&normalize(text)) {
         return Some(Intent::Tv(action));
     }
+    if matches!(
+        normalize(text).as_str(),
+        "повтори адрес" | "повтори адрес саундя" | "скажи адрес" | "скажи адрес саундя" | "какой адрес саундя"
+            | "какой адрес у саундя" | "адрес саундя" | "адрес панели саундя" | "повтори адрес панели"
+    ) {
+        return Some(Intent::Address);
+    }
     if let Some(d) = duck_command(&normalize(text)) {
         return Some(Intent::Duck(d));
     }
@@ -1184,7 +1193,7 @@ fn read_frames(
             }
             // SoundCloud switched off in the settings: only the PC, the TV and
             // messages are ours; all music stays Alice's.
-            let music = !matches!(intent, Intent::Pc(_) | Intent::Tv(_));
+            let music = !matches!(intent, Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::Duck(_));
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
                 continue;
@@ -1267,7 +1276,7 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
-        Intent::Duck(DuckCmd::Auto(_)) => true,
+        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
         Intent::Pc(_) => w.pc,
@@ -1578,6 +1587,8 @@ mod tests {
         assert_eq!(intent("верни громкость", true), Some(Intent::Duck(DuckCmd::Restore)));
         assert_eq!(intent("отключи автоматическое приглушение", false), Some(Intent::Duck(DuckCmd::Auto(false))));
         assert_eq!(intent("включи автоматическое приглушение", false), Some(Intent::Duck(DuckCmd::Auto(true))));
+        assert_eq!(intent("Алиса, повтори адрес", false), Some(Intent::Address));
+        assert_eq!(intent("какой адрес саундя", true), Some(Intent::Address));
         // Her own volume stays hers.
         assert_eq!(intent("сделай потише", false), None);
     }

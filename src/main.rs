@@ -9,6 +9,7 @@ mod buffer;
 mod buttons;
 mod bypass;
 mod clock;
+mod display;
 mod dns;
 mod ducking;
 mod eq;
@@ -422,6 +423,10 @@ impl Controller {
             "volume": volume::level(),
             "led": led::info(),
             "ducking": ducking::json(),
+            "onboarding": serde_json::json!({
+                "stage": format!("{:?}", hello::stage()),
+                "phase": led::install_phase().map(|p| format!("{p:?}")),
+            }),
             "source": alice::source_of(&self.shared),
             "zapret_presets": zapret::PRESETS.iter().enumerate().map(|(i, (name, _))| { let id = zapret::id_of(i); let e = zapret::engine(&id, "").to_string(); [id, (*name).to_owned(), e] }).collect::<Vec<_>>(),
         });
@@ -584,6 +589,7 @@ impl Controller {
         new.duck_notify_secs = new.duck_notify_secs.clamp(1, 120);
         new.duck_exclude = new.duck_exclude.iter().map(|a| a.trim().to_owned()).filter(|a| !a.is_empty()).take(30).collect();
         ducking::configure(ducking::Config::from_settings(&new));
+        hello::set_voice(new.voice_hello);
         new.led_order = new.led_order.trim().to_lowercase();
         if !led::set_order(&new.led_order) {
             return "error: порядок цветов — rgb, grb, brg, bgr, rbg или gbr".into();
@@ -1212,6 +1218,10 @@ impl Controller {
                 };
                 respond(reply, &format!("OK: {text}"), Some(text.into()));
             }
+            Intent::Address => {
+                let text = hello::repeat();
+                respond(reply, &format!("OK: {text}"), None);
+            }
             Intent::WhatPlaying if self.shared.airplay.is_active() => {
                 let text = "Сейчас играет музыка с телефона по AirPlay".to_owned();
                 respond(reply, &text, Some(text.clone()));
@@ -1518,6 +1528,24 @@ impl Controller {
                     Some(c) => self.intent(Intent::Duck(c), Some(reply)),
                     None => send_to(&reply, "usage: duck down | restore | auto on | auto off".into()),
                 }
+            }
+            // The panel's wizard: «hello start | step N | done», «hello address».
+            "hello" => {
+                let (what, n) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                match what {
+                    "start" => hello::start(),
+                    "step" => hello::step(n.trim().parse().unwrap_or(1)),
+                    "done" => hello::done(),
+                    "address" => {
+                        self.intent(Intent::Address, Some(reply));
+                        return;
+                    }
+                    _ => {
+                        send_to(&reply, "usage: hello start | step N | done | address".into());
+                        return;
+                    }
+                }
+                send_to(&reply, "OK".into());
             }
             // «pin set <PIN> | pin off» — from the panel (behind the current PIN) or
             // `soundya pin off` over adb when the PIN is forgotten.
@@ -2243,6 +2271,8 @@ fn daemon() {
     }
     // After install: Alice says where the panel is (once per version).
     hello::run(&dir, shared.clone(), settings.voice_hello, settings.onboarded, port);
+    // The clock display (Mini 3, Plum, Pickle) shows the install steps too.
+    display::run();
     let control_tx = tx.clone();
     let status_shared = shared.clone();
     thread::spawn(move || {

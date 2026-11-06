@@ -910,7 +910,8 @@
         <h2 id="wiztitle">Добро пожаловать в soundya 👋</h2>
         <p class="hint">Пара минут — и колонка готова. Всё, что не выберете, останется выключенным и не будет мешать Алисе.
           Вернуться к мастеру можно в «Настройки» → «Обновления».</p>
-        <p class="hint">Эта страница: <b id="wizaddr"></b>. Добавьте её в закладки или на экран «Домой».</p>
+        <p class="hint">Эта страница: <b id="wizaddr"></b>. Добавьте её в закладки или на экран «Домой».
+          Забыли адрес — скажите: «Алиса, повтори адрес».</p>
         <div class="notice">
           <b>Закрепите адрес колонки в роутере</b> (DHCP reservation), иначе после перезагрузки роутера он может
           смениться. То же нужно для компьютера и телевизора, если будете ими управлять.
@@ -1611,7 +1612,7 @@ function wizShow() {
   document.querySelectorAll('#wizard .wizstep').forEach(x => x.hidden = Number(x.dataset.step) !== wizStep);
   $('wizdots').innerHTML = Array.from({ length: WIZ_STEPS }, (_, i) => `<i class="${i <= wizStep ? 'on' : ''}"></i>`).join('');
   $('wizback').hidden = wizStep === 0;
-  $('wiznext').textContent = wizStep === WIZ_STEPS - 1 ? 'Готово' : 'Дальше';
+  $('wiznext').textContent = wizStep === 0 ? 'Начать установку' : wizStep === WIZ_STEPS - 1 ? 'Готово' : 'Дальше';
 }
 function openWizard() {
   const st = settings || {};
@@ -1645,6 +1646,7 @@ async function wizGo(d) {
       if (r.startsWith('error')) { show($('wizmsg'), r); return; }
     }
     if (wizStep === WIZ_STEPS - 1) {
+      post('/api/cmd', 'hello done');
       $('wizard').hidden = true;
       settingsLoaded = false; refresh();
       const next = $('wizpc').checked || $('wiztv').checked ? 'devices' : 'account';
@@ -1652,12 +1654,17 @@ async function wizGo(d) {
       return;
     }
   }
+  const from = wizStep;
   wizStep = Math.max(0, Math.min(WIZ_STEPS - 1, wizStep + d));
   $('wizmsg').textContent = '';
   wizShow();
+  // The speaker follows: Alice moves on after «Начать установку», the ring fills by step.
+  if (from === 0 && wizStep === 1) post('/api/cmd', 'hello start');
+  else post('/api/cmd', 'hello step ' + Math.max(1, wizStep));
 }
 async function wizSkip() {
   await post('/api/settings', JSON.stringify({ onboarded: true }));
+  post('/api/cmd', 'hello done');
   $('wizard').hidden = true;
   settingsLoaded = false; refresh();
 }

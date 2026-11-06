@@ -176,29 +176,98 @@ pub fn test(channel: usize) -> Result<String, String> {
     })
 }
 
-/// The greeting after install: the ring fills zone by zone, then fades.
-static GREET: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-const GREET_MS: u64 = 3200;
-
-pub fn greet() {
-    *GREET.lock().unwrap() = Some(std::time::Instant::now());
+/// First install (hello.rs): what the ring — and the clock display, if there
+/// is one (display.rs) — shows. Each profile draws it its own way.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Install {
+    /// soundya is starting, looking for the network.
+    Loading,
+    /// The address was said; waiting for «Начать установку» in the panel.
+    Waiting,
+    /// Wizard step n of total.
+    Step(u8, u8),
+    /// Finished: a short farewell, then the ring is free again.
+    Done,
 }
 
-/// Frame `ms` into the greeting: zones light one after another (first 60 %),
-/// then all fade out together.
-fn greet_frame(ms: u64, zones: usize, c: Rgb) -> Vec<Rgb> {
-    let fill = GREET_MS * 6 / 10;
-    (0..zones)
-        .map(|z| {
-            if ms < fill {
-                let on_at = fill * z as u64 / zones.max(1) as u64;
-                let t = ms.saturating_sub(on_at) as f32 / 250.0;
-                scale(c, t.min(1.0))
+static INSTALL: std::sync::Mutex<Option<(Install, std::time::Instant)>> = std::sync::Mutex::new(None);
+const DONE_MS: u64 = 2600;
+/// Nobody came to the panel: stop waiting on the ring (the voice command stays).
+const WAIT_MAX: Duration = Duration::from_secs(30 * 60);
+
+pub fn set_install(phase: Option<Install>) {
+    *INSTALL.lock().unwrap() = phase.map(|p| (p, std::time::Instant::now()));
+}
+
+/// The phase now; Done and Waiting end by themselves.
+pub fn install_phase() -> Option<Install> {
+    let mut g = INSTALL.lock().unwrap();
+    let expired = match g.as_ref() {
+        Some((Install::Done, at)) => at.elapsed() > Duration::from_millis(DONE_MS),
+        Some((Install::Waiting, at)) => at.elapsed() > WAIT_MAX,
+        _ => false,
+    };
+    if expired {
+        *g = None;
+    }
+    g.as_ref().map(|(p, _)| p.clone())
+}
+
+fn install_ms() -> u64 {
+    INSTALL.lock().unwrap().as_ref().map_or(0, |(_, at)| at.elapsed().as_millis() as u64)
+}
+
+/// Hue 0..1 → colour (for the farewell on six zones).
+fn hue(h: f32) -> Rgb {
+    let h = (h.rem_euclid(1.0)) * 6.0;
+    let x = 1.0 - (h % 2.0 - 1.0).abs();
+    let (r, g, b) = match h as u32 {
+        0 => (1.0, x, 0.0),
+        1 => (x, 1.0, 0.0),
+        2 => (0.0, 1.0, x),
+        3 => (0.0, x, 1.0),
+        4 => (x, 0.0, 1.0),
+        _ => (1.0, 0.0, x),
+    };
+    ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+}
+
+/// One frame of an install phase, `ms` into it, for a ring of `zones` in colour `c`.
+/// Three zones (Station Lite): zones light in turn, breathe, fill, flash.
+/// Six (Mini 1/2/3, Luna): a comet goes round, fills up, a rainbow sweeps.
+pub fn install_frame(phase: &Install, ms: u64, zones: usize, c: Rgb) -> Vec<Rgb> {
+    let z = zones.max(1);
+    let small = z <= 3;
+    match phase {
+        Install::Loading if small => (0..z)
+            .map(|i| {
+                let t = ((ms as f32 / 300.0) - i as f32).rem_euclid(z as f32);
+                scale(c, (1.0 - t).max(0.08))
+            })
+            .collect(),
+        Install::Loading => {
+            let head = (ms / 110) as usize % z;
+            (0..z).map(|i| scale(c, (1.0 - ((head + z - i) % z) as f32 / 3.0).max(0.04))).collect()
+        }
+        Install::Waiting if small => vec![scale(c, 0.6 * breath(ms)); z],
+        Install::Waiting => {
+            let head = (ms / 400) as usize % z;
+            (0..z).map(|i| scale(c, if i == head { 0.5 } else { 0.06 })).collect()
+        }
+        Install::Step(n, total) => {
+            let lit = ((*n as f32 / (*total).max(1) as f32) * z as f32).ceil() as usize;
+            (0..z).map(|i| scale(c, if i < lit { 1.0 } else { 0.06 })).collect()
+        }
+        Install::Done => {
+            let fade = 1.0 - (ms.saturating_sub(DONE_MS - 900) as f32 / 900.0).min(1.0);
+            if small {
+                let flash = ms < 600 && (ms / 150) % 2 == 0;
+                vec![scale(if flash { (255, 255, 255) } else { c }, fade); z]
             } else {
-                scale(c, 1.0 - (ms - fill) as f32 / (GREET_MS - fill) as f32)
+                (0..z).map(|i| scale(hue(i as f32 / z as f32 + ms as f32 / 1500.0), fade)).collect()
             }
-        })
-        .collect()
+        }
+    }
 }
 
 /// What was found, for the page and bug reports.
@@ -591,14 +660,13 @@ pub fn run(shared: Arc<Shared>) {
                     false
                 }
             };
-            // The greeting after install (hello.rs): over everything but Alice.
-            let greeting = GREET.lock().unwrap().filter(|at| at.elapsed() < Duration::from_millis(GREET_MS)).map(|at| at.elapsed().as_millis() as u64);
-            if let Some(ms) = greeting {
-                if !shared.duck.active() || ms < 200 {
-                    ring.draw(&greet_frame(ms, zones, scale(light.quiet, light.bright)), None);
+            // The first install (hello.rs): over the music light, never over Alice.
+            if let Some(phase) = install_phase() {
+                if !shared.duck.active() {
+                    ring.draw(&install_frame(&phase, install_ms(), zones, scale(light.quiet, light.bright)), None);
+                    shown = None;
+                    continue;
                 }
-                shown = None;
-                continue;
             }
             // The ring test from the page: one raw channel file, ignoring the order.
             let test = TEST.lock().unwrap().filter(|(_, at)| at.elapsed() < TEST_FOR).map(|(c, _)| c);
@@ -682,13 +750,23 @@ mod tests {
     }
 
     #[test]
-    fn greeting_fills_then_fades() {
+    fn install_animations_per_profile() {
         let c = (200, 100, 0);
-        let start = greet_frame(0, 6, c);
-        assert!(start[5] == (0, 0, 0), "last zone dark at the start");
-        let mid = greet_frame(GREET_MS * 6 / 10 - 1, 6, c);
-        assert!(mid.iter().all(|z| z.0 > 0), "{mid:?}");
-        assert!(greet_frame(GREET_MS - 1, 6, c)[0].0 < 10);
+        // Lite (3 zones): one zone leads, the others are dim.
+        let f = install_frame(&Install::Loading, 0, 3, c);
+        assert_eq!(f.len(), 3);
+        assert_eq!(f[0], c);
+        assert!(f[1].0 < 100 && f[2].0 < 100, "{f:?}");
+        // Six zones: the comet moves.
+        assert_ne!(install_frame(&Install::Loading, 0, 6, c), install_frame(&Install::Loading, 120, 6, c));
+        // Steps fill the ring: 2 of 4 → half lit.
+        let f = install_frame(&Install::Step(2, 4), 0, 6, c);
+        assert_eq!(f.iter().filter(|x| x.0 == 200).count(), 3);
+        // The farewell fades to dark; six zones get colours, not only the accent.
+        assert!(install_frame(&Install::Done, DONE_MS, 6, c).iter().all(|x| *x == (0, 0, 0)));
+        let rainbow = install_frame(&Install::Done, 0, 6, c);
+        assert!(rainbow.iter().any(|x| x.2 > 100), "{rainbow:?}");
+        assert_eq!(install_frame(&Install::Done, 100, 3, c)[0], (255, 255, 255), "Lite flashes");
     }
 
     #[test]
