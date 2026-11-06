@@ -214,6 +214,8 @@ struct Controller {
     /// What the running fetch was asked for, as the page shows it, and the
     /// command that asks for it again: goes to the history once it plays.
     asked: Option<(String, String)>,
+    /// When a refused SoundCloud token was last asked again (every 10 minutes).
+    token_checked: Option<std::time::Instant>,
 }
 
 fn fmt_ms(ms: u64) -> String {
@@ -511,6 +513,10 @@ impl Controller {
         let client = self.client.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
+            // A token marked «refused» is asked again first: it may be fine.
+            if client.token_refused() {
+                client.verify_token();
+            }
             let user = if client.has_token() {
                 match client.me() {
                     Ok((_, name)) => {
@@ -1730,6 +1736,12 @@ impl Controller {
                 self.net_checked = Some(std::time::Instant::now());
                 self.check_net(None);
             }
+            // A refused SoundCloud token is asked again now and then: when it
+            // works (it was a passing 401), the login comes back by itself.
+            if self.client.token_refused() && self.token_checked.is_none_or(|t| t.elapsed() > Duration::from_secs(600)) {
+                self.token_checked = Some(std::time::Instant::now());
+                self.check_login();
+            }
             let Ok(cmd) = rx.recv_timeout(Duration::from_secs(1)) else {
                 self.history.flush(false);
                 self.share_status();
@@ -2276,6 +2288,7 @@ fn daemon() {
         net_fails: 0,
         repicked: None,
         asked: None,
+        token_checked: None,
         rng: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)

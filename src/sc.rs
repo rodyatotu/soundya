@@ -428,9 +428,20 @@ impl Client {
             let short = url.split('?').next().unwrap_or(&url).to_owned();
             match req.call() {
                 Ok(resp) => {
-                    // Worked without the token and with the same client_id: the token is what failed.
-                    if anonymous && !refreshed && self.has_token() && !self.token_bad.swap(true, std::sync::atomic::Ordering::AcqRel) {
-                        eprintln!("soundcloud: token refused; going on without login until a new one is entered");
+                    // Worked without the token: maybe the token is what failed — but
+                    // a single 401 is also what SoundCloud's bot protection or a stale
+                    // client_id gives. 0.4.x dropped the login for good here, and the
+                    // user had to paste the very same, still valid token again. Now
+                    // the token itself is asked (/me) before it is given up on.
+                    if anonymous && !refreshed && self.has_token() && !self.token_bad.load(bad) {
+                        match self.verify_token() {
+                            Some(false) => {
+                                self.token_bad.store(true, std::sync::atomic::Ordering::Release);
+                                eprintln!("soundcloud: token refused by /me; going on without login, re-checking every 10 minutes");
+                            }
+                            Some(true) => eprintln!("soundcloud: one 401 on {short}, but the token is still valid; keeping it"),
+                            None => eprintln!("soundcloud: one 401 on {short}; token not checked (network), keeping it"),
+                        }
                     }
                     return Ok(resp.into_json()?);
                 }
@@ -483,6 +494,31 @@ impl Client {
         let c: Collection<Value> = serde_json::from_value(v)?;
         let lists = c.collection.iter().filter_map(playlist_info).collect();
         Ok((tracks, lists))
+    }
+
+    /// Asks SoundCloud whether the saved token is good: Some(true) yes,
+    /// Some(false) refused (401/403), None — no answer (network). Clears the
+    /// «refused» mark when it is good again.
+    pub fn verify_token(&self) -> Option<bool> {
+        let token = self.token.lock().unwrap().clone()?;
+        let id = self.client_id(false).ok()?;
+        let r = self
+            .agent()
+            .get(&format!("{API}/me"))
+            .set("Accept", "application/json")
+            .set("Authorization", &format!("OAuth {token}"))
+            .query("client_id", &id)
+            .call();
+        match r {
+            Ok(_) => {
+                if self.token_bad.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    eprintln!("soundcloud: the saved token works again");
+                }
+                Some(true)
+            }
+            Err(e) if matches!(status_of(&e), Some(401 | 403)) => Some(false),
+            Err(_) => None,
+        }
     }
 
     /// (user id, username) of the logged-in account.

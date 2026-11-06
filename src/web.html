@@ -210,6 +210,8 @@
   .modal-card .field textarea { margin-top: 4px; min-height: 56px; }
   .hint, .msg, ul.reports li, pre.notes { overflow-wrap: anywhere; }
   .ledrow select { flex: 1; }
+  a.bookmarklet { display: inline-block; padding: 4px 10px; border-radius: 10px; background: var(--accent); color: var(--accent-ink);
+    text-decoration: none; font-weight: 600; cursor: grab; }
   ol.steps { padding-left: 22px; margin: 8px 0; }
   ol.steps li { margin: 6px 0; }
   ol.steps .stepline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -550,7 +552,14 @@
     <div class="sub" data-sub="account">
     <h2 class="section">Аккаунт SoundCloud</h2>
     <div id="loggedout">
-      <p class="hint">SoundCloud не даёт сторонним приложениям вход по паролю, поэтому используется токен из браузера:</p>
+      <p class="hint">SoundCloud не даёт сторонним приложениям вход по паролю, поэтому колонка берёт вход из вашего браузера.</p>
+      <div class="notice">
+        <b>В один клик (компьютер):</b> перетащите эту кнопку на панель закладок →
+        <a class="bookmarklet" id="scbookmark" href="#" onclick="alert('Перетащите кнопку на панель закладок, а не нажимайте её здесь.'); return false;">soundya: вход SoundCloud</a>.
+        Потом откройте <b>soundcloud.com</b> (где вы уже вошли) и нажмите эту закладку: откроется эта страница и предложит сохранить вход.
+        Повторять — только если вы вышли из SoundCloud на сайте.
+      </div>
+      <p class="hint">Или вручную:</p>
       <div class="hint"><ol>
         <li>Откройте <b>soundcloud.com</b> на компьютере и войдите в аккаунт.</li>
         <li>Откройте инструменты разработчика: <b>Cmd+Option+I</b> (Mac) или <b>F12</b>.</li>
@@ -1553,6 +1562,30 @@ async function saveDuck() {
   settingsLoaded = false; refresh();
 }
 async function duckCmd(c) { show($('duckmsg'), await post('/api/cmd', 'duck ' + c)); refresh(); }
+
+// ---- вход SoundCloud закладкой ----
+// The bookmark runs on soundcloud.com, reads the oauth_token cookie and opens
+// this page with it in the #fragment (never sent to any server).
+(function () {
+  const js = "(function(){if(location.hostname.indexOf('soundcloud.com')<0){alert('Откройте soundcloud.com и нажмите закладку там');return}"
+    + "var m=document.cookie.match(/(?:^|; )oauth_token=([^;]+)/);"
+    + "if(!m){alert('Не вижу вход SoundCloud: войдите на soundcloud.com в этом браузере или вставьте токен вручную (инструкция на странице колонки)');return}"
+    + "window.open('http://" + location.host + "/#sctoken='+encodeURIComponent(m[1]))})()";
+  $('scbookmark').href = 'javascript:' + js;
+})();
+async function takeTokenFromHash() {
+  const m = location.hash.match(/^#sctoken=([^&]+)/);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname);
+  const t = decodeURIComponent(m[1]).trim();
+  if (!/^[\w-]{10,300}$/.test(t)) { alert('Это не похоже на вход SoundCloud.'); return; }
+  if (!confirm('Сохранить вход SoundCloud из браузера на колонке?')) return;
+  const r = await post('/api/settings', JSON.stringify({ token: t }));
+  openSettings('account');
+  show($('loginmsg'), r);
+  settingsLoaded = false; refresh();
+}
+takeTokenFromHash();
 
 // ---- PIN для панели ----
 function renderPin(st) {
