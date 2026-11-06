@@ -455,6 +455,7 @@ fn send(s: &mut TcpStream, cmd: u32, a0: u32, a1: u32, data: &[u8]) -> io::Resul
 struct Msg {
     cmd: u32,
     a0: u32,
+    a1: u32,
     data: Vec<u8>,
 }
 
@@ -462,13 +463,13 @@ fn recv(s: &mut TcpStream) -> io::Result<Msg> {
     let mut h = [0u8; 24];
     s.read_exact(&mut h)?;
     let w = |i: usize| u32::from_le_bytes([h[i], h[i + 1], h[i + 2], h[i + 3]]);
-    let (cmd, a0, len, magic) = (w(0), w(4), w(12), w(20));
+    let (cmd, a0, a1, len, magic) = (w(0), w(4), w(8), w(12), w(20));
     if magic != cmd ^ 0xffff_ffff || len > MAX_DATA {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not an ADB answer"));
     }
     let mut data = vec![0u8; len as usize];
     s.read_exact(&mut data)?;
-    Ok(Msg { cmd, a0, data })
+    Ok(Msg { cmd, a0, a1, data })
 }
 
 fn address(host: &str) -> Result<SocketAddr, Error> {
@@ -483,6 +484,11 @@ fn address(host: &str) -> Result<SocketAddr, Error> {
 /// Connects and authenticates. `confirm_wait`: how long to wait for someone to
 /// press «Разрешить» on the TV when it does not know the key yet.
 fn connect(host: &str, key: &Key, confirm_wait: Duration) -> Result<TcpStream, Error> {
+    connect_max(host, key, confirm_wait).map(|(s, _)| s)
+}
+
+/// Connects; also returns the most data the device takes in one message.
+fn connect_max(host: &str, key: &Key, confirm_wait: Duration) -> Result<(TcpStream, u32), Error> {
     let addr = address(host)?;
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(3)).map_err(|e| Error::Unreachable(e.to_string()))?;
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -501,7 +507,7 @@ fn connect(host: &str, key: &Key, confirm_wait: Duration) -> Result<TcpStream, E
         match m.cmd {
             CNXN => {
                 s.set_read_timeout(Some(Duration::from_secs(10)))?;
-                return Ok(s);
+                return Ok((s, m.a1.clamp(1024, MAX_DATA)));
             }
             STLS => return Err(Error::Other("устройство просит беспроводную отладку с кодом; включите обычную «Отладку по сети»".into())),
             AUTH if m.a0 == AUTH_TOKEN && !signed => {
@@ -553,6 +559,87 @@ pub fn shell(host: &str, key: &Key, command: &str, confirm_wait: Duration) -> Re
         }
     }
     Ok(String::from_utf8_lossy(&out).replace("\r\n", "\n"))
+}
+
+/// (Used by the installer, installer/: the speaker itself never pushes.)
+#[allow(dead_code)]
+/// Writes `data` to `path` on the device (mode 0644), like `adb push`: the
+/// «sync:» service with SEND / DATA / DONE. `progress` gets the bytes sent.
+pub fn push(host: &str, key: &Key, data: &[u8], path: &str, mut progress: impl FnMut(usize)) -> Result<(), Error> {
+    let (mut s, max) = connect_max(host, key, Duration::from_secs(40))?;
+    let local = 7u32;
+    send(&mut s, OPEN, local, 0, b"sync:\0")?;
+    let remote;
+    // The device's OKAY for the OPEN.
+    loop {
+        let m = recv(&mut s)?;
+        match m.cmd {
+            OKAY => {
+                remote = m.a0;
+                break;
+            }
+            CLSE => return Err(Error::Other("устройство не открыло передачу файлов".into())),
+            _ => {}
+        }
+    }
+    // The whole sync stream, sent in pieces of what the device takes; each
+    // piece waits for the device's OKAY (ADB's flow control).
+    let mut stream = Vec::with_capacity(data.len() + data.len() / 65_536 * 8 + 64);
+    let target = format!("{path},{}", 0o100_644);
+    stream.extend_from_slice(b"SEND");
+    stream.extend_from_slice(&(target.len() as u32).to_le_bytes());
+    stream.extend_from_slice(target.as_bytes());
+    for chunk in data.chunks(65_536) {
+        stream.extend_from_slice(b"DATA");
+        stream.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+        stream.extend_from_slice(chunk);
+    }
+    let mtime = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0);
+    stream.extend_from_slice(b"DONE");
+    stream.extend_from_slice(&mtime.to_le_bytes());
+    let piece = (max as usize).min(256 * 1024);
+    let mut sent = 0usize;
+    for part in stream.chunks(piece) {
+        send(&mut s, WRTE, local, remote, part)?;
+        loop {
+            let m = recv(&mut s)?;
+            match m.cmd {
+                OKAY => break,
+                WRTE => {
+                    // An early answer: only FAIL makes sense here.
+                    send(&mut s, OKAY, local, remote, &[])?;
+                    if m.data.starts_with(b"FAIL") {
+                        return Err(Error::Other(format!("устройство отказало: {}", String::from_utf8_lossy(&m.data[8.min(m.data.len())..]))));
+                    }
+                }
+                CLSE => return Err(Error::Other("передача оборвалась".into())),
+                _ => {}
+            }
+        }
+        sent += part.len();
+        progress(sent.min(data.len()));
+    }
+    // The answer to DONE: OKAY or FAIL <reason>.
+    let answer = loop {
+        let m = recv(&mut s)?;
+        match m.cmd {
+            WRTE => {
+                send(&mut s, OKAY, local, remote, &[])?;
+                break m.data;
+            }
+            CLSE => return Err(Error::Other("передача оборвалась до подтверждения".into())),
+            _ => {}
+        }
+    };
+    let mut quit = b"QUIT".to_vec();
+    quit.extend_from_slice(&0u32.to_le_bytes());
+    let _ = send(&mut s, WRTE, local, remote, &quit);
+    let _ = send(&mut s, CLSE, local, remote, &[]);
+    if answer.starts_with(b"OKAY") {
+        Ok(())
+    } else {
+        Err(Error::Other(format!("файл не записан: {}", String::from_utf8_lossy(&answer[8.min(answer.len())..]))))
+    }
 }
 
 /// Quotes a string for the TV's shell.

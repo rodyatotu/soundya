@@ -1,0 +1,20 @@
+[package]
+name = "soundya-installer"
+version = "0.5.0"
+edition = "2021"
+license = "MIT"
+description = "Installs soundya on a Yandex Station: a step-by-step wizard in the browser"
+publish = false
+
+# Standalone: the speaker's own crate is not built for Windows or macOS.
+[workspace]
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

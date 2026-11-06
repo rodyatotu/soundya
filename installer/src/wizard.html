@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Установка soundya</title>
+<style>
+  :root {
+    --ink: #17151a; --muted: #5f5a66; --line: rgba(20, 16, 30, .10); --card: rgba(255, 255, 255, .55);
+    --edge: rgba(255, 255, 255, .8); --field: rgba(255, 255, 255, .65); --page: #f3eef8;
+    --ok: #1f8a4f; --err: #c0261b; --shadow: 0 20px 60px rgba(60, 30, 90, .18);
+    --b1: #ff7a1a; --b2: #ff2f6d; --b3: #7b3bff; --b4: #2aa8ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #f4f1f8; --muted: #a59fb2; --line: rgba(255, 255, 255, .10); --card: rgba(30, 26, 42, .52);
+      --edge: rgba(255, 255, 255, .14); --field: rgba(0, 0, 0, .25); --page: #0d0b14; --ok: #6fdc9f; --err: #ff8a80;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .5); }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { background: var(--page); }
+  body { margin: 0; min-height: 100vh; color: var(--ink); display: flex; align-items: center; justify-content: center;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif; padding: 24px 14px; }
+  .bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; }
+  .bg i { position: absolute; border-radius: 50%; filter: blur(80px); opacity: .6; animation: float 30s ease-in-out infinite alternate; }
+  .bg i:nth-child(1) { width: 55vmax; height: 55vmax; left: -15vmax; top: -20vmax; background: radial-gradient(circle, var(--b1), transparent 66%); }
+  .bg i:nth-child(2) { width: 50vmax; height: 50vmax; right: -18vmax; top: 5vh; background: radial-gradient(circle, var(--b2), transparent 66%); animation-duration: 36s; }
+  .bg i:nth-child(3) { width: 60vmax; height: 60vmax; left: 8vw; bottom: -32vmax; background: radial-gradient(circle, var(--b3), transparent 66%); animation-duration: 42s; }
+  .bg i:nth-child(4) { width: 34vmax; height: 34vmax; right: 6vw; bottom: 4vh; background: radial-gradient(circle, var(--b4), transparent 66%); animation-duration: 33s; }
+  @keyframes float { 50% { transform: translate(7vw, 5vh) scale(1.1); } 100% { transform: translate(-5vw, 9vh) scale(.95); } }
+  @media (prefers-reduced-motion: reduce) { .bg i { animation: none; } }
+  .card { position: relative; width: 100%; max-width: 620px; padding: 28px 26px 22px; border-radius: 30px;
+    background: linear-gradient(160deg, rgba(255,255,255,.18), rgba(255,255,255,.04) 40%), var(--card);
+    border: 1px solid var(--edge); box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.4);
+    -webkit-backdrop-filter: blur(30px) saturate(185%); backdrop-filter: blur(30px) saturate(185%); }
+  .card::before { content: ""; position: absolute; left: 18px; right: 18px; top: 0; height: 38%; border-radius: 30px 30px 50% 50% / 30px 30px 20px 20px;
+    background: linear-gradient(180deg, rgba(255,255,255,.25), transparent); pointer-events: none; opacity: .55; }
+  @media (prefers-color-scheme: dark) { .card::before { opacity: .15; } }
+  .card > * { position: relative; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; }
+  .logo { font-size: 26px; font-weight: 800; letter-spacing: -.03em; }
+  .logo span { background: linear-gradient(120deg, #ff7a00, #ff2f6d); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .ver { font-size: 12px; color: var(--muted); padding: 3px 10px; border-radius: 999px; border: 1px solid var(--edge); background: var(--field); }
+  .dots { display: flex; gap: 6px; margin-bottom: 20px; }
+  .dots i { flex: 1; height: 5px; border-radius: 3px; background: var(--line); transition: background .3s; }
+  .dots i.on { background: linear-gradient(90deg, #ff7a1a, #ff3d5a); }
+  h1 { font-size: 24px; letter-spacing: -.02em; margin: 0 0 8px; }
+  p { margin: 6px 0; }
+  .muted { color: var(--muted); }
+  .step { display: none; animation: rise .35s cubic-bezier(.2, .8, .2, 1); }
+  .step.on { display: block; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+  ul.facts { padding-left: 20px; margin: 10px 0; }
+  ul.facts li { margin: 5px 0; }
+  .box { margin: 12px 0; padding: 12px 14px; border-radius: 18px; background: var(--field); border: 1px solid var(--edge); font-size: 14px; }
+  .box.warn { border-color: #e0a100; }
+  .devices { display: grid; gap: 10px; margin: 14px 0; }
+  .dev { display: flex; align-items: center; gap: 14px; padding: 14px; border-radius: 20px; background: var(--field);
+    border: 2px solid transparent; cursor: pointer; text-align: left; font: inherit; color: inherit; width: 100%;
+    transition: transform .15s, border-color .15s; }
+  .dev:hover { transform: translateY(-1px); }
+  .dev.on { border-color: #ff5a2a; box-shadow: 0 8px 24px rgba(255, 80, 40, .2); }
+  .dev .ring { flex: none; width: 44px; height: 44px; border-radius: 50%; background: conic-gradient(#ff7a1a, #ff2f6d, #7b3bff, #2aa8ff, #ff7a1a);
+    -webkit-mask: radial-gradient(circle, transparent 52%, #000 54%); mask: radial-gradient(circle, transparent 52%, #000 54%); }
+  .dev b { display: block; font-size: 16px; }
+  .dev small { color: var(--muted); }
+  .scan { display: flex; align-items: center; gap: 10px; color: var(--muted); margin: 14px 0; }
+  .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--line); border-top-color: #ff5a2a; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .row > * { flex: 1 1 140px; }
+  input[type=text] { width: 100%; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--edge);
+    border-radius: 14px; padding: 11px 13px; outline: none; }
+  input[type=text]:focus { border-color: #ff6a1f; box-shadow: 0 0 0 3px rgba(255, 106, 31, .18); }
+  button { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--edge); border-radius: 14px;
+    padding: 11px 16px; cursor: pointer; transition: transform .12s, box-shadow .15s; }
+  button:active:not(:disabled) { transform: scale(.97); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); color: #fff; border-color: transparent; font-weight: 600;
+    box-shadow: 0 8px 24px rgba(255, 80, 40, .38); }
+  .nav { display: flex; justify-content: space-between; gap: 10px; margin-top: 22px; }
+  .nav button { min-width: 120px; }
+  .toggles { display: grid; gap: 8px; margin: 12px 0; }
+  .toggle { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--field); border: 1px solid var(--edge); cursor: pointer; }
+  .toggle input { appearance: none; -webkit-appearance: none; flex: none; width: 46px; height: 28px; border-radius: 999px; background: var(--line); position: relative; cursor: pointer; transition: background .2s; margin: 0; }
+  .toggle input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.3); transition: transform .2s; }
+  .toggle input:checked { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); }
+  .toggle input:checked::after { transform: translateX(18px); }
+  .toggle span b { display: block; }
+  .toggle span small { color: var(--muted); }
+  .progress { height: 10px; border-radius: 6px; background: var(--line); overflow: hidden; margin: 16px 0 8px; }
+  .progress i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #ff7a1a, #ff3d5a, #7b3bff); background-size: 200% 100%;
+    animation: flow 2s linear infinite; transition: width .5s; border-radius: 6px; }
+  @keyframes flow { to { background-position: -200% 0; } }
+  pre.log { max-height: 180px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0 0;
+    padding: 10px 12px; border-radius: 14px; background: var(--field); border: 1px solid var(--edge); }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+  .seg button { padding: 16px; text-align: left; border-width: 2px; border-color: transparent; }
+  .seg button.on { border-color: #ff5a2a; }
+  .seg button b { display: block; font-size: 16px; }
+  .seg button small { color: var(--muted); }
+  .msg { min-height: 20px; margin-top: 10px; font-size: 14px; }
+  .msg.ok { color: var(--ok); } .msg.err { color: var(--err); }
+  .big { font-size: 46px; line-height: 1; margin: 6px 0 12px; }
+  a.btn { display: inline-block; text-decoration: none; }
+  code { font-size: 13px; padding: 1px 6px; border-radius: 6px; background: var(--field); }
+  @media (max-width: 480px) { .card { padding: 22px 18px 18px; } .seg { grid-template-columns: 1fr; } h1 { font-size: 21px; } }
+</style>
+</head>
+<body>
+<div class="bg"><i></i><i></i><i></i><i></i></div>
+<div class="card">
+  <div class="top"><div class="logo">sound<span>ya</span></div><div class="ver" id="ver"></div></div>
+  <div class="dots" id="dots"></div>
+
+  <!-- 0. Привет -->
+  <div class="step on" data-step="hello">
+    <h1>Установка soundya</h1>
+    <p class="muted">Пара минут — и Яндекс Станция будет играть SoundCloud по голосу, принимать AirPlay и слушаться компьютер с телевизором.</p>
+    <ul class="facts">
+      <li>Колонка должна быть <b>с root и ADB по сети</b> (README → шаг 1) и в той же Wi-Fi сети, что этот компьютер.</li>
+      <li>Если soundya уже стоит — это обновление: <b>настройки, вход SoundCloud и ключи сохранятся</b>.</li>
+      <li>Перед установкой колонка сама сохранит копию; если новая версия не запустится — вернётся прежняя.</li>
+    </ul>
+    <div class="nav"><span></span><button class="primary" onclick="go('find')">Начать</button></div>
+  </div>
+
+  <!-- 1. Колонка -->
+  <div class="step" data-step="find">
+    <h1>Найдём колонку</h1>
+    <div class="scan" id="scanning"><div class="spinner"></div><span id="scantext">Ищу колонки в сети…</span></div>
+    <div class="devices" id="devices"></div>
+    <details class="box"><summary>Не нашлась? Ввести адрес вручную</summary>
+      <p class="muted">IP колонки — в приложении роутера, в списке устройств (часто «yandex» или «Station»).</p>
+      <div class="row"><input type="text" id="manualip" placeholder="192.168.0.112" inputmode="decimal"><button onclick="manual()">Проверить</button></div>
+    </details>
+    <div class="msg" id="findmsg"></div>
+    <div class="nav"><button onclick="scan()">Искать снова</button><button class="primary" id="findnext" disabled onclick="afterFind()">Дальше</button></div>
+  </div>
+
+  <!-- 2. Что включить -->
+  <div class="step" data-step="features">
+    <h1>Что включить?</h1>
+    <p class="muted">Выключенное просто не мешает Алисе; всё можно поменять потом на странице колонки.</p>
+    <div class="toggles">
+      <label class="toggle"><input type="checkbox" id="f_soundcloud" checked><span><b>SoundCloud голосом</b><small>«Алиса, включи Bonobo»</small></span></label>
+      <label class="toggle"><input type="checkbox" id="f_airplay" checked><span><b>AirPlay</b><small>музыка с iPhone, iPad и Mac на колонку</small></span></label>
+      <label class="toggle"><input type="checkbox" id="f_pc"><span><b>Управление компьютером</b><small>включить, открыть программу, сообщение в Telegram</small></span></label>
+      <label class="toggle"><input type="checkbox" id="f_tv"><span><b>Телевизор / проектор</b><small>Android TV: «открой ютуб на телевизоре»</small></span></label>
+      <label class="toggle"><input type="checkbox" id="f_bypass"><span><b>Обход блокировок</b><small>если SoundCloud у провайдера не открывается</small></span></label>
+    </div>
+    <div class="nav"><button onclick="go('find')">Назад</button><button class="primary" onclick="startInstall()">Установить</button></div>
+  </div>
+
+  <!-- 3. Установка -->
+  <div class="step" data-step="install">
+    <h1 id="insttitle">Устанавливаю…</h1>
+    <p class="muted" id="instphase">Готовлюсь</p>
+    <div class="progress"><i id="bar"></i></div>
+    <p class="muted"><span id="pct">0</span>% · музыка на колонке ненадолго прервётся</p>
+    <pre class="log" id="log"></pre>
+    <div class="msg" id="instmsg"></div>
+    <div class="nav"><button id="instback" onclick="go('find')" hidden>К выбору колонки</button><button class="primary" id="instnext" hidden onclick="go('music')">Дальше</button></div>
+  </div>
+
+  <!-- 4. Музыка -->
+  <div class="step" data-step="music">
+    <h1>Что включать по умолчанию?</h1>
+    <p class="muted">Когда вы говорите «Алиса, включи Bonobo» без названия сервиса.</p>
+    <div class="seg" id="music">
+      <button data-m="soundcloud" class="on" onclick="pickMusic(this)"><b>SoundCloud</b><small>Яндекс Музыка — по словам «в яндекс музыке». Подписка не нужна.</small></button>
+      <button data-m="yandex" onclick="pickMusic(this)"><b>Яндекс Музыка</b><small>SoundCloud — только по слову «саундклауд». Нужна подписка.</small></button>
+    </div>
+    <div class="box">Вход в аккаунт SoundCloud (лайки, плейлисты, рекомендации) — на странице колонки → «Аккаунт», там есть вход в один клик.</div>
+    <div class="msg" id="musicmsg"></div>
+    <div class="nav"><span></span><button class="primary" onclick="saveMusic()">Дальше</button></div>
+  </div>
+
+  <!-- 5. Этот компьютер -->
+  <div class="step" data-step="pc">
+    <h1>Этот компьютер</h1>
+    <p class="muted" id="pcintro">Колонка сможет включать и выключать этот компьютер, открывать программы и сайты, писать в Telegram и
+      приглушать музыку, пока вы на звонке.</p>
+    <div class="box" id="pcnote">Windows попросит разрешение администратора — это для правила брандмауэра (только домашняя сеть) и
+      включения по сети. Адрес, ключ и MAC установщик сам впишет в колонку.</div>
+    <div class="msg" id="pcmsg"></div>
+    <div class="nav"><button onclick="go('done')">Пропустить</button><button class="primary" id="pcbtn" onclick="setupPc()">Подключить этот компьютер</button></div>
+  </div>
+
+  <!-- 6. Готово -->
+  <div class="step" data-step="done">
+    <div class="big">🎉</div>
+    <h1>Готово!</h1>
+    <p>soundya <b id="donever"></b> работает на <b id="donemodel"></b>.</p>
+    <div class="box">
+      Страница колонки: <b id="doneurl"></b><br>
+      <span class="muted">Сохраните её в закладки. Забыли адрес — «Алиса, повтори адрес».</span>
+    </div>
+    <div class="box warn">Закрепите за колонкой IP в роутере (DHCP reservation), чтобы адрес не менялся: Keenetic — «Список устройств» →
+      «Постоянный IP»; TP-Link — Address Reservation; ASUS — «Список назначенных вручную IP».</div>
+    <p class="muted">Попробуйте: «Алиса, включи Bonobo», «что сейчас играет», «перемешай».</p>
+    <div class="nav"><button onclick="quit()">Закрыть установщик</button><a class="btn" id="openpanel" target="_blank"><button class="primary">Открыть страницу колонки</button></a></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const STEPS = ['hello', 'find', 'features', 'install', 'music', 'pc', 'done'];
+let info = {}, devices = [], chosen = null, music = 'soundcloud';
+
+function go(name) {
+  document.querySelectorAll('.step').forEach(s => s.classList.toggle('on', s.dataset.step === name));
+  const i = STEPS.indexOf(name);
+  $('dots').innerHTML = STEPS.map((_, k) => `<i class="${k <= i ? 'on' : ''}"></i>`).join('');
+  if (name === 'find' && !devices.length) scan();
+}
+function msg(id, text, ok) { const el = $(id); el.textContent = text || ''; el.className = 'msg ' + (ok === true ? 'ok' : ok === false ? 'err' : ''); }
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) });
+  return r.json();
+}
+
+function renderDevices() {
+  const box = $('devices'); box.innerHTML = '';
+  for (const d of devices) {
+    const b = document.createElement('button'); b.className = 'dev' + (chosen && chosen.ip === d.ip ? ' on' : '');
+    const ring = document.createElement('div'); ring.className = 'ring';
+    const t = document.createElement('div');
+    const name = document.createElement('b'); name.textContent = d.model;
+    const sub = document.createElement('small');
+    sub.textContent = `${d.ip} · ` + (!d.root ? 'нет root' : d.soundya ? `soundya ${d.soundya} — обновится, настройки сохранятся` : 'soundya ещё нет');
+    t.append(name, sub); b.append(ring, t);
+    b.onclick = () => { chosen = d; renderDevices(); $('findnext').disabled = !d.root; msg('findmsg', d.root ? '' : 'На этой колонке нет root: сначала README → шаг 1.', d.root ? undefined : false); };
+    box.appendChild(b);
+  }
+}
+async function scan() {
+  $('scanning').hidden = false; $('scantext').textContent = 'Ищу колонки в сети… (до 10 секунд)'; msg('findmsg', '');
+  let r;
+  try { r = await api('/api/scan'); } catch (e) { r = { error: 'установщик не отвечает' }; }
+  $('scanning').hidden = true;
+  if (r.error) { msg('findmsg', r.error, false); return; }
+  devices = r.devices || [];
+  if (devices.length === 1 && devices[0].root) { chosen = devices[0]; $('findnext').disabled = false; }
+  renderDevices();
+  if (!devices.length) msg('findmsg', `В сети ${r.subnet} колонок с ADB не нашлось. Включите колонку и проверьте, что она в той же сети, или введите адрес вручную.`, false);
+}
+async function manual() {
+  const ip = $('manualip').value.trim();
+  msg('findmsg', 'Проверяю ' + ip + '…');
+  const r = await api('/api/probe', { ip });
+  if (r.error) { msg('findmsg', r.error, false); return; }
+  devices = devices.filter(d => d.ip !== r.ip).concat([r]); chosen = r; renderDevices();
+  $('findnext').disabled = !r.root; msg('findmsg', r.root ? 'Колонка найдена.' : 'Нет root на этой колонке.', r.root);
+}
+function afterFind() {
+  // An update keeps everything as it is: no need to choose.
+  if (chosen.configured) startInstall(true); else go('features');
+}
+
+let poll = null;
+async function startInstall(update) {
+  go('install');
+  $('insttitle').textContent = chosen.configured ? 'Обновляю soundya…' : 'Устанавливаю soundya…';
+  $('instback').hidden = true; $('instnext').hidden = true; msg('instmsg', ''); $('log').textContent = '';
+  const features = update ? null : Object.fromEntries(['soundcloud', 'airplay', 'pc', 'tv', 'bypass'].map(k => [k, $('f_' + k).checked]));
+  const r = await api('/api/install', { ip: chosen.ip, features });
+  if (r.error) { msg('instmsg', r.error, false); $('instback').hidden = false; return; }
+  poll = setInterval(followInstall, 900);
+}
+async function followInstall() {
+  let j; try { j = await api('/api/job'); } catch (e) { return; }
+  $('bar').style.width = j.percent + '%'; $('pct').textContent = j.percent; $('instphase').textContent = j.phase || '';
+  $('log').textContent = (j.log || []).join('\n'); $('log').scrollTop = 1e9;
+  if (j.running) return;
+  clearInterval(poll);
+  if (j.result === 'ok') {
+    $('insttitle').textContent = 'Установлено ✓'; $('donever').textContent = j.version;
+    msg('instmsg', `soundya ${j.version} запущена.`, true); $('instnext').hidden = false;
+    // An update keeps the user's choices: straight to the end.
+    $('instnext').onclick = () => { finish(); go(chosen.configured ? 'done' : 'music'); };
+  } else if (j.result === 'rolledback') {
+    $('insttitle').textContent = 'Вернула прежнюю версию';
+    msg('instmsg', `Новая версия не запустилась, колонка вернула прежнюю — всё работает как раньше. Причина: ${j.reason || 'нет данных'}.`, false);
+    $('instback').hidden = false;
+  } else {
+    $('insttitle').textContent = 'Не получилось';
+    msg('instmsg', j.reason || 'Установка не завершилась.', false); $('instback').hidden = false;
+  }
+}
+
+function pickMusic(b) { music = b.dataset.m; document.querySelectorAll('#music button').forEach(x => x.classList.toggle('on', x === b)); }
+async function saveMusic() {
+  const r = await api('/api/settings', { ip: chosen.ip, patch: { music_default: music } });
+  if (r.error) { msg('musicmsg', r.error, false); return; }
+  const wantPc = !chosen.configured && $('f_pc').checked;
+  go(info.os === 'windows' && (wantPc || chosen.configured) ? 'pc' : 'done');
+  finish();
+}
+async function setupPc() {
+  $('pcbtn').disabled = true; msg('pcmsg', 'Устанавливаю программу для ПК… подтвердите запрос администратора Windows.');
+  const r = await api('/api/pc', { ip: chosen.ip });
+  $('pcbtn').disabled = false;
+  if (r.error) { msg('pcmsg', r.error, false); return; }
+  msg('pcmsg', r.text, true); setTimeout(() => go('done'), 1500);
+}
+function finish() {
+  const url = `http://${chosen.ip}:8765/`;
+  $('doneurl').textContent = url; $('openpanel').href = url; $('donemodel').textContent = chosen.model;
+}
+async function quit() { try { await api('/api/quit', {}); } catch (e) {} document.body.innerHTML = '<div class="card"><h1>Можно закрыть эту вкладку</h1></div>'; }
+
+(async () => {
+  go('hello');
+  try { info = await api('/api/info'); $('ver').textContent = 'soundya ' + info.version; } catch (e) {}
+  setInterval(() => fetch('/api/ping').catch(() => {}), 20000);
+})();
+</script>
+</body>
+</html>

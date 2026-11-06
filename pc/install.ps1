@@ -3,16 +3,19 @@
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 # Asks for administrator rights (firewall rule, wake-on-LAN settings).
 
-param([string]$User = $env:USERNAME, [string]$AppData = $env:LOCALAPPDATA)
+# -Quiet: run from the soundya installer — no «press Enter», and the address,
+# key and MAC go to %LOCALAPPDATA%\soundya-pc\setup.json for it to read.
+param([string]$User = $env:USERNAME, [string]$AppData = $env:LOCALAPPDATA, [switch]$Quiet)
 $ErrorActionPreference = 'Stop'
 
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) {
     # Restart elevated, but install for the user who started it.
-    Start-Process powershell.exe -Verb RunAs -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
+    $relaunch = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
         '-User', $User, '-AppData', "`"$AppData`"")
+    if ($Quiet) { $relaunch += '-Quiet' }
+    Start-Process powershell.exe -Verb RunAs -ArgumentList $relaunch
     exit
 }
 $Port = 8766
@@ -120,4 +123,7 @@ Write-Host ''
 Write-Host 'Ещё для включения по сети: в BIOS/UEFI включите Wake on LAN (Power On By PCI-E / LAN),'
 Write-Host 'а в роутере закрепите за компьютером IP-адрес.'
 Write-Host ''
-Read-Host 'Нажмите Enter, чтобы закрыть'
+# For the soundya installer: what to fill into the speaker.
+$setup = [ordered]@{ ip = [string]$ip; key = [string]$Config.key; mac = [string]$mac }
+[IO.File]::WriteAllText((Join-Path $Dir 'setup.json'), ($setup | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+if (-not $Quiet) { Read-Host 'Нажмите Enter, чтобы закрыть' }
