@@ -10,7 +10,11 @@ use std::{
 
 use std::sync::Arc;
 
-use crate::{settings::Settings, Cmd, Shared};
+use crate::{
+    sc::{Client, Kind},
+    settings::Settings,
+    Cmd, Shared,
+};
 
 #[cfg(test)]
 mod tests {
@@ -33,7 +37,7 @@ mod tests {
 
 const PAGE: &str = include_str!("web.html");
 
-pub fn serve(port: u16, tx: Sender<Cmd>, shared: Arc<Shared>) {
+pub fn serve(port: u16, tx: Sender<Cmd>, shared: Arc<Shared>, client: Client) {
     let listener = match TcpListener::bind(("0.0.0.0", port)) {
         Ok(l) => l,
         Err(e) => {
@@ -46,8 +50,9 @@ pub fn serve(port: u16, tx: Sender<Cmd>, shared: Arc<Shared>) {
         for conn in listener.incoming().flatten() {
             let tx = tx.clone();
             let shared = shared.clone();
+            let client = client.clone();
             thread::spawn(move || {
-                let _ = handle(conn, &tx, &shared);
+                let _ = handle(conn, &tx, &shared, &client);
             });
         }
     });
@@ -62,7 +67,7 @@ fn ask(tx: &Sender<Cmd>, make: impl FnOnce(Sender<String>) -> Cmd, wait: u64) ->
         .unwrap_or_else(|_| "error: timeout".into())
 }
 
-fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result<()> {
+fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -> std::io::Result<()> {
     conn.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut reader = BufReader::new(&conn);
     let mut request = String::new();
@@ -123,6 +128,41 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared) -> std::io::Result
                 out.flush()
             }
         };
+    }
+    // Live audio of the playing track, piped to the browser through the speaker
+    // (so it plays even where SoundCloud is blocked for the browser's network).
+    // A plain progressive stream — no seeking.
+    if method == "GET" && (path == "/api/stream" || path.starts_with("/api/stream?")) {
+        let mut out = &conn;
+        let track = shared.now_track.lock().unwrap().clone();
+        let Some(track) = track else {
+            write!(out, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")?;
+            return out.flush();
+        };
+        match client.open(&track) {
+            Ok((mut src, kind)) => {
+                let mime = match kind {
+                    Kind::Mp4 => "audio/mp4",
+                    Kind::Adts => "audio/aac",
+                    _ => "audio/mpeg",
+                };
+                write!(out, "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")?;
+                let mut buf = [0u8; 16 * 1024];
+                loop {
+                    match src.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) if out.write_all(&buf[..n]).is_ok() => {}
+                        _ => break,
+                    }
+                }
+                return out.flush();
+            }
+            Err(e) => {
+                eprintln!("web: stream: {e}");
+                write!(out, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+                return out.flush();
+            }
+        }
     }
     let (status, kind, reply) = match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", PAGE.to_owned()),

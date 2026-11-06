@@ -106,6 +106,8 @@ pub struct Shared {
     pc: AtomicBool,
     /// Telegram contact names as said («лиза», «лизе», «кошка»), for «напиши лизе …».
     contacts: Mutex<Vec<String>>,
+    /// Voice macros as (normalized phrase, script), for matching spoken lines.
+    macros: Mutex<Vec<(String, String)>>,
     active: AtomicBool,
     queue: AtomicBool,
     status: Mutex<String>,
@@ -113,6 +115,8 @@ pub struct Shared {
     pub status_json: Mutex<String>,
     /// The playing track's cover on SoundCloud, for the page's /cover.
     pub cover: Mutex<Option<String>>,
+    /// The track playing now, for the browser audio stream (/api/stream).
+    pub now_track: Mutex<Option<Track>>,
     pub airplay: airplay::AirPlay,
     /// Anonymous statistics switched on (settings page).
     pub stats: AtomicBool,
@@ -161,6 +165,9 @@ impl Shared {
     }
     pub fn contact_names(&self) -> Vec<String> {
         self.contacts.lock().unwrap().clone()
+    }
+    pub fn macros(&self) -> Vec<(String, String)> {
+        self.macros.lock().unwrap().clone()
     }
 }
 
@@ -351,6 +358,7 @@ impl Controller {
             "airplay_icon": self.settings.airplay_icon,
             "stats": self.settings.stats,
             "tv_host": self.settings.tv_host,
+            "macros": self.settings.macros,
             "bypass": self.settings.bypass,
             "bypass_on": self.settings.bypass_on,
             "bypass_manual": self.settings.bypass_manual,
@@ -585,6 +593,9 @@ impl Controller {
             .collect();
         self.shared.pc.store(new.pc_configured(), Ordering::Release);
         *self.shared.contacts.lock().unwrap() = contact_names(&new);
+        // Macros are managed by the «macro» command, not this form: keep them.
+        new.macros = self.settings.macros.clone();
+        *self.shared.macros.lock().unwrap() = macro_list(&new);
         let token_changed = new.token != self.settings.token;
         new.proxy = self.real_proxy(&new.proxy);
         // Set only by «bypass auto/off», not by the settings form.
@@ -1160,6 +1171,43 @@ impl Controller {
         }
     }
 
+    /// Re-syncs macros to the shared state and saves settings.
+    fn save_macros(&mut self) {
+        *self.shared.macros.lock().unwrap() = macro_list(&self.settings);
+        if let Err(e) = self.settings.save(&self.dir) {
+            eprintln!("macros: not saved: {e}");
+        }
+    }
+
+    /// Runs a macro's script: one panel command per line; «wait N» pauses N ms.
+    /// On its own thread (0.4.41 slept on the controller thread, freezing voice
+    /// and the page for the whole script); each command goes through the
+    /// controller like one from the page, and the next waits for its answer.
+    fn run_macro(&mut self, script: &str) -> Result<(), String> {
+        let lines = macro_lines(script)?;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let started = std::time::Instant::now();
+            for line in lines {
+                if started.elapsed() > Duration::from_secs(120) {
+                    eprintln!("macro: stopped after 2 minutes");
+                    break;
+                }
+                if let Some(ms) = line.strip_prefix("wait ").or_else(|| line.strip_prefix("sleep ")) {
+                    thread::sleep(Duration::from_millis(ms.trim().parse::<u64>().unwrap_or(0).min(30_000)));
+                    continue;
+                }
+                let (rtx, rrx) = mpsc::channel();
+                if tx.send(Cmd::Control(line.clone(), rtx)).is_err() {
+                    break;
+                }
+                let answer = rrx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| "timeout".into());
+                eprintln!("macro: {line} -> {answer}");
+            }
+        });
+        Ok(())
+    }
+
     fn control(&mut self, line: &str, reply: Sender<String>) {
         let (cmd, arg) = line.trim().split_once(' ').unwrap_or((line.trim(), ""));
         let arg = arg.trim().to_owned();
@@ -1292,6 +1340,62 @@ impl Controller {
                 self.halt();
                 self.publish();
                 send_to(&reply, "OK".into());
+            }
+            // «macro list | add <фраза> ||| <команды> | del <фраза> | run <фраза>»
+            "macro" => {
+                let (sub, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                let rest = rest.trim();
+                match sub {
+                    "list" => {
+                        let list = self
+                            .settings
+                            .macros
+                            .iter()
+                            .map(|m| format!("{} => {}", m.phrase, m.script.replace('\n', "; ")))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        send_to(&reply, if list.is_empty() { "нет макросов".into() } else { list });
+                    }
+                    "add" => match rest.split_once("|||") {
+                        Some((_, script)) if macro_lines(script).is_err() => {
+                            send_to(&reply, format!("error: {}", macro_lines(script).unwrap_err()));
+                        }
+                        Some((phrase, script)) if !phrase.trim().is_empty() && !script.trim().is_empty() => {
+                            let phrase = phrase.trim().to_owned();
+                            let script = script.trim().to_owned();
+                            let key = norm_phrase(&phrase);
+                            self.settings.macros.retain(|m| norm_phrase(&m.phrase) != key);
+                            self.settings.macros.push(settings::Macro { phrase, script });
+                            self.save_macros();
+                            send_to(&reply, "OK: макрос сохранён".into());
+                        }
+                        _ => send_to(&reply, "usage: macro add <фраза> ||| <команды через перенос строки>".into()),
+                    },
+                    "del" | "delete" | "remove" => {
+                        let key = norm_phrase(rest);
+                        let before = self.settings.macros.len();
+                        self.settings.macros.retain(|m| norm_phrase(&m.phrase) != key);
+                        if self.settings.macros.len() == before {
+                            send_to(&reply, "макрос не найден".into());
+                        } else {
+                            self.save_macros();
+                            send_to(&reply, "OK: удалён".into());
+                        }
+                    }
+                    "run" => {
+                        let key = norm_phrase(rest);
+                        let script =
+                            self.settings.macros.iter().find(|m| norm_phrase(&m.phrase) == key).map(|m| m.script.clone());
+                        match script {
+                            Some(script) => match self.run_macro(&script) {
+                                Ok(()) => send_to(&reply, "OK".into()),
+                                Err(e) => send_to(&reply, format!("error: {e}")),
+                            },
+                            None => send_to(&reply, "макрос не найден".into()),
+                        }
+                    }
+                    _ => send_to(&reply, "usage: macro list | add <фраза> ||| <команды> | del <фраза> | run <фраза>".into()),
+                }
             }
             "queue" => send_to(&reply,
                 self.queue
@@ -1711,6 +1815,7 @@ impl Controller {
     fn share_status(&self) {
         *self.shared.status.lock().unwrap() = self.status();
         *self.shared.status_json.lock().unwrap() = self.json();
+        *self.shared.now_track.lock().unwrap() = self.current().cloned();
         let cover = self.current().and_then(Track::cover);
         let changed = {
             let mut now = self.shared.cover.lock().unwrap();
@@ -1749,6 +1854,50 @@ fn contact_names(settings: &Settings) -> Vec<String> {
         .iter()
         .flat_map(|c| c.names.split('|').map(|n| n.trim().to_lowercase()))
         .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// A spoken phrase to match on: as alice.rs normalises what is heard
+/// (lowercase, «ё»→«е», no «Алиса,», no end punctuation, no «пожалуйста»).
+fn norm_phrase(s: &str) -> String {
+    alice::normalize_phrase(s)
+}
+
+/// Commands a macro may run: playback, volume, the PC and the TV. Not
+/// uninstall, update, bypass, settings or other macros — a spoken phrase
+/// must not be able to remove or reconfigure soundya.
+const MACRO_COMMANDS: [&str; 22] = [
+    "play", "playlist", "album", "likes", "recs", "myplaylist", "openpl", "pause", "resume", "toggle", "next",
+    "prev", "previous", "stop", "shuffle", "repeat", "similar", "seek", "volume", "pc", "tv", "goto",
+];
+
+/// A script's lines, checked: every one is «wait N» or an allowed command.
+fn macro_lines(script: &str) -> Result<Vec<String>, String> {
+    let lines: Vec<String> = script
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+    if lines.len() > 50 {
+        return Err("в сценарии больше 50 строк".into());
+    }
+    for l in &lines {
+        let cmd = l.split_whitespace().next().unwrap_or("");
+        if !(cmd == "wait" || cmd == "sleep" || MACRO_COMMANDS.contains(&cmd)) {
+            return Err(format!("команда «{cmd}» в сценарии не разрешена (можно: wait, {})", MACRO_COMMANDS.join(", ")));
+        }
+    }
+    Ok(lines)
+}
+
+/// (normalized phrase, script) for every macro that has both filled in.
+fn macro_list(settings: &Settings) -> Vec<(String, String)> {
+    settings
+        .macros
+        .iter()
+        .map(|m| (norm_phrase(&m.phrase), m.script.clone()))
+        .filter(|(p, s)| !p.is_empty() && !s.trim().is_empty())
         .collect()
 }
 
@@ -1893,11 +2042,13 @@ fn daemon() {
         keyword_only: AtomicBool::new(settings.keyword_only),
         pc: AtomicBool::new(settings.pc_configured()),
         contacts: Mutex::new(contact_names(&settings)),
+        macros: Mutex::new(macro_list(&settings)),
         active: AtomicBool::new(false),
         queue: AtomicBool::new(false),
         status: Mutex::new("stopped".into()),
         status_json: Mutex::new(String::new()),
         cover: Mutex::new(None),
+        now_track: Mutex::new(None),
         bypass_log: Mutex::new(Vec::new()),
         bypass_busy: AtomicBool::new(false),
         alice_music: AtomicBool::new(false),
@@ -1943,8 +2094,11 @@ fn daemon() {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8765);
+    // One client for the player and the browser stream: proxy and token
+    // changes from the settings reach both (they share their state).
+    let client = client_with(&settings);
     if port != 0 {
-        web::serve(port, tx.clone(), shared.clone());
+        web::serve(port, tx.clone(), shared.clone(), client.clone());
     }
     let control_tx = tx.clone();
     let status_shared = shared.clone();
@@ -1964,7 +2118,7 @@ fn daemon() {
         if settings.proxy.is_empty() { "none".into() } else { settings.masked_proxy() }
     );
     Controller {
-        client: client_with(&settings),
+        client,
         shared,
         tx,
         device: device(),
@@ -2149,4 +2303,16 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod macro_tests {
+    #[test]
+    fn macros_cannot_remove_soundya() {
+        assert!(super::macro_lines("tv do открой ютуб\nwait 3000\nvolume set 4").is_ok());
+        for bad in ["uninstall", "update install", "bypass off", "macro run x", "pc do x\nuninstall"] {
+            assert!(super::macro_lines(bad).is_err(), "{bad}");
+        }
+        assert_eq!(super::norm_phrase("Алиса, Включи вечерний режим, пожалуйста!"), "включи вечерний режим");
+    }
 }

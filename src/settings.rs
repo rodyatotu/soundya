@@ -124,6 +124,9 @@ pub struct Settings {
     /// Keys this version does not know (written by a newer soundya): kept as is.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+    /// Voice macros: a phrase that runs a script of panel commands.
+    #[serde(default)]
+    pub macros: Vec<Macro>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -134,6 +137,16 @@ pub struct Contact {
     /// "@username" or a phone number.
     #[serde(default)]
     pub target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct Macro {
+    /// Spoken trigger, e.g. "включи вечерний режим".
+    #[serde(default)]
+    pub phrase: String,
+    /// Script: one panel command per line; «wait N» pauses N ms.
+    #[serde(default)]
+    pub script: String,
 }
 
 fn yes() -> bool {
@@ -190,6 +203,7 @@ impl Default for Settings {
             airplay_icon: speaker(),
             stats: true,
             tv_host: String::new(),
+            macros: Vec::new(),
             bypass: String::new(),
             proxy_on: true,
             bypass_on: true,

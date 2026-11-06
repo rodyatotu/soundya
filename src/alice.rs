@@ -279,6 +279,15 @@ fn normalize(text: &str) -> String {
         .to_owned()
 }
 
+/// How a macro phrase is compared with what was heard.
+pub fn normalize_phrase(text: &str) -> String {
+    normalize(text)
+        .split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|w| !w.is_empty() && *w != "пожалуйста")
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Removes "в саундклауде", "на soundcloud" and similar; returns whether it was present.
 pub fn strip_service(text: &str) -> (String, bool) {
     const NAMES: [&str; 8] = [
@@ -1080,6 +1089,17 @@ fn read_frames(
                 seen.pop_front();
             }
             crate::volume::heard(&text);
+            // A user macro whose phrase is heard wins over built-in handling —
+            // the whole phrase, not a part of it (a macro «свет» must not take
+            // «включи свет на кухне» from Alice).
+            let normalized = normalize_phrase(&text);
+            if let Some((phrase, _)) = shared.macros().into_iter().find(|(p, _)| *p == normalized) {
+                eprintln!("voice: {text:?} -> macro {phrase:?}");
+                cancel_alice();
+                let (dtx, _drx) = std::sync::mpsc::channel();
+                let _ = tx.send(Cmd::Control(format!("macro run {phrase}"), dtx));
+                continue;
+            }
             let intent = message_to_contact(&text, &shared.contact_names())
                 .or_else(|| intent(&text, shared.keyword_only()));
             let Some(intent) = intent else {

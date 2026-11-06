@@ -7,12 +7,12 @@
 //!
 //! Loudness (0.5.00). Before, everything was turned down by the largest band
 //! boost (+6 dB on the bass made the whole track 6 dB quieter, the bass merely
-//! stayed where it was): «the EQ lowers the volume». Clipping does need
-//! headroom, but only where the boosted signal actually reaches full scale.
-//! Now: the real peak of the combined response is computed (neighbouring
-//! boosted bands add up, which the old rule missed), only half of it is taken
-//! as fixed headroom, and a peak limiter takes the rest only on the samples
-//! that would clip — instead of hard clipping or a constant loss of level.
+//! stayed where it was): «the EQ lowers the volume». Now there is no fixed
+//! pre-attenuation at all, so bands that are not touched keep their level and
+//! a boost really is louder. Clipping is prevented by a peak limiter: its gain
+//! drops only on the samples that would pass full scale and comes back over
+//! 150 ms. Unlike a waveshaping soft-clipper (tried in 8f3c73c) it does not
+//! bend the waveform of loud passages, so it adds no distortion of its own.
 
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -79,8 +79,6 @@ pub struct Eq {
     filters: Vec<Coeffs>,
     /// Per channel, per filter: x1, x2, y1, y2.
     state: Vec<[f32; 4]>,
-    /// Fixed headroom: half of the response's peak boost.
-    pre: f32,
     /// Peak limiter: current gain and its release step per frame.
     lim: f32,
     release: f32,
@@ -91,30 +89,6 @@ const CEILING: f32 = 32_000.0;
 /// Limiter release time, s.
 const RELEASE_S: f32 = 0.15;
 
-/// Magnitude of one biquad at `freq`, as a power ratio.
-fn power(c: &Coeffs, freq: f32, rate: u32) -> f32 {
-    let w = 2.0 * std::f32::consts::PI * freq / rate as f32;
-    let (c1, c2) = (w.cos(), (2.0 * w).cos());
-    let (s1, s2) = (w.sin(), (2.0 * w).sin());
-    let nr = c.b0 + c.b1 * c1 + c.b2 * c2;
-    let ni = -(c.b1 * s1 + c.b2 * s2);
-    let dr = 1.0 + c.a1 * c1 + c.a2 * c2;
-    let di = -(c.a1 * s1 + c.a2 * s2);
-    (nr * nr + ni * ni) / (dr * dr + di * di)
-}
-
-/// Highest gain of the whole chain between 20 Hz and 20 kHz (or Nyquist), dB.
-fn peak_db(filters: &[Coeffs], rate: u32) -> f32 {
-    if filters.is_empty() {
-        return 0.0;
-    }
-    let top = (rate as f32 * 0.45).min(20_000.0);
-    let steps = 160;
-    (0..=steps)
-        .map(|i| 20.0 * (top / 20.0).powf(i as f32 / steps as f32))
-        .map(|f| 10.0 * filters.iter().map(|c| power(c, f, rate)).product::<f32>().log10())
-        .fold(f32::MIN, f32::max)
-}
 
 impl Eq {
     pub fn new() -> Self {
@@ -138,8 +112,6 @@ impl Eq {
         } else {
             Vec::new()
         };
-        let peak = peak_db(&filters, rate).max(0.0);
-        self.pre = 10f32.powf(-(peak / 2.0) / 20.0);
         self.release = 1.0 - (-1.0 / (RELEASE_S * rate.max(1) as f32)).exp();
         if self.lim == 0.0 {
             self.lim = 1.0;
@@ -166,7 +138,7 @@ impl Eq {
         for frame in samples.chunks_exact_mut(ch) {
             let mut peak = 0f32;
             for (c, s) in frame.iter().enumerate() {
-                let mut x = *s as f32 * self.pre;
+                let mut x = *s as f32;
                 for (f, st) in self.filters.iter().zip(&mut self.state[c * n..(c + 1) * n]) {
                     let y = f.b0 * x + f.b1 * st[0] + f.b2 * st[1] - f.a1 * st[2] - f.a2 * st[3];
                     st[1] = st[0];
@@ -241,12 +213,15 @@ mod tests {
         assert_eq!(rms(&s), orig, "off: untouched");
 
         // The reported bug: +12 dB at 1 kHz made everything else 12 dB quieter.
-        // Now half of it is headroom: other bands lose 6 dB, 1 kHz gains 6 dB.
+        // Now the boost is a boost and the rest keeps its level.
         set(true, &[0, 0, 0, 0, 0, 12, 0, 0, 0, 0]);
-        let db = eq_db(1000.0, 8000.0);
-        assert!((db - 6.0).abs() < 1.0, "1 kHz: {db} dB");
+        let db = eq_db(1000.0, 2000.0);
+        assert!((db - 12.0).abs() < 1.0, "1 kHz: {db} dB");
         let db = eq_db(62.0, 8000.0);
-        assert!((db + 6.0).abs() < 1.0, "62 Hz: {db} dB (was −12)");
+        assert!(db.abs() < 0.5, "62 Hz: {db} dB (was −12)");
+        // A loud passage in an untouched band is not bent (no soft-clip distortion).
+        let db = eq_db(62.0, 30000.0);
+        assert!(db.abs() < 0.5, "loud 62 Hz: {db} dB");
 
         // A full-scale tone boosted by 12 dB is limited, not hard-clipped.
         let mut s = sine_amp(1000.0, rate, 44100, 32000.0);
@@ -256,11 +231,11 @@ mod tests {
         assert!(peak <= CEILING as i32 + 1, "peak {peak}");
         assert!(!tail.iter().any(|v| *v == i16::MAX || *v == i16::MIN), "hard clipping");
 
-        // Neighbouring boosts add up: the headroom follows the real response.
+        // Neighbouring boosts add up past +12 dB: still limited, never wrapped.
         set(true, &[0, 0, 0, 0, 12, 12, 0, 0, 0, 0]);
-        let filters: Vec<Coeffs> = [500.0, 1000.0].iter().map(|&f| peaking(f, 12.0, rate)).collect();
-        let peak = peak_db(&filters, rate);
-        assert!(peak > 13.0, "combined peak {peak} dB");
+        let mut s = sine_amp(700.0, rate, 44100, 20000.0);
+        Eq::new().apply(&mut s, 2, rate);
+        assert!(s[s.len() / 2..].iter().all(|v| (*v as i32).abs() <= CEILING as i32 + 1));
 
         // −12 dB at 62 Hz: no headroom taken, 62 Hz down 12 dB, 4 kHz untouched.
         set(true, &[0, -12, 0, 0, 0, 0, 0, 0, 0, 0]);
