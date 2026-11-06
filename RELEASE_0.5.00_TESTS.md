@@ -8,7 +8,7 @@
 
 | Набор | Команда | Что проверяет | Результат (ветка `release-0.5.00`) |
 |---|---|---|---|
-| Юнит-тесты | `cargo test` | 114 тестов: голос, маршрутизация `owns()`, EQ, LED, настройки, миграция, отчёты, CSRF, обновление, AirPlay-ресемплер, mDNS, ADB-ключи… | 114/114 ✅ |
+| Юнит-тесты | `cargo test` | 117 тестов: голос, маршрутизация `owns()`, EQ, LED, настройки, миграция, отчёты, CSRF, обновление, AirPlay-ресемплер, mDNS, ADB-ключи… | 117/117 ✅ |
 | Установщик | `sh tests/install-test.sh` (проверено в dash) | свежая установка; обновление с сохранением `config.json`/`client_id`/`adbkey`/`soundya.env`; откат при падении новой версии; повреждённый архив не трогает колонку; данные, «мигрированные» сломанной версией, возвращаются; ротация копий (5) | 20/20 ✅ |
 | Багрепорт E2E | `cargo build && python3 tests/report_e2e.py` | демон → предпросмотр → очередь → Telegram недоступен → перезапуск демона → доставка 1 сообщение + 3 файла → повтор не дублируется → старый `/api/feedback`; секреты и фразы не утекают; запрос со стороннего сайта — 403 | 7/7 этапов ✅ |
 | Сборка ARM | `cargo zigbuild --release --target armv7-unknown-linux-gnueabihf.2.23` | собирается, GLIBC ≤ 2.23 | ✅ (GLIBC 2.18) |
@@ -37,7 +37,10 @@
 Третья очередь — тесты: `led::tests::new_effects_move_and_follow_the_music`,
 `pc::tests::signature_matches_the_agent`, `sha256::tests::known_answers` (RFC 4231),
 `planner::tests::*`, `telegram::tests::*`, `display::tests::*`,
-`settings::tests::autostart_is_off_by_default`, `alice::tests::priority_table`
+`settings::tests::autostart_is_off_by_default`, `calendar::tests::*` (iCal Google:
+перенос строк, VALARM, TZID, весь день, WEEKLY/BYDAY + UNTIL, EXDATE, перенос
+экземпляра, COUNT, YEARLY, сломанное правило), `probe::tests::reads_a_fake_speaker`,
+адрес календаря в `report::tests::secrets_never_survive`, `alice::tests::priority_table`
 (по строке на каждое правило `docs/voice-priority.md`); бот сообщества —
 `python3 tests/community_bot_test.py` (фейковый Bot API); установщики —
 `python3 tests/fake_station.py` + мастер в Chromium (поиск, установка, push
@@ -187,6 +190,13 @@ PIN (владелец остаётся в сети, чужой браузер �
 9. «Продолжить музыку»: включить трек, на 1:30 выдернуть питание — после
    загрузки играет тот же трек примерно с 1:28; сказать «стоп», перезагрузить —
    тишина.
+
+### B8b. Календарь и проверка возможностей
+1. Google Календарь: вставить секретный адрес iCal → в «Планы» ближайшие события;
+   событие через 15 минут — напоминание за 10; «Алиса, какие планы на сегодня».
+   Повторяющееся событие и перенесённый экземпляр — правильные дни и время.
+2. «Проверить возможности колонки» на каждой модели (Лайт, Мини 1/2/3, Станция 2)
+   → «Отправить автору». Это нужно, чтобы решить про Bluetooth и AirPlay 2.
 
 ### B9. Регрессия
 AirPlay (iPhone, Mac), ТВ (открыть ютуб, пауза), ПК (WoL, открыть программу,

@@ -441,6 +441,8 @@ pub fn build(dir: &Path, shared: &Shared, req: &Request) -> Vec<File> {
             "pcm_state": read("/proc/asound/card0/pcm0p/sub0/status").map(|v| v.trim().to_owned()),
             "config_layout": settings.config_version,
             "status": status_summary(shared),
+            // «Проверить возможности колонки», if it was run.
+            "capabilities": crate::probe::last(),
         });
         let text = serde_json::to_string_pretty(&diag).unwrap_or_default();
         files.push(File { name: "diagnostics.json".into(), data: clean(&text).into_bytes() });

@@ -130,6 +130,10 @@
   #autolist select { flex: 1 1 140px; min-width: 0; appearance: auto; }
   #autolist input { flex: none; width: 5.5em; }
   #autolist .contact { flex-wrap: wrap; }
+  ul.probe { padding-left: 18px; margin: 8px 0; }
+  ul.probe li { margin: 4px 0; }
+  pre.probe { white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 320px; overflow: auto;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
   button.ghost { margin-top: 8px; width: 100%; background: transparent; border-style: dashed; }
   .hint code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
   .hint ol { margin: 6px 0 0; padding-left: 20px; }
@@ -979,6 +983,18 @@
     </div>
     <div class="msg" id="airplaymsg"></div>
     <button class="link bugbtn" onclick="openReport('airplay')">Сообщить об ошибке</button>
+
+    <h2 class="section" id="probesection">Возможности колонки</h2>
+    <p class="hint">Bluetooth-звук, AirPlay 2 и мультирум зависят от того, что есть в прошивке вашей модели. Проверка только
+      читает систему колонки (ничего не меняет, не собирает MAC-адреса и названия сетей). Отправьте результат автору —
+      поддержка появится для тех моделей, где проверка покажет, что это возможно.</p>
+    <div class="row">
+      <button onclick="runProbe()">Проверить</button>
+      <button class="primary" id="probesend" onclick="sendProbe()" disabled>Отправить автору</button>
+    </div>
+    <ul class="hint probe" id="probelist"></ul>
+    <details id="probedetails" hidden><summary class="hint">Подробно</summary><pre class="probe" id="probejson"></pre></details>
+    <div class="msg" id="probemsg"></div>
 
     </div>
     <div class="sub" data-sub="light">
@@ -2323,6 +2339,21 @@ async function saveCal() {
   settingsLoaded = false; refresh();
 }
 async function refreshCal() { show($('calmsg'), await post('/api/cmd', 'calendar')); setTimeout(refresh, 3000); }
+async function runProbe() {
+  busy($('probemsg'), 'Проверяю…');
+  const r = await postJSON('probe');
+  if (r.error || !r.summary) { show($('probemsg'), 'error: ' + (r.error || 'колонка не ответила')); return; }
+  $('probemsg').textContent = '';
+  const ul = $('probelist'); ul.innerHTML = '';
+  for (const line of r.summary) { const li = document.createElement('li'); li.textContent = line; ul.appendChild(li); }
+  $('probejson').textContent = JSON.stringify({ bluetooth: r.bluetooth, airplay2: r.airplay2, audio_hub: r.audio_hub }, null, 2);
+  $('probedetails').hidden = false; $('probesend').disabled = false;
+}
+async function sendProbe() {
+  await openReport('hardware', 'bug');
+  $('fblogs').checked = true;
+  $('fbtext').value = 'Результат проверки возможностей колонки (Bluetooth, AirPlay 2, мультирум) — в diagnostics.json.';
+}
 async function savePlanner() {
   show($('planmsg'), await post('/api/settings', JSON.stringify({ planner_on: $('planon').checked })));
   loadPlans();

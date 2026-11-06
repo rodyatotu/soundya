@@ -23,6 +23,7 @@ mod luna;
 mod mdns;
 mod pc;
 mod planner;
+mod probe;
 mod player;
 mod report;
 mod sc;
@@ -2073,6 +2074,11 @@ impl Controller {
                     let arg = arg.trim().to_owned();
                     match cmd {
                         // Read-only requests answer the page directly from a worker thread.
+                        // «Проверить возможности колонки» (probe.rs): only reads, a few seconds.
+                        "probe" => {
+                            let dir = self.dir.clone();
+                            thread::spawn(move || send_to(&reply, probe::run(&dir).to_string()));
+                        }
                         "search" if !arg.is_empty() => {
                             let client = self.client.clone();
                             let tx = self.tx.clone();
