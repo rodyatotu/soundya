@@ -1404,6 +1404,66 @@ pub fn watch(tx: Sender<Cmd>, shared: std::sync::Arc<Shared>) {
 
 #[cfg(test)]
 mod tests {
+    /// docs/voice-priority.md, one phrase per row, in the order the rules are checked.
+    #[test]
+    fn priority_table() {
+        let kind = |i: Option<Intent>| -> String {
+            match i {
+                None => "Alice".into(),
+                Some(Intent::Tv(_)) => "Tv".into(),
+                Some(Intent::Pc(_)) => "Pc".into(),
+                Some(Intent::Duck(_)) => "Duck".into(),
+                Some(Intent::Seek(_)) => "Seek".into(),
+                Some(Intent::VoiceLevel(_)) => "VoiceLevel".into(),
+                Some(Intent::Shuffled(_)) => "Shuffled".into(),
+                Some(Intent::Play(_)) => "Play".into(),
+                Some(Intent::Playlist(_)) => "Playlist".into(),
+                Some(Intent::Album(_)) => "Album".into(),
+                Some(Intent::MyPlaylist(_)) => "MyPlaylist".into(),
+                Some(Intent::Shuffle(_)) => "Shuffle".into(),
+                Some(i) => format!("{i:?}"),
+            }
+        };
+        // (phrase, «только по слову саундклауд» / Яндекс Музыка по умолчанию, expected)
+        let rows: &[(&str, bool, &str)] = &[
+            ("открой ютуб на телевизоре", false, "Tv"),
+            ("повтори адрес", false, "Address"),
+            ("говори тише", false, "VoiceLevel"),
+            ("приглуши музыку", false, "Duck"),
+            ("перемотай вперед на 30 секунд", false, "Seek"),
+            ("включи компьютер", false, "Pc"),
+            ("включи бонобо в яндекс музыке", false, "ToAlice"),
+            ("включи плейлист дня", false, "ToAlice"),
+            ("включи подкаст", false, "ToAlice"),
+            ("включи саундклауд", true, "Default"),
+            ("включи мою волну", false, "Recommend"),
+            ("включи мою волну", true, "Alice"),
+            ("включи мою волну в саундклауде", true, "Recommend"),
+            ("включи мои лайки вперемешку", false, "Shuffled"),
+            ("пауза", false, "Pause"),
+            ("дальше", false, "Next"),
+            ("продолжи", false, "Resume"),
+            ("включи мои лайки", false, "Likes"),
+            ("включи мои лайки", true, "ToAlice"),
+            ("включи альбом discovery", false, "Album"),
+            ("включи плейлист для бега", false, "Playlist"),
+            ("включи бонобо", false, "Play"),
+            ("включи бонобо", true, "ToAlice"),
+            ("включи бонобо в саундклауде", true, "Play"),
+            ("включи свет", false, "Alice"),
+            ("включи свет", true, "Alice"),
+            ("какая погода", false, "Alice"),
+        ];
+        let mut bad = Vec::new();
+        for (phrase, keyword_only, want) in rows {
+            let got = kind(super::intent(phrase, *keyword_only));
+            if got != *want {
+                bad.push(format!("{phrase:?} (keyword_only={keyword_only}): {got}, want {want}"));
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
     #[test]
     fn what_starts_alices_music() {
         assert!(starts_music("включи радио"));
