@@ -298,7 +298,7 @@ const KEY_VOLUMEDOWN: u16 = 114;
 const KEY_VOLUMEUP: u16 = 115;
 
 extern "C" {
-    fn ioctl(fd: i32, request: u32, ...) -> i32;
+    fn ioctl(fd: i32, request: std::os::raw::c_ulong, ...) -> i32;
 }
 
 /// EVIOCGBIT(EV_KEY, len): which keys a device has, one bit per key code.
@@ -315,7 +315,7 @@ fn device() -> Option<PathBuf> {
     (0..10).map(|n| PathBuf::from(format!("/dev/input/event{n}"))).find(|path| {
         let Ok(f) = std::fs::File::open(path) else { return false };
         let mut bits = [0u8; 96];
-        let got = unsafe { ioctl(f.as_raw_fd(), eviocgbit_key(bits.len() as u32), bits.as_mut_ptr()) };
+        let got = unsafe { ioctl(f.as_raw_fd(), eviocgbit_key(bits.len() as u32) as std::os::raw::c_ulong, bits.as_mut_ptr()) };
         got > 0 && has(&bits, KEY_VOLUMEUP) && has(&bits, KEY_VOLUMEDOWN)
     })
 }
