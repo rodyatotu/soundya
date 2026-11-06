@@ -69,6 +69,10 @@ pub enum Intent {
     VoiceLevel(i8),
     /// The planner (planner.rs), when switched on.
     Planner(crate::planner::Voice),
+    /// «Ответь …» to the last Telegram message (telegram.rs), asked to confirm.
+    TgReply(String),
+    /// «Да» / «нет» to a Telegram reply waiting for it.
+    TgConfirm(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -711,6 +715,23 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
         }
         _ => {}
     }
+    if crate::telegram::active() {
+        let n = normalize(text);
+        if crate::telegram::awaiting() {
+            match n.as_str() {
+                "да" | "отправь" | "отправляй" | "подтверждаю" | "да отправь" => return Some(Intent::TgConfirm(true)),
+                "нет" | "отмена" | "не отправляй" | "не надо" => return Some(Intent::TgConfirm(false)),
+                _ => {}
+            }
+        }
+        for p in ["ответь в телеграм ", "ответь в телеграме ", "ответь "] {
+            if let Some(rest) = n.strip_prefix(p) {
+                if !rest.trim().is_empty() {
+                    return Some(Intent::TgReply(rest.trim().to_owned()));
+                }
+            }
+        }
+    }
     if crate::planner::ENABLED.load(std::sync::atomic::Ordering::Acquire) {
         if let Some(v) = crate::planner::voice(&normalize(text)) {
             return Some(Intent::Planner(v));
@@ -1242,7 +1263,10 @@ fn read_frames(
             }
             // SoundCloud switched off in the settings: only the PC, the TV and
             // messages are ours; all music stays Alice's.
-            let music = !matches!(intent, Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::Planner(_));
+            let music = !matches!(
+                intent,
+                Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
+            );
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
                 continue;
@@ -1325,7 +1349,7 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
-        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::VoiceLevel(_) | Intent::Planner(_) => true,
+        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::VoiceLevel(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
         Intent::Pc(_) => w.pc,

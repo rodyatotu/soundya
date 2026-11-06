@@ -28,6 +28,7 @@ mod sc;
 mod settings;
 mod sha256;
 mod stats;
+mod telegram;
 mod tv;
 mod update;
 mod vis;
@@ -393,6 +394,17 @@ impl Controller {
         settings["pin_on"] = (!self.settings.panel_pin.is_empty()).into();
         settings["alice_voice"] = self.settings.alice_voice.into();
         settings["planner_on"] = self.settings.planner_on.into();
+        settings["tg_on"] = self.settings.tg_on.into();
+        settings["tg_bots"] = self.settings.tg_bots.iter().map(|b| serde_json::json!({
+            "name": b.name,
+            "token": format!("••••••••{}", b.token.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<String>()),
+        })).collect::<Vec<_>>().into();
+        settings["tg_allowed"] = serde_json::to_value(&self.settings.tg_allowed).unwrap_or_default();
+        settings["tg_read"] = self.settings.tg_read.into();
+        settings["tg_max"] = self.settings.tg_max.into();
+        settings["tg_quiet_on"] = self.settings.tg_quiet_on.into();
+        settings["tg_quiet_from"] = self.settings.tg_quiet_from.into();
+        settings["tg_quiet_to"] = self.settings.tg_quiet_to.into();
         settings["tz_offset"] = self.settings.tz_offset.into();
         settings["alice_voice_max"] = self.settings.alice_voice_max.into();
         settings["duck_mode"] = self.settings.duck_mode.clone().into();
@@ -435,6 +447,7 @@ impl Controller {
             "pc_legacy": pc::LEGACY.load(Ordering::Acquire),
             "ducking": ducking::json(),
             "voice": voice::json(),
+            "telegram": telegram::json(),
             "listen": serde_json::json!({
                 "listeners": web::listeners(),
                 "muted": self.shared.duck.listening(),
@@ -615,6 +628,22 @@ impl Controller {
         new.alice_voice_max = new.alice_voice_max.min(10);
         voice::configure(new.alice_voice, new.alice_voice_max);
         new.tz_offset = new.tz_offset.clamp(-720, 840);
+        // Bot tokens come back masked from the page: masked = unchanged.
+        for (i, b) in new.tg_bots.iter_mut().enumerate() {
+            b.name = b.name.trim().to_owned();
+            b.token = b.token.trim().to_owned();
+            if b.token.contains('•') {
+                if let Some(old) = self.settings.tg_bots.get(i) {
+                    b.token = old.token.clone();
+                }
+            }
+        }
+        new.tg_bots.retain(|b| !b.token.is_empty() && !b.token.contains('•'));
+        new.tg_allowed.retain(|a| a.id != 0);
+        for a in &new.tg_allowed {
+            telegram::forget_unknown(a.id);
+        }
+        telegram::configure(telegram::Config::from_settings(&new), &self.shared);
         planner::configure(new.planner_on, new.tz_offset);
         new.led_order = new.led_order.trim().to_lowercase();
         if !led::set_order(&new.led_order) {
@@ -1258,6 +1287,17 @@ impl Controller {
                 };
                 respond(reply, &format!("OK: {text}"), Some(text));
             }
+            Intent::TgReply(text) => {
+                let say = telegram::reply_draft(&text);
+                respond(reply, &format!("OK: {say}"), Some(say));
+            }
+            Intent::TgConfirm(yes) => {
+                let shared = self.shared.clone();
+                thread::spawn(move || {
+                    let say = telegram::confirm(yes, &shared);
+                    respond(reply, &format!("OK: {say}"), Some(say));
+                });
+            }
             Intent::Planner(v) => {
                 let text = planner::handle(v);
                 respond(reply, &format!("OK: {text}"), Some(text));
@@ -1578,6 +1618,16 @@ impl Controller {
                 match cmd {
                     Some(c) => self.intent(Intent::Duck(c), Some(reply)),
                     None => send_to(&reply, "usage: duck down | restore | auto on | auto off".into()),
+                }
+            }
+            // «tg reply <текст> | tg yes | tg no» — the voice flow from the command line.
+            "tg" => {
+                let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                match what {
+                    "reply" if !rest.trim().is_empty() => self.intent(Intent::TgReply(rest.trim().to_owned()), Some(reply)),
+                    "yes" => self.intent(Intent::TgConfirm(true), Some(reply)),
+                    "no" => self.intent(Intent::TgConfirm(false), Some(reply)),
+                    _ => send_to(&reply, "usage: tg reply <текст> | tg yes | tg no".into()),
                 }
             }
             // The panel's «Планы»: «plan json», «plan add {json}», «plan done|undone|del <id>».
@@ -2343,6 +2393,9 @@ fn daemon() {
     // «Громкость голоса Алисы»: a volume left lowered by a crash comes back first.
     voice::recover();
     voice::configure(settings.alice_voice, settings.alice_voice_max);
+    // Telegram bots: messages from allowed people read out, replies by voice.
+    telegram::configure(telegram::Config::from_settings(&settings), &shared);
+    telegram::run_summary(shared.clone());
     // Tasks and reminders (said only with the planner on).
     planner::configure(settings.planner_on, settings.tz_offset);
     planner::run(&dir);

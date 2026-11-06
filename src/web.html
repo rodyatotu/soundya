@@ -474,6 +474,8 @@
   .stat { border-color: var(--line); box-shadow: 0 1px 2px rgba(20, 16, 30, .05); }
   .stat:hover { transform: translateY(-1px); }
   @media (min-width: 1100px) { main { max-width: 980px; } }
+  #tgsection ~ .row input[type=time] { flex: 1; font: inherit; color: var(--ink); background: var(--field);
+    border: 1px solid var(--glass-edge); border-radius: 14px; padding: 9px 11px; }
   .planadd { display: grid; gap: 8px; margin: 10px 0; }
   .planadd input[type=datetime-local], .planadd select { flex: 1 1 140px; font: inherit; color: var(--ink); background: var(--field);
     border: 1px solid var(--glass-edge); border-radius: 14px; padding: 9px 11px; }
@@ -1043,6 +1045,32 @@
     </div>
     <div class="msg" id="tvmsg"></div>
     <button class="link bugbtn" onclick="openReport('tv')">Сообщить об ошибке</button>
+
+    <h2 class="section" id="tgsection">Telegram</h2>
+    <p class="hint">Колонка читает вслух сообщения, которые пишут вашему боту (или в группу, куда он добавлен), — только от тех,
+      кого вы разрешили. «Алиса, ответь буду через 10 минут» — колонка переспросит и отправит после «да».
+      Ваши личные переписки бот не видит: это не ваш аккаунт, а отдельный бот.</p>
+    <details class="hint"><summary>Как сделать бота (1 минута)</summary>
+      <ol><li>В Telegram откройте @BotFather → /newbot, придумайте имя.</li>
+        <li>Скопируйте токен (вида 123456:AA…) и вставьте ниже, нажмите «Сохранить».</li>
+        <li>Пусть мама/друг напишет боту — появится в «Новые отправители», нажмите «Разрешить».</li></ol></details>
+    <label class="switch"><input type="checkbox" id="tgon" onchange="saveTg()"><span><b>Читать сообщения Telegram</b></span></label>
+    <div id="tgbots"></div>
+    <button class="ghost" onclick="addTgBot()">+ Добавить бота</button>
+    <div class="field">Кто может писать</div>
+    <div id="tgallowed"></div>
+    <div id="tgunknown"></div>
+    <label class="check"><input type="checkbox" id="tgread" onchange="saveTg()"><span>Читать текст сообщения
+      <span class="hint">Иначе — только «Мама: новое сообщение в Телеграме»</span></span></label>
+    <label class="field">Не длиннее <b id="tgmaxv"></b> символов
+      <input type="range" id="tgmax" min="40" max="600" step="20" class="range" oninput="$('tgmaxv').textContent = this.value" onchange="saveTg()">
+    </label>
+    <label class="check"><input type="checkbox" id="tgquiet" onchange="saveTg()"><span>Не беспокоить
+      <span class="hint">В это время колонка молчит, а потом скажет, сколько пришло</span></span></label>
+    <div class="row"><input type="time" id="tgfrom" onchange="saveTg()"><input type="time" id="tgto" onchange="saveTg()"></div>
+    <p class="hint" id="tgstate"></p>
+    <div class="msg" id="tgmsg"></div>
+    <button class="link bugbtn" onclick="openReport('telegram')">Сообщить об ошибке</button>
 
     <h2 class="section" id="macrosection">Сценарии</h2>
     <p class="hint">Своя фраза для Алисы запускает цепочку действий. Например, «Алиса, включи кино»: разбудить телевизор →
@@ -2003,6 +2031,67 @@ async function saveVoice() {
 }
 async function voiceTest() { show($('voicemsg'), await post('/api/cmd', 'voicetest')); }
 
+// ---- Telegram ----
+let tgBots = [], tgAllowed = [];
+const hm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+const mins = v => { const [h, m] = (v || '0:0').split(':').map(Number); return h * 60 + m; };
+function renderTgLists() {
+  const bots = $('tgbots'); bots.innerHTML = '';
+  tgBots.forEach((b, i) => {
+    const row = document.createElement('div'); row.className = 'row contact';
+    const n = document.createElement('input'); n.type = 'text'; n.placeholder = 'Имя бота'; n.value = b.name || ''; n.oninput = () => b.name = n.value;
+    const t = document.createElement('input'); t.type = 'password'; t.placeholder = 'токен от @BotFather'; t.value = b.token || ''; t.oninput = () => b.token = t.value;
+    const x = document.createElement('button'); x.textContent = '✕'; x.onclick = () => { tgBots.splice(i, 1); renderTgLists(); saveTg(); };
+    const sv = document.createElement('button'); sv.textContent = 'Сохранить'; sv.onclick = saveTg;
+    row.append(n, t, sv, x); bots.appendChild(row);
+  });
+  const al = $('tgallowed'); al.innerHTML = '';
+  if (!tgAllowed.length) { const p = document.createElement('p'); p.className = 'hint'; p.textContent = 'Пока никого: пусть человек напишет боту.'; al.appendChild(p); }
+  tgAllowed.forEach((a, i) => {
+    const row = document.createElement('div'); row.className = 'row contact';
+    const n = document.createElement('input'); n.type = 'text'; n.value = a.name; n.placeholder = 'Как называть'; n.onchange = () => { a.name = n.value; saveTg(); };
+    const id = document.createElement('span'); id.className = 'hint'; id.textContent = 'ID ' + a.id;
+    const x = document.createElement('button'); x.textContent = '✕'; x.onclick = () => { tgAllowed.splice(i, 1); renderTgLists(); saveTg(); };
+    row.append(n, id, x); al.appendChild(row);
+  });
+}
+function renderTg(st, tg) {
+  $('tgon').checked = !!st.tg_on;
+  tgBots = (st.tg_bots || []).map(b => ({ name: b.name, token: b.token }));
+  tgAllowed = (st.tg_allowed || []).map(a => ({ id: a.id, name: a.name }));
+  $('tgread').checked = st.tg_read !== false;
+  $('tgmax').value = st.tg_max || 200; $('tgmaxv').textContent = $('tgmax').value;
+  $('tgquiet').checked = !!st.tg_quiet_on;
+  $('tgfrom').value = hm(st.tg_quiet_from ?? 1380); $('tgto').value = hm(st.tg_quiet_to ?? 480);
+  renderTgLists();
+  renderTgState(tg);
+}
+function renderTgState(tg) {
+  if (!tg) return;
+  const un = $('tgunknown'); un.innerHTML = '';
+  if ((tg.unknown || []).length) {
+    const h = document.createElement('div'); h.className = 'field'; h.textContent = 'Новые отправители'; un.appendChild(h);
+    for (const u of tg.unknown) {
+      const row = document.createElement('div'); row.className = 'row contact';
+      const t = document.createElement('span'); t.textContent = `${u.name} (ID ${u.id}): «${u.text}»`;
+      const b = document.createElement('button'); b.textContent = 'Разрешить';
+      b.onclick = () => { const name = prompt('Как Алисе называть этого человека?', u.name); if (name === null) return; tgAllowed.push({ id: u.id, name: name.trim() || u.name }); renderTgLists(); saveTg(); };
+      row.append(t, b); un.appendChild(row);
+    }
+  }
+  const errs = (tg.errors || []).map(e => `бот ${e.bot + 1}: ${e.error}`).join('; ');
+  $('tgstate').textContent = (errs ? 'Ошибка: ' + errs + '. ' : '') + `Прочитано сообщений: ${tg.said || 0}` + (tg.held ? `, ждут конца тишины: ${tg.held}` : '');
+}
+function addTgBot() { tgBots.push({ name: 'Мой бот', token: '' }); renderTgLists(); }
+async function saveTg() {
+  show($('tgmsg'), await post('/api/settings', JSON.stringify({
+    tg_on: $('tgon').checked, tg_bots: tgBots.filter(b => (b.token || '').trim()), tg_allowed: tgAllowed,
+    tg_read: $('tgread').checked, tg_max: Number($('tgmax').value), tg_quiet_on: $('tgquiet').checked,
+    tg_quiet_from: mins($('tgfrom').value), tg_quiet_to: mins($('tgto').value),
+  })));
+  settingsLoaded = false; refresh();
+}
+
 // ---- планы ----
 const REPEAT_NAMES = { daily: 'каждый день', weekdays: 'по будням', weekly: 'каждую неделю', monthly: 'каждый месяц' };
 async function loadPlans() {
@@ -2437,6 +2526,7 @@ async function refresh() {
   $('loginwarn').hidden = s.login !== 'refused';
   renderNet(s.net);
   renderDuckState(s.ducking);
+  renderTgState(s.telegram);
   syncListen(s);
   renderHome(s);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
@@ -2466,6 +2556,7 @@ async function refresh() {
     renderDuck(settings);
     renderPin(settings);
     renderVoice(settings, s.voice);
+    renderTg(settings, s.telegram);
     maybeWizard(settings);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';

@@ -149,6 +149,24 @@ pub struct Settings {
     /// Local time offset from UTC, minutes (the speaker's clock is UTC).
     #[serde(default = "msk")]
     pub tz_offset: i32,
+    /// Telegram on the speaker (telegram.rs): the user's own bots, who may
+    /// write, read the text or only who wrote, length, quiet hours (minutes).
+    #[serde(default)]
+    pub tg_on: bool,
+    #[serde(default)]
+    pub tg_bots: Vec<crate::telegram::Bot>,
+    #[serde(default)]
+    pub tg_allowed: Vec<crate::telegram::Sender>,
+    #[serde(default = "yes")]
+    pub tg_read: bool,
+    #[serde(default = "two_hundred")]
+    pub tg_max: u16,
+    #[serde(default)]
+    pub tg_quiet_on: bool,
+    #[serde(default = "quiet_from")]
+    pub tg_quiet_from: u16,
+    #[serde(default = "quiet_to")]
+    pub tg_quiet_to: u16,
     /// Optional PIN for changing anything from the panel ("" = no PIN).
     /// Never sent to the page; `soundya pin off` on the speaker removes it.
     #[serde(default)]
@@ -227,6 +245,16 @@ fn ten() -> u8 {
     10
 }
 
+fn two_hundred() -> u16 {
+    200
+}
+fn quiet_from() -> u16 {
+    23 * 60
+}
+fn quiet_to() -> u16 {
+    8 * 60
+}
+
 fn msk() -> i32 {
     180
 }
@@ -299,6 +327,14 @@ impl Default for Settings {
             duck_exclude: Vec::new(),
             alice_voice: 100,
             alice_voice_max: 10,
+            tg_on: false,
+            tg_bots: Vec::new(),
+            tg_allowed: Vec::new(),
+            tg_read: true,
+            tg_max: 200,
+            tg_quiet_on: false,
+            tg_quiet_from: quiet_from(),
+            tg_quiet_to: quiet_to(),
             planner_on: false,
             tz_offset: 180,
             panel_pin: String::new(),

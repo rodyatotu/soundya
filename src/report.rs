@@ -172,6 +172,9 @@ pub fn secrets(s: &crate::settings::Settings) -> Vec<String> {
             out.push(cred.to_owned());
         }
     }
+    for b in &s.tg_bots {
+        out.push(b.token.clone());
+    }
     for c in &s.pc_contacts {
         out.push(c.target.clone());
         out.extend(c.names.split('|').map(str::to_owned));
