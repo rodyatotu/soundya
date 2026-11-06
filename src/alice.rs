@@ -67,6 +67,8 @@ pub enum Intent {
     Address,
     /// «Говори тише / громче»: only her voice (voice.rs), by this many %.
     VoiceLevel(i8),
+    /// The planner (planner.rs), when switched on.
+    Planner(crate::planner::Voice),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -709,6 +711,11 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
         }
         _ => {}
     }
+    if crate::planner::ENABLED.load(std::sync::atomic::Ordering::Acquire) {
+        if let Some(v) = crate::planner::voice(&normalize(text)) {
+            return Some(Intent::Planner(v));
+        }
+    }
     if let Some(d) = duck_command(&normalize(text)) {
         return Some(Intent::Duck(d));
     }
@@ -1235,7 +1242,7 @@ fn read_frames(
             }
             // SoundCloud switched off in the settings: only the PC, the TV and
             // messages are ours; all music stays Alice's.
-            let music = !matches!(intent, Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::Duck(_) | Intent::VoiceLevel(_));
+            let music = !matches!(intent, Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::Planner(_));
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
                 continue;
@@ -1318,7 +1325,7 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
-        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::VoiceLevel(_) => true,
+        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::VoiceLevel(_) | Intent::Planner(_) => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
         Intent::Pc(_) => w.pc,

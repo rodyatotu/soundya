@@ -435,8 +435,8 @@
   .tab { animation: rise .32s cubic-bezier(.2, .8, .2, 1); }
   @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
   @media (prefers-reduced-motion: reduce) { .tab { animation: none; } }
-  nav { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
-  @media (max-width: 560px) { nav { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  nav { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  @media (max-width: 720px) { nav { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
   nav button.on, nav button.on:hover:not(:disabled) { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); color: #fff; box-shadow: 0 6px 18px rgba(255, 80, 40, .35); }
   .subnav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   @media (max-width: 560px) { .subnav { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
@@ -474,6 +474,16 @@
   .stat { border-color: var(--line); box-shadow: 0 1px 2px rgba(20, 16, 30, .05); }
   .stat:hover { transform: translateY(-1px); }
   @media (min-width: 1100px) { main { max-width: 980px; } }
+  .planadd { display: grid; gap: 8px; margin: 10px 0; }
+  .planadd input[type=datetime-local], .planadd select { flex: 1 1 140px; font: inherit; color: var(--ink); background: var(--field);
+    border: 1px solid var(--glass-edge); border-radius: 14px; padding: 9px 11px; }
+  ul.plans li { display: flex; align-items: center; gap: 10px; }
+  ul.plans li .pt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  ul.plans li .pt small { display: block; color: var(--muted); font-size: 12px; }
+  ul.plans li.high .pt b::before { content: "● "; color: var(--accent); }
+  ul.plans li.overdue small { color: var(--err); }
+  ul.plans li.done .pt b { text-decoration: line-through; color: var(--muted); }
+  ul.plans input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
   .palettes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
   .palettes button { height: 44px; border-radius: 14px; border: 2px solid transparent; padding: 0; }
   .palettes button.on { border-color: var(--ink); }
@@ -549,9 +559,39 @@
     <button data-tab="search">Поиск</button>
     <button data-tab="mine">Моя музыка</button>
     <button data-tab="queue">Очередь</button>
+    <button data-tab="plans">Планы</button>
     <button data-tab="settings">Настройки</button>
     <button data-tab="help">Помощь</button>
   </nav>
+
+  <section class="tab" id="tab-plans">
+    <h2>Планы и напоминания</h2>
+    <label class="switch"><input type="checkbox" id="planon" onchange="savePlanner()"><span><b>Планировщик soundya</b></span></label>
+    <p class="hint">Включён — «Алиса, напомни через 10 минут…», «напомни завтра в 9…», «добавь задачу…», «какие планы на сегодня»
+      идут сюда, а не в напоминания Алисы. Напоминание колонка скажет голосом в нужное время.</p>
+    <p class="hint" id="plantz"></p>
+    <div class="planadd">
+      <input type="text" id="plantitle" placeholder="Что сделать" maxlength="200">
+      <div class="row">
+        <input type="datetime-local" id="plandue">
+        <select id="planrepeat"><option value="">Один раз</option><option value="daily">Каждый день</option>
+          <option value="weekdays">По будням</option><option value="weekly">Каждую неделю</option><option value="monthly">Каждый месяц</option></select>
+      </div>
+      <div class="row">
+        <select id="planprio"><option value="normal">Обычная</option><option value="high">Важная</option><option value="low">Неважная</option></select>
+        <input type="text" id="plancat" placeholder="Категория (дом, работа…)" maxlength="40">
+      </div>
+      <label class="check"><input type="checkbox" id="planremind" checked><span>Напомнить голосом в это время</span></label>
+      <div class="row"><button class="primary" onclick="addPlan()">Добавить</button></div>
+    </div>
+    <div class="msg" id="planmsg"></div>
+    <h3>Сегодня</h3><ul class="list plans" id="plantoday"></ul>
+    <h3>Позже</h3><ul class="list plans" id="planlater"></ul>
+    <h3>Без даты</h3><ul class="list plans" id="plannodate"></ul>
+    <details><summary class="hint">Выполненные</summary><ul class="list plans" id="plandone"></ul></details>
+    <p class="hint">Google Календарь пока не подключается: для этого нужен свой OAuth-проект в Google Cloud — это в планах.</p>
+    <button class="link bugbtn" onclick="openReport('planner')">Сообщить об ошибке</button>
+  </section>
 
   <section class="tab on" id="tab-home">
     <div class="homegrid">
@@ -1963,6 +2003,58 @@ async function saveVoice() {
 }
 async function voiceTest() { show($('voicemsg'), await post('/api/cmd', 'voicetest')); }
 
+// ---- планы ----
+const REPEAT_NAMES = { daily: 'каждый день', weekdays: 'по будням', weekly: 'каждую неделю', monthly: 'каждый месяц' };
+async function loadPlans() {
+  const r = await postJSON('plan json');
+  if (r.error) return;
+  $('planon').checked = !!r.enabled;
+  const mine = -new Date().getTimezoneOffset();
+  $('plantz').innerHTML = '';
+  $('plantz').append(`Часовой пояс колонки: UTC${r.offset_min >= 0 ? '+' : ''}${r.offset_min / 60}. `);
+  if (mine !== r.offset_min) {
+    const b = document.createElement('button'); b.className = 'link'; b.textContent = `Взять с этого устройства (UTC${mine >= 0 ? '+' : ''}${mine / 60})`;
+    b.onclick = async () => { show($('planmsg'), await post('/api/settings', JSON.stringify({ tz_offset: mine }))); loadPlans(); };
+    $('plantz').appendChild(b);
+  }
+  const lists = { plantoday: [], planlater: [], plannodate: [], plandone: [] };
+  const today = new Date(); today.setHours(23, 59, 59, 999);
+  for (const t of r.tasks) {
+    const key = t.done ? 'plandone' : t.due == null ? 'plannodate' : t.due * 1000 <= today.getTime() ? 'plantoday' : 'planlater';
+    lists[key].push(t);
+  }
+  for (const [id, items] of Object.entries(lists)) {
+    const ul = $(id); ul.innerHTML = '';
+    for (const t of (id === 'plandone' ? items.slice(-20).reverse() : items)) {
+      const li = document.createElement('li');
+      li.className = [t.priority === 'high' ? 'high' : '', t.overdue ? 'overdue' : '', t.done ? 'done' : ''].join(' ');
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = t.done;
+      cb.onchange = async () => { await post('/api/cmd', `plan ${cb.checked ? 'done' : 'undone'} ${t.id}`); loadPlans(); };
+      const pt = document.createElement('div'); pt.className = 'pt';
+      const b = document.createElement('b'); b.textContent = t.title; pt.appendChild(b);
+      const meta = [t.when, REPEAT_NAMES[t.repeat], t.category, t.remind && !t.done ? '🔔' : ''].filter(Boolean).join(' · ');
+      if (meta) { const sm = document.createElement('small'); sm.textContent = meta; pt.appendChild(sm); }
+      const del = document.createElement('button'); del.className = 'link'; del.textContent = '✕'; del.title = 'Удалить';
+      del.onclick = async () => { await post('/api/cmd', 'plan del ' + t.id); loadPlans(); };
+      li.append(cb, pt, del); ul.appendChild(li);
+    }
+    if (!items.length && id !== 'plandone') { const li = document.createElement('li'); li.className = 'hint'; li.textContent = 'пусто'; ul.appendChild(li); }
+  }
+}
+async function addPlan() {
+  const title = $('plantitle').value.trim();
+  if (!title) { show($('planmsg'), 'error: напишите, что сделать'); return; }
+  const v = $('plandue').value;
+  const body = { title, due: v ? Math.floor(new Date(v).getTime() / 1000) : null, repeat: v ? $('planrepeat').value : '',
+    priority: $('planprio').value, category: $('plancat').value.trim(), remind: !!v && $('planremind').checked };
+  show($('planmsg'), await post('/api/cmd', 'plan add ' + JSON.stringify(body)));
+  $('plantitle').value = ''; $('plandue').value = ''; loadPlans();
+}
+async function savePlanner() {
+  show($('planmsg'), await post('/api/settings', JSON.stringify({ planner_on: $('planon').checked })));
+  loadPlans();
+}
+
 // ---- приглушение при звонках ----
 const DUCK_HINT = {
   smart: 'Звонки и уведомления.', calls: 'Только звонки.', notify: 'Только уведомления.',
@@ -2199,6 +2291,7 @@ document.querySelectorAll('nav button').forEach(b => {
     try { localStorage.setItem('tab', b.dataset.tab); } catch (e) {}
     if (b.dataset.tab === 'mine' && settings.token && !$('mylists').children.length) library();
     if (b.dataset.tab === 'mine') loadHistory();
+    if (b.dataset.tab === 'plans') loadPlans();
     if (b.dataset.tab === 'settings') post('/api/cmd', 'netcheck').then(refresh);
   };
 });

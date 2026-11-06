@@ -143,6 +143,12 @@ pub struct Settings {
     pub alice_voice: u8,
     #[serde(default = "ten")]
     pub alice_voice_max: u8,
+    /// Soundya's planner takes «напомни …», «какие планы» from Alice.
+    #[serde(default)]
+    pub planner_on: bool,
+    /// Local time offset from UTC, minutes (the speaker's clock is UTC).
+    #[serde(default = "msk")]
+    pub tz_offset: i32,
     /// Optional PIN for changing anything from the panel ("" = no PIN).
     /// Never sent to the page; `soundya pin off` on the speaker removes it.
     #[serde(default)]
@@ -221,6 +227,10 @@ fn ten() -> u8 {
     10
 }
 
+fn msk() -> i32 {
+    180
+}
+
 fn duck_mode() -> String {
     "smart".into()
 }
@@ -289,6 +299,8 @@ impl Default for Settings {
             duck_exclude: Vec::new(),
             alice_voice: 100,
             alice_voice_max: 10,
+            planner_on: false,
+            tz_offset: 180,
             panel_pin: String::new(),
             onboarded: false,
             voice_hello: true,

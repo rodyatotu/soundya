@@ -39,7 +39,7 @@ const KEEP: usize = 20;
 const GIVE_UP_DAYS: u64 = 7;
 
 /// Modules a report can be about (the page shows them in a list).
-pub const MODULES: [(&str, &str); 16] = [
+pub const MODULES: [(&str, &str); 17] = [
     ("general", "Общее / не знаю"),
     ("soundcloud", "SoundCloud"),
     ("yandex_music", "Яндекс Музыка и выбор сервиса"),
@@ -56,6 +56,7 @@ pub const MODULES: [(&str, &str); 16] = [
     ("ducking", "Приглушение звука"),
     ("audio", "Звук / Audio Hub"),
     ("onboarding", "Первая настройка"),
+    ("planner", "Планировщик и напоминания"),
 ];
 
 /// What the page sends.

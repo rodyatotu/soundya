@@ -21,6 +21,7 @@ mod led;
 mod luna;
 mod mdns;
 mod pc;
+mod planner;
 mod player;
 mod report;
 mod sc;
@@ -391,6 +392,8 @@ impl Controller {
         settings["onboarded"] = self.settings.onboarded.into();
         settings["pin_on"] = (!self.settings.panel_pin.is_empty()).into();
         settings["alice_voice"] = self.settings.alice_voice.into();
+        settings["planner_on"] = self.settings.planner_on.into();
+        settings["tz_offset"] = self.settings.tz_offset.into();
         settings["alice_voice_max"] = self.settings.alice_voice_max.into();
         settings["duck_mode"] = self.settings.duck_mode.clone().into();
         settings["duck_call_level"] = self.settings.duck_call_level.into();
@@ -611,6 +614,8 @@ impl Controller {
         new.alice_voice = new.alice_voice.clamp(10, 100);
         new.alice_voice_max = new.alice_voice_max.min(10);
         voice::configure(new.alice_voice, new.alice_voice_max);
+        new.tz_offset = new.tz_offset.clamp(-720, 840);
+        planner::configure(new.planner_on, new.tz_offset);
         new.led_order = new.led_order.trim().to_lowercase();
         if !led::set_order(&new.led_order) {
             return "error: порядок цветов — rgb, grb, brg, bgr, rbg или gbr".into();
@@ -1253,6 +1258,10 @@ impl Controller {
                 };
                 respond(reply, &format!("OK: {text}"), Some(text));
             }
+            Intent::Planner(v) => {
+                let text = planner::handle(v);
+                respond(reply, &format!("OK: {text}"), Some(text));
+            }
             Intent::Address => {
                 let text = hello::repeat();
                 respond(reply, &format!("OK: {text}"), None);
@@ -1570,6 +1579,37 @@ impl Controller {
                     Some(c) => self.intent(Intent::Duck(c), Some(reply)),
                     None => send_to(&reply, "usage: duck down | restore | auto on | auto off".into()),
                 }
+            }
+            // The panel's «Планы»: «plan json», «plan add {json}», «plan done|undone|del <id>».
+            "plan" => {
+                let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                let id = rest.trim().parse::<u64>().ok();
+                let r = match (what, id) {
+                    ("json", _) => planner::json().to_string(),
+                    ("add", _) => match serde_json::from_str::<serde_json::Value>(rest) {
+                        Ok(v) if v["title"].as_str().is_some_and(|t| !t.trim().is_empty()) => {
+                            let t = planner::add(
+                                v["title"].as_str().unwrap_or(""),
+                                v["due"].as_i64(),
+                                v["repeat"].as_str().unwrap_or(""),
+                                v["remind"].as_bool().unwrap_or(v["due"].is_i64()),
+                                v["category"].as_str().unwrap_or(""),
+                                v["priority"].as_str().unwrap_or("normal"),
+                            );
+                            format!("OK: добавлено «{}»", t.title)
+                        }
+                        _ => "error: нужен заголовок".into(),
+                    },
+                    ("done", Some(id)) => if planner::set_done(id, true) { "OK".into() } else { "error: нет такой задачи".into() },
+                    ("undone", Some(id)) => if planner::set_done(id, false) { "OK".into() } else { "error: нет такой задачи".into() },
+                    ("del", Some(id)) => if planner::delete(id) { "OK".into() } else { "error: нет такой задачи".into() },
+                    ("say", _) => match planner::voice(&rest.to_lowercase()) {
+                        Some(v) => format!("OK: {}", planner::handle(v)),
+                        None => "error: не поняла фразу".into(),
+                    },
+                    _ => "usage: plan json | add {json} | done|undone|del <id> | say <фраза>".into(),
+                };
+                send_to(&reply, r);
             }
             // The panel's wizard: «hello start | step N | done», «hello address».
             "hello" => {
@@ -2303,6 +2343,9 @@ fn daemon() {
     // «Громкость голоса Алисы»: a volume left lowered by a crash comes back first.
     voice::recover();
     voice::configure(settings.alice_voice, settings.alice_voice_max);
+    // Tasks and reminders (said only with the planner on).
+    planner::configure(settings.planner_on, settings.tz_offset);
+    planner::run(&dir);
     // Optional panel PIN and its saved browser sessions.
     auth::init(&dir, &settings.panel_pin);
     // Smart Ducking: calls and notifications from devices lower soundya's music.
