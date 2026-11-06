@@ -146,6 +146,14 @@ pub struct Settings {
     /// Soundya's planner takes «напомни …», «какие планы» from Alice.
     #[serde(default)]
     pub planner_on: bool,
+    /// Calendar by its secret iCal address (calendar.rs). The address is a secret.
+    #[serde(default)]
+    pub cal_on: bool,
+    #[serde(default)]
+    pub cal_url: String,
+    /// Say events this many minutes before; 0 = no reminders.
+    #[serde(default = "ten_u16")]
+    pub cal_remind: u16,
     /// Local time offset from UTC, minutes (the speaker's clock is UTC).
     #[serde(default = "msk")]
     pub tz_offset: i32,
@@ -388,6 +396,9 @@ impl Default for Settings {
             tg_quiet_from: quiet_from(),
             tg_quiet_to: quiet_to(),
             planner_on: false,
+            cal_on: false,
+            cal_url: String::new(),
+            cal_remind: 10,
             tz_offset: 180,
             panel_pin: String::new(),
             onboarded: false,

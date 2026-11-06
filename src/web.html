@@ -604,8 +604,37 @@
     <h3>Позже</h3><ul class="list plans" id="planlater"></ul>
     <h3>Без даты</h3><ul class="list plans" id="plannodate"></ul>
     <details><summary class="hint">Выполненные</summary><ul class="list plans" id="plandone"></ul></details>
-    <p class="hint">Google Календарь пока не подключается: для этого нужен свой OAuth-проект в Google Cloud — это в планах.</p>
     <button class="link bugbtn" onclick="openReport('planner')">Сообщить об ошибке</button>
+
+    <h2 class="section">Календарь</h2>
+    <label class="switch"><input type="checkbox" id="calon" onchange="saveCal()"><span><b>Google Календарь (или другой с iCal)</b></span></label>
+    <p class="hint">Колонка читает события и называет их в «Алиса, какие планы на сегодня», а перед началом напоминает голосом.
+      Только чтение; входить в Google не нужно.</p>
+    <details class="guide"><summary>Где взять адрес</summary>
+      <ol class="hint">
+        <li>Откройте <b>calendar.google.com</b> на компьютере → шестерёнка → <b>Настройки</b>.</li>
+        <li>Слева — ваш календарь → <b>Интеграция календаря</b>.</li>
+        <li>Скопируйте <b>«Секретный адрес в формате iCal»</b> (заканчивается на <code>basic.ics</code>) и вставьте ниже.</li>
+      </ol>
+      <p class="hint">Адрес даёт читать календарь любому, у кого он есть: он хранится только на колонке, в панели скрыт и
+        вырезается из отчётов об ошибках. Если он утёк — в тех же настройках Google «Сбросить» и вставьте новый.
+        Подходит и iCloud («Поделиться календарём → Публичный календарь») и Яндекс Календарь (ссылка iCal).</p>
+    </details>
+    <label class="field">Секретный адрес iCal
+      <input type="password" id="calurl" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" autocomplete="off" spellcheck="false">
+    </label>
+    <label class="field">Напоминать перед событием
+      <select id="calremind"><option value="0">Не напоминать</option><option value="5">За 5 минут</option><option value="10">За 10 минут</option>
+        <option value="15">За 15 минут</option><option value="30">За 30 минут</option><option value="60">За час</option></select>
+    </label>
+    <div class="row">
+      <button onclick="refreshCal()">Обновить сейчас</button>
+      <button class="primary" onclick="saveCal()">Сохранить</button>
+    </div>
+    <p class="hint" id="calstate"></p>
+    <ul class="list plans" id="callist"></ul>
+    <div class="msg" id="calmsg"></div>
+    <button class="link bugbtn" onclick="openReport('calendar')">Сообщить об ошибке</button>
   </section>
 
   <section class="tab on" id="tab-home">
@@ -2269,6 +2298,31 @@ async function addPlan() {
   show($('planmsg'), await post('/api/cmd', 'plan add ' + JSON.stringify(body)));
   $('plantitle').value = ''; $('plandue').value = ''; loadPlans();
 }
+function renderCal(st, c) {
+  $('calon').checked = !!st.cal_on;
+  if (document.activeElement !== $('calurl')) $('calurl').value = st.cal_url || '';
+  $('calremind').value = String(st.cal_remind ?? 10);
+}
+let calSig = null;
+function renderCalState(c) {
+  c = c || {};
+  const st = { cal_on: c.on };
+  const t = c.fetched ? new Date(c.fetched * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+  $('calstate').textContent = !st.cal_on ? ($('calon').checked ? 'Нет адреса.' : 'Выключен.') : c.error ? 'Ошибка: ' + c.error : t ? `Обновлён в ${t}, событий в календаре: ${c.events}. Обновляется каждые 15 минут.` : 'Загружаю…';
+  $('calstate').classList.toggle('err', !!(st.cal_on && c.error));
+  const list = (st.cal_on && c.next) || [], sig = JSON.stringify(list);
+  if (sig === calSig) return;
+  calSig = sig;
+  const ul = $('callist'); ul.innerHTML = '';
+  for (const e of list) ul.appendChild(item(e.title, e.when, '', null));
+}
+async function saveCal() {
+  const url = $('calurl').value.trim();
+  if ($('calon').checked && !url) { show($('calmsg'), 'error: вставьте секретный адрес iCal'); $('calon').checked = false; return; }
+  show($('calmsg'), await post('/api/settings', JSON.stringify({ cal_on: $('calon').checked, cal_url: url, cal_remind: Number($('calremind').value) })));
+  settingsLoaded = false; refresh();
+}
+async function refreshCal() { show($('calmsg'), await post('/api/cmd', 'calendar')); setTimeout(refresh, 3000); }
 async function savePlanner() {
   show($('planmsg'), await post('/api/settings', JSON.stringify({ planner_on: $('planon').checked })));
   loadPlans();
@@ -2658,6 +2712,7 @@ async function refresh() {
   renderDuckState(s.ducking);
   renderTgState(s.telegram);
   if (s.display) drawSeven(s.display.shown);
+  renderCalState(s.calendar);
   syncListen(s);
   renderHome(s);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
@@ -2689,6 +2744,7 @@ async function refresh() {
     renderVoice(settings, s.voice);
     renderTg(settings, s.telegram);
     loadAuto(settings);
+    renderCal(settings);
     renderDisp(settings, s.device);
     maybeWizard(settings);
     renderEq(settings);

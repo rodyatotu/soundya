@@ -736,6 +736,11 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
         if let Some(v) = crate::planner::voice(&normalize(text)) {
             return Some(Intent::Planner(v));
         }
+    } else if crate::calendar::active() {
+        // Only the calendar on: «какие планы на сегодня» is ours, «напомни …» stays Alice's.
+        if let Some(v @ crate::planner::Voice::Agenda(_)) = crate::planner::voice(&normalize(text)) {
+            return Some(Intent::Planner(v));
+        }
     }
     if let Some(d) = duck_command(&normalize(text)) {
         return Some(Intent::Duck(d));

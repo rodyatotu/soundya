@@ -7,6 +7,7 @@ mod alsa;
 mod auth;
 mod buffer;
 mod buttons;
+mod calendar;
 mod bypass;
 mod clock;
 mod display;
@@ -418,6 +419,9 @@ impl Controller {
         settings["tg_quiet_from"] = self.settings.tg_quiet_from.into();
         settings["tg_quiet_to"] = self.settings.tg_quiet_to.into();
         settings["tz_offset"] = self.settings.tz_offset.into();
+        settings["cal_on"] = self.settings.cal_on.into();
+        settings["cal_url"] = if self.settings.cal_url.is_empty() { String::new() } else { "•••••••• (секретный адрес сохранён)".into() }.into();
+        settings["cal_remind"] = self.settings.cal_remind.into();
         settings["alice_voice_max"] = self.settings.alice_voice_max.into();
         settings["duck_mode"] = self.settings.duck_mode.clone().into();
         settings["duck_call_level"] = self.settings.duck_call_level.into();
@@ -461,6 +465,7 @@ impl Controller {
             "voice": voice::json(),
             "telegram": telegram::json(),
             "display": display::json(),
+            "calendar": calendar::json(),
             "listen": serde_json::json!({
                 "listeners": web::listeners(),
                 "muted": self.shared.duck.listening(),
@@ -671,6 +676,16 @@ impl Controller {
             }
         }
         planner::configure(new.planner_on, new.tz_offset);
+        // The secret address comes back masked from the page: masked = unchanged.
+        new.cal_url = new.cal_url.trim().to_owned();
+        if new.cal_url.contains('•') {
+            new.cal_url = self.settings.cal_url.clone();
+        }
+        if !new.cal_url.is_empty() && !calendar::valid_url(&new.cal_url) {
+            return "error: нужен адрес вида https://calendar.google.com/calendar/ical/…/basic.ics".into();
+        }
+        new.cal_remind = new.cal_remind.min(180);
+        calendar::configure(new.cal_on, &new.cal_url, new.cal_remind);
         new.led_order = new.led_order.trim().to_lowercase();
         if !led::set_order(&new.led_order) {
             return "error: порядок цветов — rgb, grb, brg, bgr, rbg или gbr".into();
@@ -1838,6 +1853,13 @@ impl Controller {
                 send_to(&reply, r);
             }
             // «ledtest 0|1|2»: the ring test on the page (one raw channel file).
+            // «Обновить сейчас» in «Планы» → «Календарь».
+            "calendar" => send_to(&reply, if calendar::active() {
+                calendar::wake();
+                "OK: обновляю календарь".into()
+            } else {
+                "error: календарь выключен или адрес не задан".into()
+            }),
             "ledtest" => send_to(&reply, match arg.parse::<usize>() {
                 Ok(c) => led::test(c).unwrap_or_else(|e| format!("error: {e}")),
                 Err(_) => "usage: ledtest 0|1|2".into(),
@@ -2546,6 +2568,8 @@ fn daemon() {
     // Tasks and reminders (said only with the planner on).
     planner::configure(settings.planner_on, settings.tz_offset);
     planner::run(&dir);
+    calendar::configure(settings.cal_on, &settings.cal_url, settings.cal_remind);
+    calendar::run(&dir, shared.clone());
     // Optional panel PIN and its saved browser sessions.
     auth::init(&dir, &settings.panel_pin);
     // Smart Ducking: calls and notifications from devices lower soundya's music.

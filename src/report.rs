@@ -39,7 +39,7 @@ const KEEP: usize = 20;
 const GIVE_UP_DAYS: u64 = 7;
 
 /// Modules a report can be about (the page shows them in a list).
-pub const MODULES: [(&str, &str); 17] = [
+pub const MODULES: [(&str, &str); 19] = [
     ("general", "Общее / не знаю"),
     ("soundcloud", "SoundCloud"),
     ("yandex_music", "Яндекс Музыка и выбор сервиса"),
@@ -57,6 +57,8 @@ pub const MODULES: [(&str, &str); 17] = [
     ("audio", "Звук / Audio Hub"),
     ("onboarding", "Первая настройка"),
     ("planner", "Планировщик и напоминания"),
+    ("calendar", "Календарь (Google и др.)"),
+    ("hardware", "Проверка возможностей колонки"),
 ];
 
 /// What the page sends.
@@ -162,7 +164,11 @@ fn new_id() -> String {
 
 /// Values that must never leave the speaker, read from the settings.
 pub fn secrets(s: &crate::settings::Settings) -> Vec<String> {
-    let mut out = vec![s.token.clone(), s.pc_token.clone(), s.panel_pin.clone()];
+    let mut out = vec![s.token.clone(), s.pc_token.clone(), s.panel_pin.clone(), s.cal_url.clone()];
+    // The calendar's secret part alone too (…/private-<hex>/…), in case it is logged in pieces.
+    if let Some(p) = s.cal_url.split('/').find(|p| p.starts_with("private-")) {
+        out.push(p.to_owned());
+    }
     // Proxy password (and the whole proxy with it, as written).
     if let Some((_, rest)) = s.proxy.split_once("://") {
         if let Some((cred, _)) = rest.split_once('@') {
@@ -378,7 +384,7 @@ fn status_summary(shared: &Shared) -> Value {
                 "tv_host_set": set(s.get("tv_host")),
                 "contacts": s.get("pc_contacts").and_then(Value::as_array).map_or(0, Vec::len),
             });
-            for k in ["token", "proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "zapret_args", "airplay_name"] {
+            for k in ["token", "proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "zapret_args", "airplay_name", "cal_url"] {
                 s.remove(k);
             }
             s.insert("secrets".into(), facts);
@@ -771,6 +777,7 @@ mod tests {
             token: "2-123456-abcdefSECRET".into(),
             pc_token: "PcKeyXyZ123".into(),
             proxy: "socks5://bob:hunter22@1.2.3.4:1080".into(),
+            cal_url: "https://calendar.google.com/calendar/ical/me%40gmail.com/private-0123abcdef/basic.ics".into(),
             ..Default::default()
         };
         s.pc_contacts.push(crate::settings::Contact { names: "мама|маме".into(), target: "@mommy_tg".into() });
@@ -778,9 +785,10 @@ mod tests {
         let log = "login 2-123456-abcdefSECRET ok\nGET /x?client_id=AbCdEf123&q=1 Authorization: OAuth 2-999-zzz\n\
                    proxy socks5://bob:hunter22@1.2.3.4:1080 up\nsent to @mommy_tg\nkey PcKeyXyZ123\n\
                    tel +7 912 345-67-89 and 89123456789, ts 1700000000\nbot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw x\n\
-                   voice: \"напиши маме я дома\" -> Pc\nsay: \"Отправила\": ok";
+                   voice: \"напиши маме я дома\" -> Pc\nsay: \"Отправила\": ok\n\
+                   cal https://calendar.google.com/calendar/ical/me%40gmail.com/private-0123abcdef/basic.ics x private-0123abcdef";
         let out = redact(log, &sec, false);
-        for bad in ["abcdefSECRET", "AbCdEf123", "2-999-zzz", "hunter22", "mommy_tg", "PcKeyXyZ123", "912 345", "89123456789", "AAHdqTcv", "я дома", "маме"] {
+        for bad in ["abcdefSECRET", "AbCdEf123", "2-999-zzz", "hunter22", "mommy_tg", "PcKeyXyZ123", "912 345", "89123456789", "AAHdqTcv", "я дома", "маме", "0123abcdef", "me%40gmail"] {
             assert!(!out.contains(bad), "{bad} leaked:\n{out}");
         }
         assert!(out.contains("ts 1700000000"), "timestamps stay: {out}");

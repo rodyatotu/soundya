@@ -55,7 +55,7 @@ static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 static OFFSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(180);
 pub static ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
@@ -64,7 +64,7 @@ pub fn configure(enabled: bool, offset_min: i32) {
     OFFSET.store(offset_min.clamp(-720, 840), std::sync::atomic::Ordering::Release);
 }
 
-fn offset() -> i64 {
+pub(crate) fn offset() -> i64 {
     i64::from(OFFSET.load(std::sync::atomic::Ordering::Acquire)) * 60
 }
 
@@ -90,7 +90,7 @@ fn save() {
 // ---------------------------------------------------------------- dates
 
 /// Days since 1970-01-01 → (year, month, day).
-fn civil(days: i64) -> (i64, u32, u32) {
+pub(crate) fn civil(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -102,7 +102,7 @@ fn civil(days: i64) -> (i64, u32, u32) {
     (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+pub(crate) fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
@@ -113,13 +113,13 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 }
 
 /// Local day number and seconds into it.
-fn local(t: i64, off: i64) -> (i64, i64) {
+pub(crate) fn local(t: i64, off: i64) -> (i64, i64) {
     let l = t + off;
     (l.div_euclid(86_400), l.rem_euclid(86_400))
 }
 
 /// Monday = 0.
-fn weekday(day: i64) -> i64 {
+pub(crate) fn weekday(day: i64) -> i64 {
     (day + 3).rem_euclid(7)
 }
 
@@ -422,17 +422,26 @@ pub fn agenda(day: Option<i64>) -> String {
         Some(1) => "на завтра",
         _ => "",
     };
-    if pick.is_empty() {
-        return if when.is_empty() { "Задач нет".into() } else { format!("Планов {when} нет") };
-    }
-    let list = pick
+    // (sort key, text): tasks and the calendar's events of that day together.
+    let mut lines: Vec<(i64, String)> = pick
         .iter()
         .map(|t| match t.due {
-            Some(d) => format!("{} {}", say_time(d, now, off), t.title),
-            None => t.title.clone(),
+            Some(d) => (d, format!("{} {}", say_time(d, now, off), t.title)),
+            None => (i64::MAX, t.title.clone()),
         })
-        .collect::<Vec<_>>()
-        .join(". ");
+        .collect();
+    if let Some(dd) = day {
+        for e in crate::calendar::day_events(dd) {
+            let text = if e.all_day { e.title.clone() } else { format!("{} {}", say_time(e.start, now, off), e.title) };
+            lines.push((if e.all_day { i64::MIN } else { e.start }, text));
+        }
+    }
+    lines.sort_by_key(|l| l.0);
+    lines.truncate(10);
+    if lines.is_empty() {
+        return if when.is_empty() { "Задач нет".into() } else { format!("Планов {when} нет") };
+    }
+    let list = lines.into_iter().map(|l| l.1).collect::<Vec<_>>().join(". ");
     format!("{} {}: {list}.", if when.is_empty() { "Задачи" } else { "Планы" }, when).replace("  ", " ").replace(" :", ":")
 }
 
