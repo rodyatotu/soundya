@@ -65,7 +65,7 @@ fn shared_socket() -> io::Result<UdpSocket> {
 }
 
 /// The address other devices reach us on: the source of a route to the internet.
-fn own_ip() -> Option<Ipv4Addr> {
+pub fn own_ip() -> Option<Ipv4Addr> {
     let probe = UdpSocket::bind("0.0.0.0:0").ok()?;
     probe.connect("8.8.8.8:53").ok()?; // no packet is sent
     match probe.local_addr().ok()? {

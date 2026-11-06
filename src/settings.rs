@@ -118,6 +118,12 @@ pub struct Settings {
     /// (Station Lite, Mini 2), set from the ring test on the page.
     #[serde(default = "led_order")]
     pub led_order: String,
+    /// The panel's first-run wizard was gone through (or skipped).
+    #[serde(default)]
+    pub onboarded: bool,
+    /// Say the panel's address after install and the version after an update.
+    #[serde(default = "yes")]
+    pub voice_hello: bool,
     /// Bug reports: also attach the soundya log (secrets are removed first).
     #[serde(default = "yes")]
     pub report_logs: bool,
@@ -225,6 +231,8 @@ impl Default for Settings {
             music_default: music_default(),
             led_order: led_order(),
             report_logs: true,
+            onboarded: false,
+            voice_hello: true,
             extra: serde_json::Map::new(),
         }
     }
@@ -334,6 +342,8 @@ impl Settings {
             // music service follows the old «только по слову саундклауд»
             // switch, which stays as it was.
             self.music_default = if self.keyword_only { "yandex" } else { "soundcloud" }.into();
+            // Already set up by hand before 0.5.00: no first-run wizard.
+            self.onboarded = true;
             self.config_version = 1;
         }
         // Written by a newer soundya: left as it is (unknown keys are kept in `extra`).
@@ -506,6 +516,8 @@ mod tests {
         assert_eq!(s.airplay_name, "Кухня");
         assert_eq!(s.music_default, "yandex", "follows «только по слову саундклауд»");
         assert_eq!(s.led_order, "rgb");
+        assert!(s.onboarded, "no wizard for existing users");
+        assert!(!Settings::default().onboarded, "wizard on a fresh install");
         // The old file is kept as it was.
         assert!(crate::fsx::read_string(&d.join("config.v0.json")).unwrap().contains("2-1-x"));
         let _ = std::fs::remove_dir_all(&d);

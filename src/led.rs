@@ -176,6 +176,31 @@ pub fn test(channel: usize) -> Result<String, String> {
     })
 }
 
+/// The greeting after install: the ring fills zone by zone, then fades.
+static GREET: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+const GREET_MS: u64 = 3200;
+
+pub fn greet() {
+    *GREET.lock().unwrap() = Some(std::time::Instant::now());
+}
+
+/// Frame `ms` into the greeting: zones light one after another (first 60 %),
+/// then all fade out together.
+fn greet_frame(ms: u64, zones: usize, c: Rgb) -> Vec<Rgb> {
+    let fill = GREET_MS * 6 / 10;
+    (0..zones)
+        .map(|z| {
+            if ms < fill {
+                let on_at = fill * z as u64 / zones.max(1) as u64;
+                let t = ms.saturating_sub(on_at) as f32 / 250.0;
+                scale(c, t.min(1.0))
+            } else {
+                scale(c, 1.0 - (ms - fill) as f32 / (GREET_MS - fill) as f32)
+            }
+        })
+        .collect()
+}
+
 /// What was found, for the page and bug reports.
 static RING: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
@@ -566,6 +591,15 @@ pub fn run(shared: Arc<Shared>) {
                     false
                 }
             };
+            // The greeting after install (hello.rs): over everything but Alice.
+            let greeting = GREET.lock().unwrap().filter(|at| at.elapsed() < Duration::from_millis(GREET_MS)).map(|at| at.elapsed().as_millis() as u64);
+            if let Some(ms) = greeting {
+                if !shared.duck.active() || ms < 200 {
+                    ring.draw(&greet_frame(ms, zones, scale(light.quiet, light.bright)), None);
+                }
+                shown = None;
+                continue;
+            }
             // The ring test from the page: one raw channel file, ignoring the order.
             let test = TEST.lock().unwrap().filter(|(_, at)| at.elapsed() < TEST_FOR).map(|(c, _)| c);
             if let (Some(ch), Ring::Sysfs(zones)) = (test, &ring) {
@@ -645,6 +679,16 @@ mod tests {
         assert!(!set_order("xyz"));
         assert!(set_order("rgb"));
         assert_eq!(z.values((1, 2, 3)), [1, 2, 3]);
+    }
+
+    #[test]
+    fn greeting_fills_then_fades() {
+        let c = (200, 100, 0);
+        let start = greet_frame(0, 6, c);
+        assert!(start[5] == (0, 0, 0), "last zone dark at the start");
+        let mid = greet_frame(GREET_MS * 6 / 10 - 1, 6, c);
+        assert!(mid.iter().all(|z| z.0 > 0), "{mid:?}");
+        assert!(greet_frame(GREET_MS - 1, 6, c)[0].0 < 10);
     }
 
     #[test]

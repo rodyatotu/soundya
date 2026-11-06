@@ -210,6 +210,10 @@
   .modal-card .field textarea { margin-top: 4px; min-height: 56px; }
   .hint, .msg, ul.reports li, pre.notes { overflow-wrap: anywhere; }
   .ledrow select { flex: 1; }
+  .wizsteps { display: flex; gap: 6px; margin-bottom: 10px; }
+  .wizsteps i { flex: 1; height: 4px; border-radius: 2px; background: var(--line); }
+  .wizsteps i.on { background: linear-gradient(90deg, #ff7a1a, #ff3d5a); }
+  .wiz .notice ul { margin: 6px 0 0; padding-left: 18px; }
   .ledcal summary { cursor: pointer; margin-top: 14px; font-size: 14px; }
   .bugbtn { display: block; margin: 6px 0 0 auto; font-size: 12px; color: var(--muted); }
   #fbpreview pre { max-height: 220px; overflow: auto; font-size: 11px; white-space: pre-wrap; word-break: break-word;
@@ -769,6 +773,9 @@
       <button onclick="openReport('general')" id="fbopen">Сообщить об ошибке</button>
       <button onclick="openReport('general', 'feedback')">Предложить идею</button>
     </div>
+    <div class="row">
+      <button onclick="openWizard()">Мастер первой настройки</button>
+    </div>
     <ul class="list reports" id="reportlist"></ul>
 
     <details class="danger">
@@ -782,6 +789,60 @@
   </section>
 
 
+  <div class="modal" id="wizard" hidden>
+    <div class="modal-card report wiz" role="dialog" aria-modal="true" aria-labelledby="wiztitle">
+      <div class="wizsteps" id="wizdots"></div>
+      <div class="wizstep" data-step="0">
+        <h2 id="wiztitle">Добро пожаловать в soundya 👋</h2>
+        <p class="hint">Пара минут — и колонка готова. Всё, что не выберете, останется выключенным и не будет мешать Алисе.
+          Вернуться к мастеру можно в «Настройки» → «Обновления».</p>
+        <p class="hint">Эта страница: <b id="wizaddr"></b>. Добавьте её в закладки или на экран «Домой».</p>
+        <div class="notice">
+          <b>Закрепите адрес колонки в роутере</b> (DHCP reservation), иначе после перезагрузки роутера он может
+          смениться. То же нужно для компьютера и телевизора, если будете ими управлять.
+          <ul class="hint">
+            <li>Keenetic: «Список устройств» → устройство → «Постоянный IP-адрес».</li>
+            <li>TP-Link: Advanced → Network → DHCP Server → Address Reservation.</li>
+            <li>ASUS: «ЛВС» → «DHCP-сервер» → «Список назначенных вручную IP-адресов».</li>
+          </ul>
+        </div>
+      </div>
+      <div class="wizstep" data-step="1" hidden>
+        <h2>Музыка</h2>
+        <p class="hint">Что включать на «Алиса, включи Bonobo»?</p>
+        <label class="check"><input type="radio" name="wizmusic" value="soundcloud"><span>SoundCloud
+          <span class="hint">Яндекс Музыка — по словам «в яндекс музыке». Подписка не нужна.</span></span></label>
+        <label class="check"><input type="radio" name="wizmusic" value="yandex"><span>Яндекс Музыка
+          <span class="hint">SoundCloud — только по слову «саундклауд». Нужна подписка Яндекса.</span></span></label>
+        <label class="check"><input type="checkbox" id="wizsc"><span>SoundCloud голосом вообще
+          <span class="hint">Выключите, если нужен только компьютер, телевизор или AirPlay.</span></span></label>
+        <p class="hint">Вход в аккаунт SoundCloud (лайки, плейлисты, рекомендации) — в «Настройки» → «Аккаунт», когда будет удобно.</p>
+      </div>
+      <div class="wizstep" data-step="2" hidden>
+        <h2>Что ещё включить</h2>
+        <label class="check"><input type="checkbox" id="wizairplay"><span>AirPlay
+          <span class="hint">Колонка появится в списке AirPlay на iPhone, iPad и Mac.</span></span></label>
+        <label class="check"><input type="checkbox" id="wizpc"><span>Компьютер с Windows
+          <span class="hint">Нужна программа из папки <code>pc</code>: её установщик покажет адрес, ключ и MAC. Вписать — «Настройки» → «Устройства».</span></span></label>
+        <label class="check"><input type="checkbox" id="wiztv"><span>Телевизор / проектор (Android TV)
+          <span class="hint">Включите на ТВ отладку по USB/сети и впишите его адрес в «Устройства».</span></span></label>
+        <label class="check"><input type="checkbox" id="wizring"><span>Подсветка кольца, пока играет музыка</span></label>
+      </div>
+      <div class="wizstep" data-step="3" hidden>
+        <h2>Связь с автором</h2>
+        <label class="check"><input type="checkbox" id="wizstats"><span>Анонимная статистика
+          <span class="hint">Раз в день — только случайный номер установки, версия и модель. Без IP, треков и аккаунтов.</span></span></label>
+        <label class="check"><input type="checkbox" id="wizhello"><span>Голосом сообщать об обновлениях soundya</span></label>
+        <p class="hint">Если что-то не работает — кнопка «Сообщить об ошибке» есть в каждом разделе; перед отправкой видно всё, что уйдёт.</p>
+      </div>
+      <div class="msg" id="wizmsg"></div>
+      <div class="row">
+        <button onclick="wizSkip()" id="wizskip">Пропустить</button>
+        <button onclick="wizGo(-1)" id="wizback">Назад</button>
+        <button class="primary" onclick="wizGo(1)" id="wiznext">Дальше</button>
+      </div>
+    </div>
+  </div>
   <div class="modal" id="fbmodal" hidden>
     <div class="modal-card report" role="dialog" aria-modal="true" aria-labelledby="fbtitle">
       <h2 id="fbtitle">Сообщить об ошибке</h2>
@@ -1235,6 +1296,70 @@ function saveLight() {
   }, 250);
 }
 
+// ---- мастер первой настройки ----
+let wizStep = 0;
+const WIZ_STEPS = 4;
+function wizShow() {
+  document.querySelectorAll('#wizard .wizstep').forEach(x => x.hidden = Number(x.dataset.step) !== wizStep);
+  $('wizdots').innerHTML = Array.from({ length: WIZ_STEPS }, (_, i) => `<i class="${i <= wizStep ? 'on' : ''}"></i>`).join('');
+  $('wizback').hidden = wizStep === 0;
+  $('wiznext').textContent = wizStep === WIZ_STEPS - 1 ? 'Готово' : 'Дальше';
+}
+function openWizard() {
+  const st = settings || {};
+  $('wizaddr').textContent = location.host;
+  const m = st.music_default || 'soundcloud';
+  document.querySelectorAll('input[name=wizmusic]').forEach(r => r.checked = r.value === m);
+  $('wizsc').checked = st.soundcloud !== false;
+  $('wizairplay').checked = st.airplay !== false;
+  $('wizpc').checked = !!(st.pc_on && (st.pc_host || st.pc_mac));
+  $('wiztv').checked = !!(st.tv_on && st.tv_host);
+  $('wizring').checked = st.ring !== false;
+  $('wizstats').checked = st.stats !== false;
+  $('wizhello').checked = st.voice_hello !== false;
+  wizStep = 0; wizShow(); $('wizmsg').textContent = '';
+  $('wizard').hidden = false;
+}
+function wizPatch() {
+  const music = (document.querySelector('input[name=wizmusic]:checked') || {}).value;
+  return [
+    {},
+    Object.assign({ soundcloud: $('wizsc').checked }, music ? { music_default: music } : {}),
+    { airplay: $('wizairplay').checked, pc_on: $('wizpc').checked, tv_on: $('wiztv').checked, ring: $('wizring').checked },
+    { stats: $('wizstats').checked, voice_hello: $('wizhello').checked, onboarded: true },
+  ][wizStep];
+}
+async function wizGo(d) {
+  if (d > 0) {
+    const patch = wizPatch();
+    if (Object.keys(patch).length) {
+      const r = await post('/api/settings', JSON.stringify(patch));
+      if (r.startsWith('error')) { show($('wizmsg'), r); return; }
+    }
+    if (wizStep === WIZ_STEPS - 1) {
+      $('wizard').hidden = true;
+      settingsLoaded = false; refresh();
+      const next = $('wizpc').checked || $('wiztv').checked ? 'devices' : 'account';
+      openSettings(next);
+      return;
+    }
+  }
+  wizStep = Math.max(0, Math.min(WIZ_STEPS - 1, wizStep + d));
+  $('wizmsg').textContent = '';
+  wizShow();
+}
+async function wizSkip() {
+  await post('/api/settings', JSON.stringify({ onboarded: true }));
+  $('wizard').hidden = true;
+  settingsLoaded = false; refresh();
+}
+let wizOffered = false;
+function maybeWizard(st) {
+  if (wizOffered || !st || st.onboarded !== false) return;
+  wizOffered = true;
+  openWizard();
+}
+
 // ---- «Нас уже 100+» (число — с сервера статистики через колонку) ----
 async function loadParty() {
   try { if (localStorage.getItem('soundya-party') === 'off') return; } catch (e) {}
@@ -1495,6 +1620,7 @@ async function refresh() {
     $('ring').checked = settings.ring !== false;
     renderLight(settings);
     renderLedOrder(settings.led_order, s.led);
+    maybeWizard(settings);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';
     $('pctoken').value = settings.pc_token || '';

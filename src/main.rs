@@ -11,6 +11,7 @@ mod clock;
 mod dns;
 mod eq;
 mod fsx;
+mod hello;
 mod history;
 mod ipt;
 mod led;
@@ -378,6 +379,9 @@ impl Controller {
         });
         settings["eq_on"] = self.settings.eq_on.into();
         settings["led_order"] = self.settings.led_order.clone().into();
+        settings["onboarded"] = self.settings.onboarded.into();
+        settings["voice_hello"] = self.settings.voice_hello.into();
+        settings["report_logs"] = self.settings.report_logs.into();
         settings["music_default"] = self.settings.music_default.clone().into();
         settings["eq"] = self.settings.eq.clone().into();
         let mut out = serde_json::json!({
@@ -2111,6 +2115,8 @@ fn daemon() {
     if port != 0 {
         web::serve(port, tx.clone(), shared.clone(), client.clone());
     }
+    // After install: Alice says where the panel is (once per version).
+    hello::run(&dir, shared.clone(), settings.voice_hello, settings.onboarded, port);
     let control_tx = tx.clone();
     let status_shared = shared.clone();
     thread::spawn(move || {
