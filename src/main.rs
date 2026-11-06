@@ -1129,9 +1129,10 @@ impl Controller {
                 // ADB (and making the key the first time) takes a moment: off the controller.
                 let dir = self.dir.clone();
                 thread::spawn(move || match tv::run(&host, &dir, &action) {
+                    Ok(json) if action == alice::TvAction::Apps => respond(reply, &json, None),
                     Ok(text) => {
                         // Short confirmations are not worth Alice's voice for keys.
-                        let say = (!matches!(action, alice::TvAction::Key(..))).then(|| text.clone());
+                        let say = (!matches!(action, alice::TvAction::Key(..) | alice::TvAction::OpenPackage(_))).then(|| text.clone());
                         respond(reply, &format!("OK: {text}"), say);
                     }
                     Err(text) => respond(reply, &format!("error: {text}"), Some(text)),
@@ -1343,12 +1344,30 @@ impl Controller {
                     None => send_to(&reply, "usage: seek 95 | seek 1:35 | seek +30 | seek -10".into()),
                 }
             }
-            // tv ping | tv do <фраза> — from the settings page and the command line.
+            // tv ping | do <фраза> | wake | sleep | open <имя> | openpkg <пакет> |
+            // close <имя|пакет> | key <home|back|ok…> [N] | apps | search <q> | youtube <q>
+            // — from the settings page, the macro editor and the command line.
             "tv" => {
-                let (what, phrase) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
+                let rest = rest.trim();
                 let action = match what {
                     "ping" => Some(alice::TvAction::Ping),
-                    "do" | "say" => match alice::intent(&format!("{} на телевизоре", phrase.trim()), false) {
+                    "wake" | "on" => Some(alice::TvAction::Wake),
+                    "sleep" | "off" => Some(alice::TvAction::Sleep),
+                    "apps" => Some(alice::TvAction::Apps),
+                    "open" if !rest.is_empty() => Some(alice::TvAction::Open(rest.to_owned())),
+                    "openpkg" if !rest.is_empty() => Some(alice::TvAction::OpenPackage(rest.to_owned())),
+                    "close" if !rest.is_empty() => Some(alice::TvAction::Close(rest.to_owned())),
+                    "search" if !rest.is_empty() => Some(alice::TvAction::Search(rest.to_owned())),
+                    "youtube" if !rest.is_empty() => Some(alice::TvAction::YouTube(rest.to_owned())),
+                    "key" => {
+                        let (name, n) = rest.split_once(' ').unwrap_or((rest, "1"));
+                        alice::TV_KEYS
+                            .iter()
+                            .find(|(k, _, _)| *k == name)
+                            .map(|(_, code, _)| alice::TvAction::Key(code, n.trim().parse::<u8>().unwrap_or(1).clamp(1, 20)))
+                    }
+                    "do" | "say" => match alice::intent(&format!("{rest} на телевизоре"), false) {
                         Some(Intent::Tv(a)) => Some(a),
                         _ => None,
                     },
@@ -1356,7 +1375,7 @@ impl Controller {
                 };
                 match action {
                     Some(a) => self.intent(Intent::Tv(a), Some(reply)),
-                    None => send_to(&reply, "usage: tv ping | tv do <фраза, например: открой ютуб>".into()),
+                    None => send_to(&reply, "usage: tv ping | wake | sleep | apps | open <имя> | openpkg <пакет> | close <имя> | key <кнопка> [N] | search <q> | youtube <q> | do <фраза>".into()),
                 }
             }
             "pc" => {
@@ -1390,6 +1409,16 @@ impl Controller {
                 let (sub, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
                 let rest = rest.trim();
                 match sub {
+                    "json" => send_to(&reply, serde_json::json!({
+                        "macros": self.settings.macros,
+                        "commands": MACRO_COMMANDS,
+                        "tv_keys": alice::TV_KEYS.iter().map(|(k, _, l)| [k, l]).collect::<Vec<_>>(),
+                    }).to_string()),
+                    // Runs a script from the editor without saving it.
+                    "try" => match self.run_macro(rest) {
+                        Ok(()) => send_to(&reply, "OK: выполняю".into()),
+                        Err(e) => send_to(&reply, format!("error: {e}")),
+                    },
                     "list" => {
                         let list = self
                             .settings

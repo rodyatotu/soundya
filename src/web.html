@@ -106,7 +106,7 @@
   }
   .heart.on { color: var(--accent); }
   .heart:hover { color: var(--accent); }
-  input[type=text], input[type=password], label.field select {
+  input[type=text], input[type=password], label.field select, ol.steps input, ol.steps select, #macroadd {
     width: 100%; font: inherit; color: var(--ink); background: var(--bg);
     border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; outline: none;
   }
@@ -210,6 +210,13 @@
   .modal-card .field textarea { margin-top: 4px; min-height: 56px; }
   .hint, .msg, ul.reports li, pre.notes { overflow-wrap: anywhere; }
   .ledrow select { flex: 1; }
+  ol.steps { padding-left: 22px; margin: 8px 0; }
+  ol.steps li { margin: 6px 0; }
+  ol.steps .stepline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  ol.steps .stepline > span { flex: 1 1 150px; font-size: 14px; }
+  ol.steps input, ol.steps select { flex: 1 1 120px; min-width: 0; }
+  ol.steps button { padding: 4px 9px; }
+  .macroedit { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
   .wizsteps { display: flex; gap: 6px; margin-bottom: 10px; }
   .wizsteps i { flex: 1; height: 4px; border-radius: 2px; background: var(--line); }
   .wizsteps i.on { background: linear-gradient(90deg, #ff7a1a, #ff3d5a); }
@@ -302,7 +309,7 @@
   .subnav button { border-radius: 999px; width: 100%; padding: 8px 4px; text-align: center;
     overflow: hidden; text-overflow: ellipsis; }
   .subnav button.on { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); border-color: transparent; color: #fff; }
-  input[type=text], input[type=password], label.field select, .bypassbox select, .bypassbox textarea {
+  input[type=text], input[type=password], label.field select, .bypassbox select, .bypassbox textarea, ol.steps input, ol.steps select, #macroadd {
     background: var(--field); border: 1px solid var(--glass-edge); border-radius: 14px;
   }
   input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255, 106, 31, .18); }
@@ -785,6 +792,54 @@
     <div class="msg" id="tvmsg"></div>
     <button class="link bugbtn" onclick="openReport('tv')">Сообщить об ошибке</button>
 
+    <h2 class="section" id="macrosection">Сценарии</h2>
+    <p class="hint">Своя фраза для Алисы запускает цепочку действий. Например, «Алиса, включи кино»: разбудить телевизор →
+      подождать 5 с → открыть Кинопоиск. Срабатывает только фраза целиком. Сценарий может управлять музыкой, громкостью,
+      компьютером и телевизором — удалить или перенастроить soundya он не может.</p>
+    <ul class="list" id="macrolist"></ul>
+    <div class="macroedit">
+      <label class="field">Фраза
+        <input type="text" id="macrophrase" placeholder="включи кино" maxlength="80" autocomplete="off">
+      </label>
+      <ol class="steps" id="macrosteps"></ol>
+      <div class="row">
+        <select id="macroadd">
+          <option value="">+ Добавить шаг…</option>
+          <optgroup label="Телевизор">
+            <option value="tv wake">Разбудить телевизор</option>
+            <option value="tv sleep">Усыпить телевизор</option>
+            <option value="tv openpkg">Открыть приложение</option>
+            <option value="tv close">Закрыть приложение</option>
+            <option value="tv key">Кнопка пульта</option>
+            <option value="tv search">Найти фильм или сериал</option>
+            <option value="tv youtube">Найти на YouTube</option>
+          </optgroup>
+          <optgroup label="Компьютер">
+            <option value="pc wake">Включить компьютер</option>
+            <option value="pc do">Команда компьютеру (как Алисе)</option>
+            <option value="pc sleep">Усыпить компьютер</option>
+            <option value="pc shutdown">Выключить компьютер</option>
+          </optgroup>
+          <optgroup label="Музыка">
+            <option value="play">Включить музыку (поиск)</option>
+            <option value="likes">Мои лайки</option>
+            <option value="pause">Пауза</option>
+            <option value="resume">Продолжить</option>
+            <option value="volume set">Громкость Алисы</option>
+          </optgroup>
+          <option value="wait">Подождать</option>
+        </select>
+        <button onclick="loadTvApps()" id="tvappsbtn">Загрузить приложения ТВ</button>
+      </div>
+      <div class="row">
+        <button onclick="tryMacro()">Проверить</button>
+        <button onclick="newMacro()">Очистить</button>
+        <button class="primary" onclick="saveMacro()">Сохранить сценарий</button>
+      </div>
+      <div class="msg" id="macromsg"></div>
+    </div>
+    <button class="link bugbtn" onclick="openReport('tv')">Сообщить об ошибке</button>
+
     </div>
     <div class="sub" data-sub="about">
     <h2 class="section" id="updsection">Обновления</h2>
@@ -1148,6 +1203,7 @@ function openSub(name) {
   document.querySelectorAll('.sub').forEach(x => x.classList.toggle('on', x.dataset.sub === name));
   try { localStorage.setItem('soundya-sub', name); } catch (e) {}
   if (name === 'about') loadReports();
+  if (name === 'devices') loadMacros();
 }
 document.querySelectorAll('.subnav button').forEach(b => b.addEventListener('click', () => openSub(b.dataset.sub)));
 try { const sub = localStorage.getItem('soundya-sub'); if (sub && document.querySelector('.sub[data-sub="' + sub + '"]')) openSub(sub); } catch (e) {}
@@ -1330,6 +1386,104 @@ function saveLight() {
     const r = await post('/api/settings', settingsBody({}));
     if (r.startsWith('error')) show($('lightmsg'), r); else $('lightmsg').textContent = '';
   }, 250);
+}
+
+// ---- сценарии (макросы) ----
+let macroSteps = [];
+let macroEditing = null;
+let tvApps = [];
+let tvKeys = [['home', 'Домой'], ['back', 'Назад'], ['ok', 'ОК']];
+const STEP_LABEL = {
+  'tv wake': 'Разбудить телевизор', 'tv sleep': 'Усыпить телевизор', 'tv openpkg': 'Открыть приложение', 'tv open': 'Открыть приложение',
+  'tv close': 'Закрыть приложение', 'tv key': 'Кнопка пульта', 'tv search': 'Найти фильм', 'tv youtube': 'Найти на YouTube',
+  'pc wake': 'Включить компьютер', 'pc do': 'Команда компьютеру', 'pc sleep': 'Усыпить компьютер', 'pc shutdown': 'Выключить компьютер',
+  'play': 'Включить музыку', 'likes': 'Мои лайки', 'pause': 'Пауза', 'resume': 'Продолжить', 'volume set': 'Громкость', wait: 'Подождать, с',
+};
+const NO_ARG = ['tv wake', 'tv sleep', 'pc wake', 'pc sleep', 'pc shutdown', 'likes', 'pause', 'resume'];
+// A script line → {kind, arg}; unknown lines stay as they are.
+function parseLine(l) {
+  const kinds = Object.keys(STEP_LABEL).sort((a, b) => b.length - a.length);
+  if (/^wait \d+/.test(l)) return { kind: 'wait', arg: String(Math.round(Number(l.split(' ')[1]) / 1000)) };
+  for (const k of kinds) if (l === k || l.startsWith(k + ' ')) return { kind: k, arg: l.slice(k.length).trim() };
+  return { kind: 'raw', arg: l };
+}
+function stepLine(st) {
+  if (st.kind === 'raw') return st.arg;
+  if (st.kind === 'wait') return 'wait ' + Math.max(0, Math.round(Number(st.arg || 1) * 1000));
+  return NO_ARG.includes(st.kind) ? st.kind : (st.kind + ' ' + (st.arg || '')).trim();
+}
+function renderSteps() {
+  const ol = $('macrosteps'); ol.innerHTML = '';
+  macroSteps.forEach((st, i) => {
+    const li = document.createElement('li'); const line = document.createElement('div'); line.className = 'stepline';
+    const name = document.createElement('span'); name.textContent = st.kind === 'raw' ? 'Команда' : STEP_LABEL[st.kind]; line.appendChild(name);
+    let input = null;
+    if (st.kind === 'tv openpkg' && tvApps.length) {
+      input = document.createElement('select');
+      for (const a of tvApps) { const o = document.createElement('option'); o.value = a; o.textContent = a; input.appendChild(o); }
+      if (!st.arg) st.arg = tvApps[0];
+      input.value = st.arg;
+    } else if (st.kind === 'tv key') {
+      input = document.createElement('select');
+      for (const [k, l] of tvKeys) { const o = document.createElement('option'); o.value = k; o.textContent = l; input.appendChild(o); }
+      if (!st.arg) st.arg = tvKeys[0][0];
+      input.value = st.arg.split(' ')[0];
+    } else if (!NO_ARG.includes(st.kind)) {
+      input = document.createElement('input'); input.type = st.kind === 'wait' || st.kind === 'volume set' ? 'number' : 'text';
+      input.placeholder = { wait: '5', 'volume set': '0–10', 'tv openpkg': 'имя пакета или загрузите список', 'tv close': 'ютуб', play: 'Bonobo', 'pc do': 'открой телеграм', raw: 'команда' }[st.kind] || '';
+      input.value = st.arg;
+    }
+    if (input) { input.onchange = () => { st.arg = input.value; }; input.oninput = input.onchange; line.appendChild(input); }
+    for (const [t, f] of [['↑', () => { if (i) { [macroSteps[i - 1], macroSteps[i]] = [macroSteps[i], macroSteps[i - 1]]; renderSteps(); } }],
+                          ['↓', () => { if (i < macroSteps.length - 1) { [macroSteps[i + 1], macroSteps[i]] = [macroSteps[i], macroSteps[i + 1]]; renderSteps(); } }],
+                          ['✕', () => { macroSteps.splice(i, 1); renderSteps(); }]]) {
+      const b = document.createElement('button'); b.textContent = t; b.onclick = f; line.appendChild(b);
+    }
+    li.appendChild(line); ol.appendChild(li);
+  });
+}
+$('macroadd').onchange = () => {
+  const k = $('macroadd').value; $('macroadd').value = '';
+  if (!k) return;
+  macroSteps.push({ kind: k, arg: k === 'wait' ? '3' : '' }); renderSteps();
+};
+function macroScript() { return macroSteps.map(stepLine).filter(Boolean).join('\n'); }
+function newMacro() { macroSteps = []; macroEditing = null; $('macrophrase').value = ''; renderSteps(); $('macromsg').textContent = ''; }
+async function loadMacros() {
+  const r = await postJSON('macro json');
+  if (r.error) return;
+  if (r.tv_keys) tvKeys = r.tv_keys;
+  const ul = $('macrolist'); ul.innerHTML = '';
+  for (const m of r.macros || []) {
+    const steps = m.script.split('\n').filter(x => x.trim()).length;
+    const run = document.createElement('button'); run.className = 'link'; run.textContent = '▶';
+    run.title = 'Запустить'; run.onclick = async e => { e.stopPropagation(); show($('macromsg'), await post('/api/cmd', 'macro run ' + m.phrase)); };
+    const del = document.createElement('button'); del.className = 'link'; del.textContent = '✕'; del.title = 'Удалить';
+    del.onclick = async e => { e.stopPropagation(); if (!confirm('Удалить сценарий «' + m.phrase + '»?')) return; show($('macromsg'), await post('/api/cmd', 'macro del ' + m.phrase)); loadMacros(); };
+    const right = document.createElement('span'); right.append(run, del);
+    ul.appendChild(item('«' + m.phrase + '»', steps + ' шаг.', '', () => {
+      macroEditing = m.phrase; $('macrophrase').value = m.phrase;
+      macroSteps = m.script.split('\n').map(x => x.trim()).filter(Boolean).map(parseLine); renderSteps();
+    }, '', right));
+  }
+}
+async function loadTvApps() {
+  busy($('macromsg'), 'Спрашиваю телевизор…');
+  const r = await postJSON('tv apps');
+  if (r.error || !r.apps) { show($('macromsg'), 'error: ' + (r.error || 'телевизор не ответил')); return; }
+  tvApps = r.apps; renderSteps(); show($('macromsg'), `OK: приложений на телевизоре: ${tvApps.length}`);
+}
+async function tryMacro() {
+  if (!macroSteps.length) { show($('macromsg'), 'error: добавьте шаги'); return; }
+  show($('macromsg'), await post('/api/cmd', 'macro try ' + macroScript()));
+}
+async function saveMacro() {
+  const phrase = $('macrophrase').value.trim();
+  if (!phrase || !macroSteps.length) { show($('macromsg'), 'error: нужны фраза и хотя бы один шаг'); return; }
+  const r = await post('/api/cmd', 'macro add ' + phrase + ' ||| ' + macroScript());
+  if (!r.startsWith('error') && macroEditing && macroEditing.toLowerCase() !== phrase.toLowerCase()) await post('/api/cmd', 'macro del ' + macroEditing);
+  show($('macromsg'), r);
+  if (!r.startsWith('error')) { macroEditing = phrase; loadMacros(); }
 }
 
 // ---- приглушение при звонках ----

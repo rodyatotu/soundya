@@ -111,7 +111,31 @@ pub enum TvAction {
     Key(&'static str, u8),
     /// Connection check from the settings page.
     Ping,
+    /// The panel's macro editor: launchable apps (package names).
+    Apps,
+    /// Open exactly this package (picked from Apps).
+    OpenPackage(String),
+    /// Close an app: spoken name or package.
+    Close(String),
 }
+
+/// Remote keys the macro editor offers: (name in a script, Android key code, label).
+pub const TV_KEYS: [(&str, &str, &str); 14] = [
+    ("home", "KEYCODE_HOME", "Домой"),
+    ("back", "KEYCODE_BACK", "Назад"),
+    ("up", "KEYCODE_DPAD_UP", "Вверх"),
+    ("down", "KEYCODE_DPAD_DOWN", "Вниз"),
+    ("left", "KEYCODE_DPAD_LEFT", "Влево"),
+    ("right", "KEYCODE_DPAD_RIGHT", "Вправо"),
+    ("ok", "KEYCODE_DPAD_CENTER", "ОК"),
+    ("play", "KEYCODE_MEDIA_PLAY", "Воспроизвести"),
+    ("pause", "KEYCODE_MEDIA_PAUSE", "Пауза"),
+    ("playpause", "KEYCODE_MEDIA_PLAY_PAUSE", "Пауза/пуск"),
+    ("next", "KEYCODE_MEDIA_NEXT", "Следующее"),
+    ("volup", "KEYCODE_VOLUME_UP", "Громче"),
+    ("voldown", "KEYCODE_VOLUME_DOWN", "Тише"),
+    ("mute", "KEYCODE_VOLUME_MUTE", "Без звука"),
+];
 
 /// «на проекторе», «на телевизоре», «на тв», «на приставке» — or the device named
 /// as the object («включи проектор»). The phrase without it, if it was there.

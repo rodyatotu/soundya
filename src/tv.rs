@@ -185,6 +185,40 @@ pub fn run(host: &str, dir: &Path, action: &TvAction) -> Result<String, String> 
             }
             Ok(format!("Ищу на ютубе {q}"))
         }
+        TvAction::Apps => {
+            // Apps with a TV launcher entry (what the TV's home screen shows);
+            // older TVs without `query-activities`: third-party packages.
+            let out = sh("cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER 2>/dev/null")?;
+            let mut apps = packages_of(&out);
+            if apps.is_empty() {
+                let list = sh("pm list packages -3")?;
+                apps = list.lines().filter_map(|l| l.trim().strip_prefix("package:")).map(str::to_owned).collect();
+            }
+            apps.sort();
+            apps.dedup();
+            Ok(serde_json::json!({ "apps": apps }).to_string())
+        }
+        TvAction::OpenPackage(pkg) => {
+            if !valid_package(pkg) {
+                return Err("неверное имя пакета".into());
+            }
+            let out = sh(&launch_script(pkg))?;
+            if out.contains("Error") || out.contains("No activities") || out.contains("Exception") {
+                return Err(format!("Телевизор не открыл {pkg}"));
+            }
+            Ok("Открываю".into())
+        }
+        TvAction::Close(name) => {
+            let pkg = if valid_package(name) && name.contains('.') {
+                name.clone()
+            } else {
+                let list = sh("pm list packages")?;
+                let packages: Vec<String> =
+                    list.lines().filter_map(|l| l.trim().strip_prefix("package:")).map(str::to_owned).collect();
+                find_package(name, &packages).ok_or_else(|| format!("Не нашла на телевизоре приложение {name}"))?
+            };
+            sh(&format!("am force-stop {pkg}")).map(|_| format!("Закрыла {name}"))
+        }
         TvAction::Open(name) => {
             let list = sh("pm list packages")?;
             let packages: Vec<String> =
@@ -201,6 +235,19 @@ pub fn run(host: &str, dir: &Path, action: &TvAction) -> Result<String, String> 
             Ok(format!("Открываю {name}"))
         }
     }
+}
+
+/// «com.google.android.youtube.tv/…» lines → packages.
+fn packages_of(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|l| l.trim().split_once('/').map(|(p, _)| p.trim().to_owned()))
+        .filter(|p| valid_package(p))
+        .collect()
+}
+
+/// A package name safe to put into a shell command.
+fn valid_package(p: &str) -> bool {
+    !p.is_empty() && p.len() < 200 && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
 }
 
 /// Starts an app's main screen: the TV launcher entry (Android TV apps), else the
@@ -269,6 +316,13 @@ mod tests {
         assert_eq!(find_package("zona", &installed).as_deref(), Some("ru.zona.tv"));
         assert_eq!(find_package("зона", &installed).as_deref(), Some("ru.zona.tv"));
         assert_eq!(find_package("зону", &pk(&["com.amazon.avod"])), None, "«zon» must not match amazon");
+    }
+
+    #[test]
+    fn reads_launcher_apps_safely() {
+        let out = "priority=0 preferredOrder=0\ncom.google.android.youtube.tv/com.google.android.apps.youtube.tv.activity.ShellActivity\nru.kinopoisk.tv/.MainActivity\nbad;rm -rf/x\n";
+        assert_eq!(packages_of(out), vec!["com.google.android.youtube.tv", "ru.kinopoisk.tv"]);
+        assert!(!valid_package("a;b") && !valid_package("") && valid_package("tv.okko.androidtv"));
     }
 
     #[test]
