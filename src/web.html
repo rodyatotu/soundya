@@ -157,6 +157,7 @@
   .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
     padding: 16px; background: rgba(0, 0, 0, .45); }
   .modal[hidden] { display: none; }
+  .warnline { color: var(--err); }
   .modalcard { width: 100%; max-width: 440px; max-height: 85vh; overflow: auto; padding: 20px; border-radius: 18px;
     background: var(--card); color: var(--ink); box-shadow: 0 10px 40px rgba(0, 0, 0, .3); }
   .modalcard h2 { margin: 0 0 8px; font-size: 20px; text-transform: none; letter-spacing: 0; color: var(--ink); }
@@ -682,6 +683,9 @@
     <div class="sub" data-sub="about">
     <h2 class="section" id="updsection">Обновления</h2>
     <p class="hint" id="updstate">Проверяю…</p>
+    <p class="hint" id="updlast" hidden></p>
+    <p class="hint">Перед обновлением колонка сохраняет копию программы и всех настроек. Если новая версия не запустится,
+      прежняя вернётся сама вместе с настройками.</p>
     <pre class="notes" id="updnotes" hidden></pre>
     <div class="row">
       <button onclick="checkUpdate()" id="updcheck">Проверить обновления</button>
@@ -1432,6 +1436,21 @@ function renderUpdate(u) {
     updWaitFor = null;
     show($('updmsg'), `OK: обновлено до ${u.current}`);
   }
+  // What install.sh reported last time: rolled back / failed updates are said plainly.
+  const l = u.last;
+  const when = l && l.time ? new Date(l.time * 1000).toLocaleString() : '';
+  $('updlast').hidden = !(l && l.status);
+  if (l && l.status) {
+    $('updlast').textContent = l.status === 'ok' ? `Последнее обновление: ${l.from || '—'} → ${l.to} (${when}), прошло успешно.`
+      : l.status === 'rolledback' ? `Обновление до ${l.to} (${when}) не запустилось — возвращена версия ${l.from}, настройки сохранены. Причина: ${l.reason || 'нет данных'}.`
+      : `Обновление до ${l.to || '?'} (${when}) не установилось: ${l.reason || 'нет данных'}. Работает прежняя версия.`;
+    $('updlast').className = 'hint' + (l.status === 'ok' ? '' : ' warnline');
+  }
+  if (updWaitFor && l && l.to === updWaitFor && l.status && l.status !== 'ok') {
+    updWaitFor = null;
+    show($('updmsg'), 'error: ' + $('updlast').textContent);
+  }
+  if (updWaitFor && !u.installing && l && l.status === 'failed' && !l.to) updWaitFor = null;
 }
 
 async function uninstallSoundya() {

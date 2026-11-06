@@ -33,6 +33,8 @@ pub struct Release {
     /// The same file through the API (another host, another certificate).
     api_url: String,
     size: u64,
+    /// "sha256:<hex>" as GitHub reports it for the asset ("" on older releases).
+    digest: String,
 }
 
 #[derive(Default)]
@@ -40,7 +42,6 @@ pub struct Updates {
     latest: Mutex<Option<Release>>,
     checked: Mutex<Option<Instant>>,
     error: Mutex<Option<String>>,
-    installing: AtomicBool,
     state: Mutex<Option<String>>,
 }
 
@@ -62,6 +63,7 @@ fn release_from(v: &Value) -> Option<Release> {
         url: asset.get("browser_download_url")?.as_str()?.to_owned(),
         api_url: asset.get("url").and_then(Value::as_str).unwrap_or("").to_owned(),
         size: asset.get("size").and_then(Value::as_u64).unwrap_or(0),
+        digest: asset.get("digest").and_then(Value::as_str).unwrap_or("").to_owned(),
     })
 }
 
@@ -105,9 +107,10 @@ impl Updates {
             "latest": latest.as_ref().map(|r| r.version.clone()),
             "available": latest.as_ref().is_some_and(|r| newer(&r.version, current)),
             "notes": latest.as_ref().map(|r| r.notes.clone()),
-            "installing": self.installing.load(Ordering::Acquire),
+            "installing": INSTALLING.load(Ordering::Acquire),
             "state": *self.state.lock().unwrap(),
             "error": *self.error.lock().unwrap(),
+            "last": last_result(&state_dir()),
         })
     }
 
@@ -124,12 +127,13 @@ impl Updates {
         if crate::luna::active() {
             return Err("soundya стоит как пакет Luna: обновите его через YAM — yam install rodyatotu/soundya".into());
         }
-        if self.installing.swap(true, Ordering::AcqRel) {
+        if INSTALLING.swap(true, Ordering::AcqRel) {
             return Err("обновление уже устанавливается".into());
         }
+        *LAST_STUCK.lock().unwrap() = None;
         let result = self.install_inner(proxy);
         if result.is_err() {
-            self.installing.store(false, Ordering::Release);
+            INSTALLING.store(false, Ordering::Release);
         }
         result
     }
@@ -180,6 +184,10 @@ impl Updates {
         if !done {
             return Err(format!("не скачалось: {last}"));
         }
+        if let Err(e) = verify_digest(TAR, &release.digest) {
+            let _ = std::fs::remove_file(TAR);
+            return Err(e);
+        }
         self.set_state(&format!("устанавливаю {}…", release.version));
         // Unpack, then run the installer in its own session: it stops soundya
         // (this very process) and starts the new one. The pause lets this
@@ -197,7 +205,72 @@ impl Updates {
         if !String::from_utf8_lossy(&out.stdout).contains("started") {
             return Err(format!("архив не распаковался: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
+        // If this process is still alive long after, the installer stopped
+        // before restarting soundya: say so instead of «устанавливаю…» forever.
+        // (When it works, or rolls back, this process is replaced first.)
+        let started = Instant::now();
+        let version = release.version.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(240));
+            let tail = crate::fsx::read_string(std::path::Path::new(LOG)).unwrap_or_default();
+            let tail: String = tail.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" / ");
+            eprintln!("update: installer for {version} did not finish in {} s: {tail}", started.elapsed().as_secs());
+            INSTALLING.store(false, Ordering::Release);
+            *LAST_STUCK.lock().unwrap() = Some(format!("установка {version} не завершилась: {tail}"));
+        });
         Ok(format!("Устанавливаю soundya {}. Через полминуты страница обновится сама", release.version))
+    }
+}
+
+/// An update is being installed (there is one updater per process).
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+static LAST_STUCK: Mutex<Option<String>> = Mutex::new(None);
+
+fn state_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("SOUNDYA_DIR").unwrap_or_else(|_| "/data/opt/soundya".into()))
+}
+
+/// What install.sh wrote about the last update (status ok | rolledback | failed).
+pub fn last_result(dir: &std::path::Path) -> Value {
+    if let Some(stuck) = LAST_STUCK.lock().unwrap().clone() {
+        return serde_json::json!({ "status": "failed", "reason": stuck });
+    }
+    let Some(text) = crate::fsx::read_string(&dir.join("update-result")) else {
+        return Value::Null;
+    };
+    let mut out = serde_json::Map::new();
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            if matches!(k, "status" | "from" | "to" | "time" | "reason") {
+                let v = v.trim();
+                out.insert(k.to_owned(), if k == "time" { v.parse::<u64>().map(Value::from).unwrap_or(Value::Null) } else { Value::from(v) });
+            }
+        }
+    }
+    Value::Object(out)
+}
+
+/// Checks the downloaded file against the SHA-256 GitHub reports for the asset,
+/// with the speaker's own `sha256sum` (busybox). Without a digest (older
+/// releases) or without the tool only the size is checked, as before.
+fn verify_digest(path: &str, digest: &str) -> Result<(), String> {
+    let Some(want) = digest.strip_prefix("sha256:").map(str::to_lowercase) else {
+        eprintln!("update: the release gives no sha256; checked by size only");
+        return Ok(());
+    };
+    let out = match Command::new("sha256sum").arg(path).output() {
+        Ok(o) if o.status.success() => o,
+        _ => {
+            eprintln!("update: sha256sum not available; checked by size only");
+            return Ok(());
+        }
+    };
+    let got = String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or("").to_lowercase();
+    if got == want {
+        eprintln!("update: sha256 OK");
+        Ok(())
+    } else {
+        Err(format!("скачанный архив повреждён (sha256 {got} вместо {want})"))
     }
 }
 
@@ -285,5 +358,37 @@ mod tests {
         assert_eq!(r.url, "https://x/soundya-armv7.tar");
         assert_eq!(r.size, 2_649_088);
         assert!(release_from(&serde_json::json!({"tag_name": "v1", "assets": []})).is_none());
+        let v = serde_json::json!({"tag_name": "v0.5.0", "assets": [{"name": "soundya-armv7.tar",
+            "browser_download_url": "https://x/a", "size": 3, "digest": "sha256:ABC"}]});
+        assert_eq!(release_from(&v).unwrap().digest, "sha256:ABC");
+    }
+
+    #[test]
+    fn checks_the_digest() {
+        let p = std::env::temp_dir().join(format!("soundya-digest-{}", std::process::id()));
+        std::fs::write(&p, b"abc").unwrap();
+        let p = p.to_str().unwrap();
+        // sha256("abc")
+        let good = "sha256:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD";
+        if Command::new("sha256sum").arg(p).output().is_ok_and(|o| o.status.success()) {
+            assert!(verify_digest(p, good).is_ok());
+            assert!(verify_digest(p, "sha256:00").unwrap_err().contains("повреждён"));
+        }
+        assert!(verify_digest(p, "").is_ok(), "no digest: size check only");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn reads_the_installers_result() {
+        let d = std::env::temp_dir().join(format!("soundya-upd-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        assert!(last_result(&d).is_null());
+        std::fs::write(d.join("update-result"), "status=rolledback\nfrom=0.4.40\nto=0.5.0\ntime=1700000000\nreason=не запустилась за 90 с\njunk\n").unwrap();
+        let r = last_result(&d);
+        assert_eq!(r["status"], "rolledback");
+        assert_eq!(r["from"], "0.4.40");
+        assert_eq!(r["time"], 1_700_000_000u64);
+        assert_eq!(r["reason"], "не запустилась за 90 с");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

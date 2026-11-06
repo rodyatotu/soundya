@@ -1935,6 +1935,7 @@ fn daemon() {
             thread::spawn(move || serve(conn, tx, &shared));
         }
     });
+    mark_ready();
     eprintln!(
         "soundya {} running; device {:?}, keyword only: {}, proxy: {}",
         env!("CARGO_PKG_VERSION"),
@@ -1977,6 +1978,17 @@ fn daemon() {
             | 1,
     }
     .start_up(rx);
+}
+
+/// «version pid» in /run/soundya.ready once everything is up: install.sh waits
+/// for it after an update and rolls back if it does not come (or the process dies).
+fn mark_ready() {
+    let run = std::env::var("SOUNDYA_RUN").unwrap_or_else(|_| "/run".into());
+    let path = std::path::Path::new(&run).join("soundya.ready");
+    let text = format!("{} {}\n", env!("CARGO_PKG_VERSION"), std::process::id());
+    if let Err(e) = std::fs::write(&path, text) {
+        eprintln!("ready: {}: {e}", path.display());
+    }
 }
 
 fn serve(conn: TcpStream, tx: Sender<Cmd>, shared: &Shared) {
@@ -2045,6 +2057,11 @@ fn main() {
         }
         "uninstall" => {
             println!("{}", uninstall());
+            0
+        }
+        // install.sh asks every binary this; older ones print the same first line in their help.
+        "version" | "--version" | "-V" => {
+            println!("soundya {}", env!("CARGO_PKG_VERSION"));
             0
         }
         "search" => match client().search_tracks(&rest) {
