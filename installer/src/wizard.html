@@ -199,7 +199,7 @@
     <div class="box warn">Закрепите за колонкой IP в роутере (DHCP reservation), чтобы адрес не менялся: Keenetic — «Список устройств» →
       «Постоянный IP»; TP-Link — Address Reservation; ASUS — «Список назначенных вручную IP».</div>
     <p class="muted">Попробуйте: «Алиса, включи Bonobo», «что сейчас играет», «перемешай».</p>
-    <div class="nav"><button onclick="quit()">Закрыть установщик</button><a class="btn" id="openpanel" target="_blank"><button class="primary">Открыть страницу колонки</button></a></div>
+    <div class="nav"><button onclick="quit()">Закрыть установщик</button><a class="btn" id="openpanel" target="_blank" onclick="return openPanel(this.href)"><button class="primary">Открыть страницу колонки</button></a></div>
   </div>
 </div>
 
@@ -307,6 +307,14 @@ async function setupPc() {
 function finish() {
   const url = `http://${chosen.ip}:8765/`;
   $('doneurl').textContent = url; $('openpanel').href = url; $('donemodel').textContent = chosen.model;
+}
+const IN_APP = new URLSearchParams(location.search).has('app');
+if (IN_APP) document.documentElement.classList.add('inapp');
+// In the app's window a link has nowhere to open: the installer opens it in the browser.
+function openPanel(url) {
+  if (!IN_APP) return true;
+  api('/api/open', { url }).catch(() => {});
+  return false;
 }
 async function quit() { try { await api('/api/quit', {}); } catch (e) {} document.body.innerHTML = '<div class="card"><h1>Можно закрыть эту вкладку</h1></div>'; }
 

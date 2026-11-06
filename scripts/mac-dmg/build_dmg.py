@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Builds the Mac disk image on Linux: open it, drag soundya to Applications.
+
+    python3 scripts/mac-dmg/build_dmg.py <soundya.app> <assets dir> <out.dmg>
+
+The image is a hybrid made by xorriso with an HFS+ volume «soundya» (what
+macOS mounts): soundya.app, a symlink to /Applications, the background
+picture in .background/ and a .DS_Store that tells Finder the window size,
+icon size, where the two icons stand and which picture is the background.
+
+The background is referred to by a classic alias, which names the picture's
+CNIDs on the volume; xorriso numbers files in a fixed order, so the image is
+made once to learn them and once more with the real .DS_Store (same names,
+same numbers, same volume date from SOURCE_DATE_EPOCH). hfsinfo.py checks it.
+"""
+import datetime
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, os.path.join(ROOT, "target", "pydeps"))
+sys.path.insert(0, HERE)
+
+import hfsinfo  # noqa: E402
+from ds_store import DSStore  # noqa: E402
+from mac_alias import ALIAS_EJECTABLE_DISK, ALIAS_KIND_FILE, Alias, TargetInfo, VolumeInfo  # noqa: E402
+
+VOLUME = "soundya"
+APP = "soundya.app"
+# Must match make_assets.py (points).
+WINDOW = (660, 420)
+APP_AT, APPS_AT = (170, 200), (490, 200)
+
+
+def xorriso(stage, out, epoch):
+    env = dict(os.environ, SOURCE_DATE_EPOCH=str(epoch))
+    subprocess.run(
+        ["xorriso", "-as", "mkisofs", "-quiet", "-V", VOLUME, "-hfsplus", "-apm-block-size", "2048", "-R", "-no-pad", "-o", out, stage],
+        check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def ds_store(path, info):
+    by_path = {hfsinfo.path_of(info, e): e for e in info["entries"]}
+    folder, pic = by_path["/.background"], by_path["/.background/background.png"]
+    created = datetime.datetime(1904, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=info["create_date"])
+    volume = VolumeInfo(VOLUME, created, b"H+", ALIAS_EJECTABLE_DISK, 0, b"\0\0")
+    target = TargetInfo(
+        ALIAS_KIND_FILE, "background.png", folder["cnid"], pic["cnid"], created, b"\0\0\0\0", b"\0\0\0\0",
+        folder_name=".background", cnid_path=[folder["cnid"]],
+        carbon_path=f"{VOLUME}:.background:background.png", posix_path="/.background/background.png",
+    )
+    alias = Alias(volume=volume, target=target).to_bytes()
+    if os.path.exists(path):
+        os.remove(path)
+    with DSStore.open(path, "w+") as d:
+        d["."]["vSrn"] = ("long", 1)
+        d["."]["bwsp"] = {
+            # The frame: the content area is the picture, plus the title bar.
+            "WindowBounds": "{{200, 160}, {%d, %d}}" % (WINDOW[0], WINDOW[1] + 28),
+            "ShowStatusBar": False, "ShowToolbar": False, "ShowPathbar": False, "ShowSidebar": False,
+            "ContainerShowSidebar": False, "SidebarWidth": 0, "ShowTabView": False, "PreviewPaneVisibility": False,
+        }
+        d["."]["icvp"] = {
+            "viewOptionsVersion": 1, "backgroundType": 2, "backgroundImageAlias": alias,
+            "backgroundColorRed": 0.055, "backgroundColorGreen": 0.047, "backgroundColorBlue": 0.086,
+            "gridOffsetX": 0.0, "gridOffsetY": 0.0, "gridSpacing": 100.0, "arrangeBy": "none",
+            "showIconPreview": False, "showItemInfo": False, "labelOnBottom": True,
+            "textSize": 13.0, "iconSize": 112.0, "scrollPositionX": 0.0, "scrollPositionY": 0.0,
+        }
+        d["."]["icvl"] = ("type", b"icnv")
+        d[APP]["Iloc"] = APP_AT
+        d["Applications"]["Iloc"] = APPS_AT
+
+
+def build(app, assets, out):
+    epoch = int(os.environ.get("SOURCE_DATE_EPOCH") or os.path.getmtime(app))
+    stage = tempfile.mkdtemp(prefix="soundya-dmg-")
+    try:
+        shutil.copytree(app, os.path.join(stage, APP), symlinks=True)
+        os.symlink("/Applications", os.path.join(stage, "Applications"))
+        os.makedirs(os.path.join(stage, ".background"))
+        shutil.copy(os.path.join(assets, "background.png"), os.path.join(stage, ".background", "background.png"))
+        store = os.path.join(stage, ".DS_Store")
+        open(store, "wb").write(b"\0" * 6148)
+        xorriso(stage, out, epoch)  # pass 1: learn the CNIDs
+        first = hfsinfo.read(out)
+        ds_store(store, first)
+        os.remove(out)
+        xorriso(stage, out, epoch)  # pass 2: the real .DS_Store
+        second = hfsinfo.read(out)
+        key = lambda i: sorted((hfsinfo.path_of(i, e), e["cnid"]) for e in i["entries"] if e["parent"] != 1)
+        if key(first) != key(second) or first["create_date"] != second["create_date"]:
+            raise SystemExit("CNIDs changed between the two passes: the background alias would be wrong")
+    finally:
+        shutil.rmtree(stage)
+    print(f"Built {out} ({os.path.getsize(out) // 1024} KB)")
+
+
+if __name__ == "__main__":
+    build(*sys.argv[1:4])

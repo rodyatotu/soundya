@@ -8,6 +8,8 @@
 
 #![cfg_attr(windows, windows_subsystem = "console")]
 
+#[cfg(target_os = "macos")]
+mod macwin;
 #[path = "../../src/adb.rs"]
 #[allow(dead_code)]
 mod adb;
@@ -499,6 +501,8 @@ fn handle(conn: TcpStream, port: u16, job: Arc<Mutex<Job>>) {
     }
     let mut parts = line.split_whitespace();
     let (method, path) = (parts.next().unwrap_or("").to_owned(), parts.next().unwrap_or("/").to_owned());
+    // «/?app=1» (the Mac app's window) is the same page.
+    let path = path.split('?').next().unwrap_or("/").to_owned();
     let (mut len, mut host, mut origin) = (0usize, String::new(), String::new());
     loop {
         let mut h = String::new();
@@ -563,6 +567,17 @@ fn handle(conn: TcpStream, port: u16, job: Arc<Mutex<Job>>) {
             Ok(t) => json!({ "ok": true, "text": t }),
             Err(e) => json!({ "error": e }),
         }),
+        // Links from the app's window open in the user's browser: only the speaker's page.
+        ("POST", "/api/open") => {
+            let target = v["url"].as_str().unwrap_or("");
+            let ok = target.strip_prefix("http://").and_then(|r| r.split_once(':')).is_some_and(|(host, rest)| {
+                host.parse::<std::net::Ipv4Addr>().is_ok_and(|a| a.is_private()) && rest.starts_with("8765/")
+            });
+            if ok {
+                open_browser(target);
+            }
+            js(json!({ "ok": ok }))
+        }
         ("POST", "/api/quit") => {
             js(json!({ "ok": true }));
             thread::spawn(|| {
@@ -592,10 +607,30 @@ fn main() {
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let url = format!("http://127.0.0.1:{port}/");
     println!("soundya {} — установщик", version());
-    println!("Мастер установки открыт в браузере: {url}");
-    println!("Не закрывайте это окно до конца установки.");
+    println!("Мастер установки: {url}");
     LAST_SEEN.store(now(), Ordering::Release);
+    let serve = move || {
+        let job = Arc::new(Mutex::new(Job::default()));
+        for conn in listener.incoming().flatten() {
+            let job = job.clone();
+            thread::spawn(move || handle(conn, port, job));
+        }
+    };
+    // On a Mac: the app's own window (no browser); the server runs beside it.
+    #[cfg(target_os = "macos")]
     if std::env::var("SOUNDYA_INSTALLER_NO_BROWSER").is_err() {
+        thread::spawn(serve);
+        if let Err(e) = macwin::run(&format!("{url}?app=1"), "soundya") {
+            eprintln!("своё окно не открылось ({e}), открываю браузер");
+            open_browser(&url);
+            loop {
+                thread::sleep(Duration::from_secs(3600));
+            }
+        }
+        std::process::exit(0);
+    }
+    if std::env::var("SOUNDYA_INSTALLER_NO_BROWSER").is_err() {
+        println!("Мастер установки открыт в браузере. Не закрывайте это окно до конца установки.");
         open_browser(&url);
     }
     // Nobody on the page for 20 minutes: the installer leaves by itself.
@@ -605,9 +640,5 @@ fn main() {
             std::process::exit(0);
         }
     });
-    let job = Arc::new(Mutex::new(Job::default()));
-    for conn in listener.incoming().flatten() {
-        let job = job.clone();
-        thread::spawn(move || handle(conn, port, job));
-    }
+    serve();
 }
