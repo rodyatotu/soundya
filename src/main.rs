@@ -25,6 +25,7 @@ mod player;
 mod report;
 mod sc;
 mod settings;
+mod sha256;
 mod stats;
 mod tv;
 mod update;
@@ -428,6 +429,7 @@ impl Controller {
             "volume": volume::level(),
             "led": led::info(),
             "device": device_info(),
+            "pc_legacy": pc::LEGACY.load(Ordering::Acquire),
             "ducking": ducking::json(),
             "voice": voice::json(),
             "listen": serde_json::json!({
@@ -1441,6 +1443,8 @@ impl Controller {
                     "shutdown" | "off" => Some(alice::PcAction::Shutdown),
                     "restart" => Some(alice::PcAction::Restart),
                     "lock" => Some(alice::PcAction::Lock),
+                    "metrics" => Some(alice::PcAction::Metrics),
+                    "process" if !name.is_empty() => Some(alice::PcAction::Process(name)),
                     "open" if !name.is_empty() => Some(alice::PcAction::Open(name)),
                     "close" if !name.is_empty() => Some(alice::PcAction::Close(name)),
                     // pc do открой ютуб в профиле работа — as if said to Alice

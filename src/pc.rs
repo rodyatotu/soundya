@@ -27,6 +27,8 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
         PcAction::Open(name) => ("open", name.as_str()),
         PcAction::Close(name) => ("close", name.as_str()),
         PcAction::Command(text) => ("do", text.as_str()),
+        PcAction::Metrics => ("metrics", ""),
+        PcAction::Process(name) => ("process", name.as_str()),
         PcAction::Wake => unreachable!(),
     };
     let address = if host.contains(':') { host.to_owned() } else { format!("{host}:{PORT}") };
@@ -36,22 +38,43 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
         .timeout_connect(Duration::from_secs(3))
         .timeout(Duration::from_secs(30))
         .build();
-    let mut request = agent
-        .post(&url)
-        .set("X-Soundya-Key", key)
-        .set("Content-Type", "text/plain; charset=utf-8");
-    // Telegram contacts from the settings page, for «напиши маме в телеграм …».
-    if matches!(action, PcAction::Command(_)) && !settings.pc_contacts.is_empty() {
+    let contacts = (matches!(action, PcAction::Command(_)) && !settings.pc_contacts.is_empty()).then(|| {
         let map: serde_json::Map<String, serde_json::Value> = settings
             .pc_contacts
             .iter()
             .map(|c| (c.names.clone(), serde_json::Value::String(c.target.clone())))
             .collect();
-        let json = serde_json::Value::Object(map).to_string();
-        request = request.set("X-Soundya-Contacts", &base64(json.as_bytes()));
+        base64(serde_json::Value::Object(map).to_string().as_bytes())
+    });
+    // Signed (0.5.00): the key itself never goes over the network.
+    let build = |signed: bool| {
+        let mut r = agent.post(&url).set("Content-Type", "text/plain; charset=utf-8");
+        if signed {
+            let (ts, nonce, sign) = sign(key, &format!("/{path}"), body.as_bytes());
+            r = r.set("X-Soundya-Time", &ts).set("X-Soundya-Nonce", &nonce).set("X-Soundya-Sign", &sign);
+        } else {
+            r = r.set("X-Soundya-Key", key);
+        }
+        if let Some(c) = &contacts {
+            r = r.set("X-Soundya-Contacts", c);
+        }
+        r
+    };
+    let mut result = build(true).send_string(body);
+    // soundya-pc before 0.5.00 knows only the key: once more the old way.
+    if matches!(&result, Err(ureq::Error::Status(403, _))) {
+        eprintln!("pc: the PC does not take signed commands; soundya-pc is older than 0.5.00 — update it (pc/install.cmd)");
+        LEGACY.store(true, std::sync::atomic::Ordering::Release);
+        result = build(false).send_string(body);
+    } else if result.is_ok() {
+        LEGACY.store(false, std::sync::atomic::Ordering::Release);
     }
-    let result = request.send_string(body);
     match result {
+        Ok(r) if *action == PcAction::Metrics => {
+            let text = r.into_string().map_err(|e| format!("Компьютер ответил непонятно: {e}"))?;
+            let v: serde_json::Value = serde_json::from_str(&text).map_err(|_| "Программа на компьютере старая: обновите soundya-pc".to_owned())?;
+            Ok(metrics_speech(&v))
+        }
         Ok(r) => r.into_string().map_err(|e| format!("Компьютер ответил непонятно: {e}")),
         Err(ureq::Error::Status(403, _)) => Err("Компьютер не принял ключ. Проверьте ключ в настройках soundya".into()),
         Err(ureq::Error::Status(_, r)) => Err(r.into_string().unwrap_or_else(|_| "Компьютер не понял команду".into())),
@@ -66,6 +89,56 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
 }
 
 /// Standard base64, for sending UTF-8 text in an HTTP header.
+/// soundya-pc answered only the old way (older than 0.5.00): the page says so.
+pub static LEGACY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// (time, nonce, signature) for a command: HMAC-SHA256 of «time\nnonce\npath\nbody»
+/// with the key, as soundya-pc checks it.
+pub fn sign(key: &str, path: &str, body: &[u8]) -> (String, String, String) {
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).to_string();
+    let mut n = [0u8; 8];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = std::io::Read::read_exact(&mut f, &mut n);
+    }
+    let nonce = crate::sha256::hex(&n);
+    (ts.clone(), nonce.clone(), sign_with(key, &ts, &nonce, path, body))
+}
+
+pub fn sign_with(key: &str, ts: &str, nonce: &str, path: &str, body: &[u8]) -> String {
+    let mut msg = format!("{ts}\n{nonce}\n{path}\n").into_bytes();
+    msg.extend_from_slice(body);
+    crate::sha256::hex(&crate::sha256::hmac_sha256(key.as_bytes(), &msg))
+}
+
+/// The PC's numbers as a sentence for Alice.
+pub fn metrics_speech(v: &serde_json::Value) -> String {
+    let n = |k: &str| v.get(k).and_then(serde_json::Value::as_i64);
+    let mut parts = Vec::new();
+    match (n("cpu"), n("cpu_temp")) {
+        (Some(l), Some(t)) => parts.push(format!("Процессор загружен на {l} процентов, {t} градусов")),
+        (Some(l), None) => parts.push(format!("Процессор загружен на {l} процентов")),
+        (None, Some(t)) => parts.push(format!("Процессор: {t} градусов")),
+        _ => {}
+    }
+    match (n("gpu"), n("gpu_temp")) {
+        (Some(l), Some(t)) => parts.push(format!("видеокарта — {l} процентов, {t} градусов")),
+        (Some(l), None) => parts.push(format!("видеокарта — {l} процентов")),
+        (None, Some(t)) => parts.push(format!("видеокарта — {t} градусов")),
+        _ => {}
+    }
+    if let Some(r) = n("ram_used") {
+        parts.push(format!("память занята на {r} процентов"));
+    }
+    if parts.is_empty() {
+        return "Компьютер на связи, но не рассказал о себе".into();
+    }
+    let mut s = parts.join(", ") + ".";
+    if n("cpu_temp").is_none() && n("gpu_temp").is_none() {
+        s.push_str(" Температуру Windows не отдаёт: поставьте на компьютер LibreHardwareMonitor.");
+    }
+    s
+}
+
 pub(crate) fn base64(data: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -155,6 +228,27 @@ fn fmt_mac(mac: [u8; 6]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signature_matches_the_agent() {
+        // The same as soundya-pc computes in PowerShell (HMACSHA256 over UTF-8),
+        // checked independently: python3 -c "import hmac,hashlib;print(hmac.new(b'k3y',
+        // b'1700000000\nabcd\n/open\n\xd1\x82\xd0\xb5\xd0\xbb\xd0\xb5\xd0\xb3\xd1\x80\xd0\xb0\xd0\xbc',hashlib.sha256).hexdigest())"
+        assert_eq!(
+            sign_with("k3y", "1700000000", "abcd", "/open", "телеграм".as_bytes()),
+            "6b3843f5bdb061ace24a63cbc6497128a7bcba596b9d458fa15ee1c488345c48"
+        );
+        let (ts, nonce, s) = sign("k3y", "/ping", b"");
+        assert_eq!(s, sign_with("k3y", &ts, &nonce, "/ping", b""));
+        assert_eq!(nonce.len(), 16);
+    }
+
+    #[test]
+    fn metrics_as_speech() {
+        let v = serde_json::json!({"cpu": 23, "cpu_temp": 54, "gpu": 10, "gpu_temp": 48, "ram_used": 61});
+        assert_eq!(metrics_speech(&v), "Процессор загружен на 23 процентов, 54 градусов, видеокарта — 10 процентов, 48 градусов, память занята на 61 процентов.");
+        assert!(metrics_speech(&serde_json::json!({"cpu": 5})).contains("LibreHardwareMonitor"));
+    }
 
     #[test]
     fn base64_round_trip() {

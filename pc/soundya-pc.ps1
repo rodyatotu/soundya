@@ -3,7 +3,9 @@
 #
 # Protocol: POST http://<pc>:8766/<action> with header "X-Soundya-Key: <key>",
 # body = program name (UTF-8) for open/close, the whole phrase for do. Actions:
-# ping, open, close, do, sleep, shutdown, restart, lock. The answer is a short Russian sentence that Alice says.
+# ping, open, close, do, sleep, shutdown, restart, lock, metrics (JSON), process <name>.
+# The answer is a short Russian sentence that Alice says. Since 0.5.00 the request
+# is signed (X-Soundya-Time, X-Soundya-Nonce, X-Soundya-Sign) instead of carrying the key.
 #
 # Settings: %LOCALAPPDATA%\soundya-pc\config.json (created by install.ps1):
 #   { "port": 8766, "key": "...", "apps": { "моя игра": "C:\\Games\\game.exe" },
@@ -641,9 +643,85 @@ function Later([scriptblock]$action) {
     Start-Job -ScriptBlock $action | Out-Null
 }
 
+# Since soundya 0.5.00 the speaker signs every command (HMAC-SHA256 of
+# «time\nnonce\npath\nbody» with the key) instead of sending the key itself.
+# A request older than 2 minutes or seen before is refused. Speakers before
+# 0.5.00 send the key in X-Soundya-Key: still accepted unless
+# "allow_plain_key": false in config.json.
+$Seen = New-Object System.Collections.Generic.Queue[string]
+function Test-Auth($req) {
+    $sign = $req.Headers['x-soundya-sign']
+    if ($sign) {
+        $ts = $req.Headers['x-soundya-time']; $nonce = $req.Headers['x-soundya-nonce']
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        if (-not $ts -or -not $nonce -or [Math]::Abs($now - [long]$ts) -gt 120) { return $false }
+        if ($Seen.Contains("$ts/$nonce")) { return $false }
+        $head = [Text.Encoding]::UTF8.GetBytes("$ts`n$nonce`n$($req.Path)`n")
+        $msg = New-Object byte[] ($head.Length + @($req.Raw).Count)
+        [Array]::Copy($head, $msg, $head.Length)
+        if (@($req.Raw).Count) { [Array]::Copy([byte[]]@($req.Raw), 0, $msg, $head.Length, @($req.Raw).Count) }
+        $h = New-Object System.Security.Cryptography.HMACSHA256 (,[Text.Encoding]::UTF8.GetBytes($Key))
+        $want = -join ($h.ComputeHash($msg) | ForEach-Object { $_.ToString('x2') })
+        if ($want -ne $sign.ToLower()) { return $false }
+        $Seen.Enqueue("$ts/$nonce"); while ($Seen.Count -gt 500) { [void]$Seen.Dequeue() }
+        return $true
+    }
+    return ($Config.allow_plain_key -ne $false) -and ($req.Headers['x-soundya-key'] -eq $Key)
+}
+
+# CPU/GPU load and temperature, RAM, uptime: what Windows gives. Temperatures
+# need either the ACPI sensor (not on every board), nvidia-smi (NVIDIA cards)
+# or LibreHardwareMonitor / OpenHardwareMonitor running (their WMI sensors).
+function Get-Metrics {
+    $m = [ordered]@{}
+    try { $m.cpu = [int](Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average } catch {}
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        $m.ram_total_gb = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+        $m.ram_used = [int](100 - $os.FreePhysicalMemory * 100 / $os.TotalVisibleMemorySize)
+        $m.uptime_h = [int]((Get-Date) - $os.LastBootUpTime).TotalHours
+    } catch {}
+    try {
+        $g = (Get-Counter '\GPU Engine(*engtype_3D)\Utilization Percentage' -ErrorAction Stop).CounterSamples | Measure-Object CookedValue -Sum
+        $m.gpu = [int][math]::Min(100, $g.Sum)
+    } catch {}
+    $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($smi) {
+        try {
+            $p = ((& $smi.Source --query-gpu=temperature.gpu,utilization.gpu --format=csv,noheader,nounits) | Select-Object -First 1) -split ','
+            $m.gpu_temp = [int]$p[0]; $m.gpu = [int]$p[1]
+        } catch {}
+    }
+    try {
+        $t = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop | Select-Object -First 1
+        if ($t -and $t.CurrentTemperature -gt 2732) { $m.cpu_temp = [int]($t.CurrentTemperature / 10 - 273.15) }
+    } catch {}
+    foreach ($ns in 'root/LibreHardwareMonitor', 'root/OpenHardwareMonitor') {
+        try {
+            $s = Get-CimInstance -Namespace $ns -ClassName Sensor -ErrorAction Stop | Where-Object { $_.SensorType -eq 'Temperature' }
+            $c = $s | Where-Object { $_.Name -match 'CPU Package|Tctl|CPU Total|Core Average' } | Select-Object -First 1
+            if ($c) { $m.cpu_temp = [int]$c.Value }
+            $gg = $s | Where-Object { $_.Name -match 'GPU Core' } | Select-Object -First 1
+            if ($gg -and -not $m.gpu_temp) { $m.gpu_temp = [int]$gg.Value }
+            break
+        } catch {}
+    }
+    $m | ConvertTo-Json -Compress
+}
+
+# «Запущен ли стим на компьютере»: by the same names as «закрой стим».
+function Test-Running([string]$name) {
+    $app = Find-App $name
+    $names = if ($app) { @(Process-Names $app) } else { @($name) }
+    $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $names -contains $_.ProcessName })
+    if ($running.Count) { "Да, $name запущен" } else { "Нет, $name сейчас не запущен" }
+}
+
 function Handle([string]$action, [string]$body) {
     switch ($action) {
         'ping' { "Компьютер $env:COMPUTERNAME на связи" }
+        'metrics' { Get-Metrics }
+        'process' { Test-Running $body }
         'open' { Do-Open $body }
         'close' { Do-Close $body }
         'do' { Do-Command $body }
@@ -686,6 +764,7 @@ function Read-Request($stream) {
     [pscustomobject]@{
         Method = $parts[0]; Path = $parts[1]; Headers = $headers
         Body = [Text.Encoding]::UTF8.GetString($buf, 0, $got)
+        Raw = $buf[0..([Math]::Max($got, 1) - 1)] | Select-Object -First $got
     }
 }
 
@@ -778,7 +857,7 @@ while ($true) {
         $stream = $client.GetStream()
         $req = Read-Request $stream
         if (-not $req) { continue }
-        if ($req.Headers['x-soundya-key'] -ne $Key) {
+        if (-not (Test-Auth $req)) {
             Log "wrong key from $($client.Client.RemoteEndPoint)"
             Send-Answer $stream 403 'Неверный ключ'
             continue

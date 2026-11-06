@@ -984,6 +984,7 @@
     </div>
     <div class="row">
       <button onclick="testPc()" id="pctestbtn">Проверить связь</button>
+      <button onclick="pcMetrics()">Состояние ПК</button>
       <button class="primary" onclick="savePc()">Сохранить</button>
     </div>
     <div class="msg" id="pcmsg"></div>
@@ -1940,8 +1941,9 @@ function renderHome(s) {
   const dv = s.device || {};
   dev(modelName(dv.model), `soundya ${dv.version || ''}${dv.firmware ? ' · прошивка ' + dv.firmware : ''}${s.led && s.led.ring ? ' · кольцо: ' + s.led.ring.split(',')[0] : ''}${dv.display ? ' · экран-часы' : ''}`);
   const pcOn = st.pc_on && (st.pc_host || st.pc_mac);
-  dev('Компьютер', pcOn ? (st.pc_host || 'только включение по сети') : 'не настроен', pcOn ? 'Проверить' : 'Настроить',
-    pcOn ? async () => { busy($('homemsg'), 'Проверяю компьютер…'); show($('homemsg'), await post('/api/cmd', 'pc ping')); } : () => openSettings('devices'));
+  dev('Компьютер', pcOn ? (st.pc_host || 'только включение по сети') + (s.pc_legacy ? ' · обновите soundya-pc: ключ идёт открытым текстом' : '') : 'не настроен',
+    pcOn ? 'Состояние' : 'Настроить',
+    pcOn ? async () => { busy($('homemsg'), 'Спрашиваю компьютер…'); show($('homemsg'), await post('/api/cmd', 'pc metrics')); } : () => openSettings('devices'));
   const tvOn = st.tv_on && st.tv_host;
   dev('Телевизор / проектор', tvOn ? st.tv_host : 'не настроен', tvOn ? 'Проверить' : 'Настроить',
     tvOn ? async () => { busy($('homemsg'), 'Проверяю телевизор…'); show($('homemsg'), await post('/api/cmd', 'tv ping')); } : () => openSettings('devices'));
@@ -2015,6 +2017,8 @@ async function takeTokenFromHash() {
   settingsLoaded = false; refresh();
 }
 takeTokenFromHash();
+
+async function pcMetrics() { busy($('pcmsg'), 'Спрашиваю компьютер…'); show($('pcmsg'), await post('/api/cmd', 'pc metrics')); }
 
 // ---- PIN для панели ----
 function renderPin(st) {

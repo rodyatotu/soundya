@@ -246,6 +246,32 @@ pub enum PcAction {
     Command(String),
     /// Connection check from the settings page.
     Ping,
+    /// «Какая температура компьютера», «загрузка процессора».
+    Metrics,
+    /// «Запущен ли стим на компьютере».
+    Process(String),
+}
+
+/// Questions about the PC's state: only with the PC named.
+fn pc_question(text: &str) -> Option<PcAction> {
+    let pc = ["компьютер", "компа", "компе", "комп ", "пк", "процессор", "видеокарт"].iter().any(|w| format!("{text} ").contains(w));
+    if !pc {
+        return None;
+    }
+    for p in ["запущен ли ", "работает ли ", "открыт ли ", "запущена ли ", "открыта ли "] {
+        if let Some(rest) = text.strip_prefix(p) {
+            let name: String = rest
+                .split_whitespace()
+                .take_while(|w| !matches!(*w, "на" | "в"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return (!name.is_empty()).then_some(PcAction::Process(name));
+        }
+    }
+    ["температур", "загрузк", "нагрузк", "загружен", "памят", "как себя чувствует", "состояние"]
+        .iter()
+        .any(|w| text.contains(w))
+        .then_some(PcAction::Metrics)
 }
 
 /// Verbs of a command for the PC; the PC itself works out what exactly to do.
@@ -688,6 +714,9 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
     }
     if let Some(ms) = seek_command(&normalize(text)) {
         return Some(Intent::Seek(ms));
+    }
+    if let Some(action) = pc_question(&normalize(text)) {
+        return Some(Intent::Pc(action));
     }
     if let Some(action) = pc(&normalize(text)) {
         return Some(Intent::Pc(action));
@@ -1389,6 +1418,10 @@ mod tests {
         let pc = |t: &str| intent(t, false);
         let cmd = |t: &str| Some(Intent::Pc(PcAction::Command(t.into())));
         assert_eq!(pc("Алиса, включи компьютер"), Some(Intent::Pc(PcAction::Wake)));
+        assert_eq!(pc("какая температура компьютера"), Some(Intent::Pc(PcAction::Metrics)));
+        assert_eq!(pc("какая загрузка процессора"), Some(Intent::Pc(PcAction::Metrics)));
+        assert_eq!(pc("запущен ли стим на компьютере"), Some(Intent::Pc(PcAction::Process("стим".into()))));
+        assert_eq!(pc("какая температура на улице"), None);
         assert_eq!(pc("включи мой комп"), Some(Intent::Pc(PcAction::Wake)));
         assert_eq!(pc("Выключи компьютер."), Some(Intent::Pc(PcAction::Shutdown)));
         assert_eq!(pc("усыпи компьютер"), Some(Intent::Pc(PcAction::Sleep)));
