@@ -250,9 +250,29 @@ pub struct Key {
     d: Big,
 }
 
+#[cfg(not(windows))]
 fn random_bytes(n: usize) -> io::Result<Vec<u8>> {
     let mut b = vec![0u8; n];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    Ok(b)
+}
+
+/// Windows has no /dev/urandom: the system's own cryptographic generator. (Before this the
+/// Windows installer failed at once: «не создался ключ ADB: The system cannot find the path
+/// specified», so it could not reach any speaker.)
+#[cfg(windows)]
+fn random_bytes(n: usize) -> io::Result<Vec<u8>> {
+    #[link(name = "bcrypt")]
+    extern "system" {
+        fn BCryptGenRandom(algorithm: *mut core::ffi::c_void, buffer: *mut u8, size: u32, flags: u32) -> i32;
+    }
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 2;
+    let mut b = vec![0u8; n];
+    // SAFETY: the buffer is exactly `n` bytes; no algorithm handle with the system-preferred flag.
+    let status = unsafe { BCryptGenRandom(core::ptr::null_mut(), b.as_mut_ptr(), n as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+    if status != 0 {
+        return Err(io::Error::other(format!("BCryptGenRandom: 0x{status:08x}")));
+    }
     Ok(b)
 }
 
