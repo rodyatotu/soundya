@@ -90,7 +90,7 @@ fn ping(dir: &Path, shared: &Shared) -> Result<(), String> {
     let id = install_id(dir).ok_or("no install id")?;
     let body = serde_json::json!({
         "id": id,
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::VERSION,
         "model": model(),
         "airplay": shared.airplay.json()["enabled"].as_bool().unwrap_or(false),
         "pc": shared.pc_configured(),

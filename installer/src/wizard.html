@@ -33,17 +33,31 @@
     background: linear-gradient(160deg, rgba(255,255,255,.18), rgba(255,255,255,.04) 40%), var(--card);
     border: 1px solid var(--edge); box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.4);
     -webkit-backdrop-filter: blur(30px) saturate(185%); backdrop-filter: blur(30px) saturate(185%); }
-  .card::before { content: ""; position: absolute; left: 18px; right: 18px; top: 0; height: 38%; border-radius: 30px 30px 50% 50% / 30px 30px 20px 20px;
-    background: linear-gradient(180deg, rgba(255,255,255,.25), transparent); pointer-events: none; opacity: .55; }
+  /* The light on the glass: the card's own shape, edge to edge, fading down (was an inset shape with other
+     corners — a second, crooked plate inside the card). */
+  .card::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,0) 42%); opacity: .55; }
   @media (prefers-color-scheme: dark) { .card::before { opacity: .15; } }
   .card > * { position: relative; }
   .top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; }
   .logo { font-size: 26px; font-weight: 800; letter-spacing: -.03em; }
   .logo span { background: linear-gradient(120deg, #ff7a00, #ff2f6d); -webkit-background-clip: text; background-clip: text; color: transparent; }
   .ver { font-size: 12px; color: var(--muted); padding: 3px 10px; border-radius: 999px; border: 1px solid var(--edge); background: var(--field); }
+  /* The panel's «Нас уже 100+» banner, the same colours and shine. */
+  .party { position: relative; overflow: hidden; margin: 0 0 16px; padding: 12px 14px; border-radius: 16px; color: #fff;
+    font-size: 14px; line-height: 1.35; background: linear-gradient(120deg, #ff5500, #ff2f6d, #7b3bff, #ff5500); background-size: 300% 100%;
+    animation: partybg 14s ease-in-out infinite; box-shadow: 0 8px 28px rgba(255, 60, 80, .25); }
+  .party::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(115deg, transparent 35%, rgba(255,255,255,.22) 50%, transparent 65%);
+    transform: translateX(-120%); animation: partyshine 7s ease-in-out infinite; }
+  @keyframes partybg { 0%, 100% { background-position: 0 50%; } 50% { background-position: 100% 50%; } }
+  @keyframes partyshine { 0%, 60% { transform: translateX(-120%); } 85%, 100% { transform: translateX(120%); } }
+  @media (prefers-reduced-motion: reduce) { .party, .party::after { animation: none; } }
   .dots { display: flex; gap: 6px; margin-bottom: 20px; }
   .dots i { flex: 1; height: 5px; border-radius: 3px; background: var(--line); transition: background .3s; }
-  .dots i.on { background: linear-gradient(90deg, #ff7a1a, #ff3d5a); }
+  /* One gradient across the whole row: each dot shows its own part of it. */
+  .dots i.on { background: linear-gradient(90deg, #ff7a1a, #ff3d5a 50%, #7b3bff); background-size: var(--dots-w, 100%) 100%;
+    background-position: var(--dot-x, 0) 0; }
   h1 { font-size: 24px; letter-spacing: -.02em; margin: 0 0 8px; }
   p { margin: 6px 0; }
   .muted { color: var(--muted); }
@@ -88,10 +102,30 @@
   .toggle input:checked::after { transform: translateX(18px); }
   .toggle span b { display: block; }
   .toggle span small { color: var(--muted); }
-  .progress { height: 10px; border-radius: 6px; background: var(--line); overflow: hidden; margin: 16px 0 8px; }
-  .progress i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #ff7a1a, #ff3d5a, #7b3bff); background-size: 200% 100%;
-    animation: flow 2s linear infinite; transition: width .5s; border-radius: 6px; }
-  @keyframes flow { to { background-position: -200% 0; } }
+  h2.sub2 { font-size: 15px; font-weight: 700; margin: 18px 0 2px; }
+  .demobadge { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 50; font-size: 13px; font-weight: 600;
+    padding: 7px 14px; border-radius: 999px; color: #fff; border: 0; background: linear-gradient(135deg, #ff7a1a, #ff3d5a);
+    box-shadow: 0 6px 22px rgba(255, 80, 40, .35); cursor: pointer; }
+  /* One even orange→red fill (no squeezed rainbow at small %), a soft light running across it while
+     work goes on; green when done, red on a failure, still then. */
+  .progress { position: relative; height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; margin: 16px 0 8px; }
+  /* A running orange→pink gradient, as on the panel's buttons; fixed-size tiles keep it even at any width. */
+  .progress { height: 10px; }
+  .progress i { display: block; height: 100%; width: 0; min-width: 10px; border-radius: 999px; position: relative; overflow: hidden;
+    background: linear-gradient(90deg, #ff7a1a, #ff3d5a, #ff7a1a) 0 0 / 260px 100% repeat-x; animation: flow 1.6s linear infinite;
+    box-shadow: 0 0 14px rgba(255, 80, 40, .45); transition: width .5s ease-out; }
+  @keyframes flow { to { background-position: 260px 0; } }
+  .progress.ok i { background: #2fbf71; animation: none; box-shadow: 0 0 12px rgba(47, 191, 113, .45); }
+  .progress.fail i { background: #e5484d; animation: none; box-shadow: none; }
+  .progress.ok i::after, .progress.fail i::after { animation: none; display: none; }
+  @keyframes sweep { to { transform: translateX(260%); } }
+  @media (prefers-reduced-motion: reduce) { .progress i { animation: none; } .progress i::after { animation: none; display: none; } }
+  /* 37: the console is folded away; «Подробности» opens it (and it opens by itself on a failure). */
+  details.logbox { margin: 10px 0 0; }
+  details.logbox summary { cursor: pointer; font-size: 13px; color: var(--muted); list-style: none; }
+  details.logbox summary::-webkit-details-marker { display: none; }
+  details.logbox summary:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+  details.logbox[open] summary::before { content: "▾ "; }
   pre.log { max-height: 180px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0 0;
     padding: 10px 12px; border-radius: 14px; background: var(--field); border: 1px solid var(--edge); }
   .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
@@ -105,6 +139,20 @@
   a.btn { display: inline-block; text-decoration: none; }
   code { font-size: 13px; padding: 1px 6px; border-radius: 6px; background: var(--field); }
   @media (max-width: 480px) { .card { padding: 22px 18px 18px; } .seg { grid-template-columns: 1fr; } h1 { font-size: 21px; } }
+  /* Launcher */
+  .lhead { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; }
+  .lhead h1 { margin: 0 0 4px; }
+  .lhead p { margin: 0; display: flex; align-items: center; gap: 8px; }
+  .ldev { width: 64px; height: 64px; border-radius: 20px; display: grid; place-items: center; flex: none;
+    background: linear-gradient(135deg, #ff7a1a, #ff3d5a); box-shadow: 0 8px 24px rgba(255, 61, 90, .35); }
+  .ldev .ring { width: 30px; height: 30px; border-radius: 50%; border: 4px solid rgba(255, 255, 255, .9); }
+  .ldot { width: 9px; height: 9px; border-radius: 50%; background: #999; display: inline-block; flex: none; }
+  .ldot.on { background: #2fbf71; box-shadow: 0 0 8px #2fbf71; } .ldot.off { background: #e5484d; }
+  .lgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .ltile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 16px; text-align: left; border-radius: 18px; min-height: 86px; }
+  .ltile small { opacity: .7; font-size: 12px; font-weight: 400; }
+  .ltile[hidden] { display: none; }
+  @media (max-width: 520px) { .lgrid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -113,9 +161,26 @@
   <div class="top"><div class="logo">sound<span>ya</span></div><div class="ver" id="ver"></div></div>
   <div class="dots" id="dots"></div>
 
+  <!-- Лаунчер: soundya уже стоит на колонке, установленной с этого компьютера -->
+  <div class="step" data-step="launcher">
+    <div class="lhead">
+      <div class="ldev"><div class="ring"></div></div>
+      <div><h1 id="lmodel">Колонка</h1><p class="muted"><i class="ldot" id="ldot"></i><span id="lstate">проверяю…</span></p></div>
+    </div>
+    <div class="lgrid">
+      <button class="ltile primary" onclick="launcherOpen()"><b>Открыть страницу колонки</b><small id="lurl"></small></button>
+      <button class="ltile" onclick="launcherUpdate()"><b>Обновить soundya</b><small>настройки и вход сохранятся</small></button>
+      <button class="ltile" id="lpc" onclick="launcherPc()"><b>Этот компьютер</b><small>управление голосом, звонки</small></button>
+      <button class="ltile" onclick="launcherOther()"><b>Другая колонка</b><small>найти и установить заново</small></button>
+    </div>
+    <div class="msg" id="lmsg"></div>
+    <div class="nav"><button id="ldemo" hidden onclick="startDemo()">Пройти установку с нуля (демо)</button><span></span><button onclick="quit()">Закрыть</button></div>
+  </div>
+
   <!-- 0. Привет -->
   <div class="step on" data-step="hello">
-    <h1>Установка soundya</h1>
+    <div class="party">🎉 <b>Больше 100 устройств с soundya!</b> Спасибо, что пользуетесь soundya и рассказываете о ней друзьям.</div>
+    <h1>Установка soundya <span id="hellover"></span></h1>
     <p class="muted">Пара минут — и Яндекс Станция будет играть SoundCloud по голосу, принимать AirPlay и слушаться компьютер с телевизором.</p>
     <ul class="facts">
       <li>Колонка должна быть <b>с root и ADB по сети</b> (README → шаг 1) и в той же Wi-Fi сети, что этот компьютер.</li>
@@ -135,7 +200,7 @@
       <div class="row"><input type="text" id="manualip" placeholder="192.168.0.112" inputmode="decimal"><button onclick="manual()">Проверить</button></div>
     </details>
     <div class="msg" id="findmsg"></div>
-    <div class="nav"><button onclick="scan()">Искать снова</button><button class="primary" id="findnext" disabled onclick="afterFind()">Дальше</button></div>
+    <div class="nav"><button onclick="scan()">Искать снова</button><button id="findpc" hidden onclick="onlyPc()">Только подключить этот компьютер</button><button class="primary" id="findnext" disabled onclick="afterFind()">Дальше</button></div>
   </div>
 
   <!-- 2. Что включить -->
@@ -149,6 +214,18 @@
       <label class="toggle"><input type="checkbox" id="f_tv"><span><b>Телевизор / проектор</b><small>Android TV: «открой ютуб на телевизоре»</small></span></label>
       <label class="toggle"><input type="checkbox" id="f_bypass"><span><b>Обход блокировок</b><small>если SoundCloud у провайдера не открывается</small></span></label>
     </div>
+    <h2 class="sub2">Что показывать на главной странице колонки</h2>
+    <div class="toggles" id="homepick">
+      <label class="toggle"><input type="checkbox" data-w="weather" checked><span><b>Погода</b><small>сейчас, днём и ночью — город укажете на главной</small></span></label>
+      <label class="toggle"><input type="checkbox" data-w="plans" checked><span><b>Сегодня</b><small>планы и задачи на день</small></span></label>
+      <label class="toggle"><input type="checkbox" data-w="remote" checked><span><b>Пульт ТВ</b><small>стрелки, ОК, громкость — если подключите проектор</small></span></label>
+      <label class="toggle"><input type="checkbox" data-w="scenes" checked><span><b>Сценарии</b><small>ваши сценарии в одно нажатие</small></span></label>
+      <label class="toggle"><input type="checkbox" data-w="foryou" checked><span><b>Для вас</b><small>рекомендации, лайки, недавнее</small></span></label>
+      <label class="toggle"><input type="checkbox" data-w="sc" checked><span><b>Подборки SoundCloud</b><small>Mixed for you и другие</small></span></label>
+      <label class="toggle"><input type="checkbox" data-w="recent" checked><span><b>Недавно играло</b><small>последние треки и плейлисты</small></span></label>
+      <label class="toggle"><input type="checkbox" data-w="timer"><span><b>Таймер и Pomodoro</b><small>обратный отсчёт в одно нажатие</small></span></label>
+      <label class="toggle"><input type="checkbox" data-w="pc" checked><span><b>Компьютер</b><small>загрузка и температура — если подключите ПК</small></span></label>
+    </div>
     <div class="nav"><button onclick="go('find')">Назад</button><button class="primary" onclick="startInstall()">Установить</button></div>
   </div>
 
@@ -158,7 +235,7 @@
     <p class="muted" id="instphase">Готовлюсь</p>
     <div class="progress"><i id="bar"></i></div>
     <p class="muted"><span id="pct">0</span>% · музыка на колонке ненадолго прервётся</p>
-    <pre class="log" id="log"></pre>
+    <details class="logbox" id="logbox"><summary>Подробности установки</summary><pre class="log" id="log"></pre></details>
     <div class="msg" id="instmsg"></div>
     <div class="nav"><button id="instback" onclick="go('find')" hidden>К выбору колонки</button><button class="primary" id="instnext" hidden onclick="go('music')">Дальше</button></div>
   </div>
@@ -184,7 +261,7 @@
     <div class="box" id="pcnote">Windows попросит разрешение администратора — это для правила брандмауэра (только домашняя сеть) и
       включения по сети. Адрес, ключ и MAC установщик сам впишет в колонку.</div>
     <div class="msg" id="pcmsg"></div>
-    <div class="nav"><button onclick="go('done')">Пропустить</button><button class="primary" id="pcbtn" onclick="setupPc()">Подключить этот компьютер</button></div>
+    <div class="nav"><button onclick="go('done')">Пропустить</button><button id="pcremove" hidden onclick="removePc()">Удалить с этого Mac</button><button class="primary" id="pcbtn" onclick="setupPc()">Подключить этот компьютер</button></div>
   </div>
 
   <!-- 6. Готово -->
@@ -205,13 +282,18 @@
 
 <script>
 const $ = id => document.getElementById(id);
+// «0.5.0» (semver) is shown as «0.5.00», as on the speaker's pages; «0.4.41» stays.
+const shownVersion = v => /^\d+\.\d+\.\d$/.test(v || '') ? v + '0' : (v || '');
 const STEPS = ['hello', 'find', 'features', 'install', 'music', 'pc', 'done'];
 let info = {}, devices = [], chosen = null, music = 'soundcloud';
 
 function go(name) {
   document.querySelectorAll('.step').forEach(s => s.classList.toggle('on', s.dataset.step === name));
   const i = STEPS.indexOf(name);
-  $('dots').innerHTML = STEPS.map((_, k) => `<i class="${k <= i ? 'on' : ''}"></i>`).join('');
+  // Each dot shows its own slice of one gradient over the whole row.
+  const n = STEPS.length;
+  $('dots').hidden = name === 'launcher';
+  $('dots').innerHTML = STEPS.map((_, k) => `<i class="${k <= i ? 'on' : ''}" style="--dots-w:${n * 100}%;--dot-x:${n > 1 ? k / (n - 1) * 100 : 0}%"></i>`).join('');
   if (name === 'find' && !devices.length) scan();
 }
 function msg(id, text, ok) { const el = $(id); el.textContent = text || ''; el.className = 'msg ' + (ok === true ? 'ok' : ok === false ? 'err' : ''); }
@@ -228,11 +310,21 @@ function renderDevices() {
     const t = document.createElement('div');
     const name = document.createElement('b'); name.textContent = d.model;
     const sub = document.createElement('small');
-    sub.textContent = `${d.ip} · ` + (!d.root ? 'нет root' : d.soundya ? `soundya ${d.soundya} — обновится, настройки сохранятся` : 'soundya ещё нет');
+    sub.textContent = `${d.ip} · ` + (!d.root ? 'нет root'
+      : d.adb === false ? (d.net_update ? `soundya ${d.soundya} — ADB выключен, обновлю через soundya` : `soundya ${d.soundya} — ADB выключен; эту версию последний раз обновить через ADB`)
+      : d.soundya ? `soundya ${d.soundya} — обновится, настройки сохранятся` : 'soundya ещё нет');
     t.append(name, sub); b.append(ring, t);
     b.onclick = () => { chosen = d; renderDevices(); $('findnext').disabled = !d.root; msg('findmsg', d.root ? '' : 'На этой колонке нет root: сначала README → шаг 1.', d.root ? undefined : false); };
     box.appendChild(b);
   }
+  // soundya already runs there: this computer can be connected without reinstalling anything.
+  $('findpc').hidden = !(chosen && chosen.soundya && (info.os === 'windows' || info.os === 'macos'));
+}
+function onlyPc() {
+  chosen.configured = true;
+  finish();  // the «Готово» screen's address, model and link
+  $('donever').textContent = shownVersion(chosen.soundya);
+  pcText(); go('pc');
 }
 async function scan() {
   $('scanning').hidden = false; $('scantext').textContent = 'Ищу колонки в сети… (до 10 секунд)'; msg('findmsg', '');
@@ -243,7 +335,7 @@ async function scan() {
   devices = r.devices || [];
   if (devices.length === 1 && devices[0].root) { chosen = devices[0]; $('findnext').disabled = false; }
   renderDevices();
-  if (!devices.length) msg('findmsg', `В сети ${r.subnet} колонок с ADB не нашлось. Включите колонку и проверьте, что она в той же сети, или введите адрес вручную.`, false);
+  if (!devices.length) msg('findmsg', `В сети ${r.subnet} колонок не нашлось (ни с ADB, ни с soundya). Включите колонку и проверьте, что она в той же сети, или введите адрес вручную.`, false);
 }
 async function manual() {
   const ip = $('manualip').value.trim();
@@ -254,16 +346,20 @@ async function manual() {
   $('findnext').disabled = !r.root; msg('findmsg', r.root ? 'Колонка найдена.' : 'Нет root на этой колонке.', r.root);
 }
 function afterFind() {
+  // ADB closed, soundya there: the update goes through soundya.
+  if (chosen.adb === false) { startNetUpdate(''); return; }
   // An update keeps everything as it is: no need to choose.
   if (chosen.configured) startInstall(true); else go('features');
 }
 
 let poll = null;
+function resetBar() { $('bar').parentElement.classList.remove('ok', 'fail'); $('bar').style.width = '0'; $('pct').textContent = '0'; }
 async function startInstall(update) {
-  go('install');
+  go('install'); resetBar();
   $('insttitle').textContent = chosen.configured ? 'Обновляю soundya…' : 'Устанавливаю soundya…';
   $('instback').hidden = true; $('instnext').hidden = true; msg('instmsg', ''); $('log').textContent = '';
   const features = update ? null : Object.fromEntries(['soundcloud', 'airplay', 'pc', 'tv', 'bypass'].map(k => [k, $('f_' + k).checked]));
+  if (features) features.home = [...document.querySelectorAll('#homepick input')].filter(x => x.checked).map(x => x.dataset.w);
   const r = await api('/api/install', { ip: chosen.ip, features });
   if (r.error) { msg('instmsg', r.error, false); $('instback').hidden = false; return; }
   poll = setInterval(followInstall, 900);
@@ -272,19 +368,28 @@ async function followInstall() {
   let j; try { j = await api('/api/job'); } catch (e) { return; }
   $('bar').style.width = j.percent + '%'; $('pct').textContent = j.percent; $('instphase').textContent = j.phase || '';
   $('log').textContent = (j.log || []).join('\n'); $('log').scrollTop = 1e9;
+  $('bar').parentElement.classList.toggle('ok', !j.running && j.result === 'ok');
+  $('bar').parentElement.classList.toggle('fail', !j.running && j.result && j.result !== 'ok' && j.result !== 'pin');
   if (j.running) return;
   clearInterval(poll);
+  if (j.result === 'pin') {
+    const pin = prompt((j.reason && !/стоит PIN/.test(j.reason) ? j.reason + '. ' : '') + 'На панели колонки стоит PIN. Введите его, чтобы обновить:');
+    if (pin) { startNetUpdate(pin.trim()); return; }
+    $('insttitle').textContent = 'Не обновлено'; msg('instmsg', 'Нужен PIN панели колонки.', false); $('instback').hidden = false; return;
+  }
   if (j.result === 'ok') {
-    $('insttitle').textContent = 'Установлено ✓'; $('donever').textContent = j.version;
+    $('insttitle').textContent = 'Установлено ✓'; $('donever').textContent = shownVersion(j.version);
     msg('instmsg', `soundya ${j.version} запущена.`, true); $('instnext').hidden = false;
     // An update keeps the user's choices: straight to the end.
     $('instnext').onclick = () => { finish(); go(chosen.configured ? 'done' : 'music'); };
+    // Next time the app opens as a launcher for this speaker.
+    api('/api/remember', { ip: chosen.ip, model: chosen.model || '', version: j.version || '' }).catch(() => {});
   } else if (j.result === 'rolledback') {
-    $('insttitle').textContent = 'Вернула прежнюю версию';
+    $('insttitle').textContent = 'Вернула прежнюю версию'; $('logbox').open = true;
     msg('instmsg', `Новая версия не запустилась, колонка вернула прежнюю — всё работает как раньше. Причина: ${j.reason || 'нет данных'}.`, false);
     $('instback').hidden = false;
   } else {
-    $('insttitle').textContent = 'Не получилось';
+    $('insttitle').textContent = 'Не получилось'; $('logbox').open = true;
     msg('instmsg', j.reason || 'Установка не завершилась.', false); $('instback').hidden = false;
   }
 }
@@ -294,18 +399,38 @@ async function saveMusic() {
   const r = await api('/api/settings', { ip: chosen.ip, patch: { music_default: music } });
   if (r.error) { msg('musicmsg', r.error, false); return; }
   const wantPc = !chosen.configured && $('f_pc').checked;
-  go(info.os === 'windows' && (wantPc || chosen.configured) ? 'pc' : 'done');
+  const pcOs = info.os === 'windows' || info.os === 'macos';
+  pcText();
+  go(pcOs && (wantPc || chosen.configured) ? 'pc' : 'done');
   finish();
 }
+function pcText() {
+  if (info.os === 'macos') {
+    $('pcintro').textContent = 'Колонка сможет усыплять, блокировать, перезагружать и выключать этот Mac, открывать и закрывать программы, ' +
+      'искать в Google и YouTube и рассказывать о загрузке процессора и памяти.';
+    $('pcnote').innerHTML = 'Права администратора не нужны: программа запускается вместе с входом в macOS и принимает команды только из ' +
+      'домашней сети и только с ключом. Микрофон и экран она не использует.<br>Чтобы выключать, перезагружать и закрывать программы, ' +
+      'macOS спросит разрешение «soundya хочет управлять …» — нажмите «Разрешить» (это можно изменить в «Системные настройки» → ' +
+      '«Конфиденциальность и безопасность» → «Автоматизация»). «Включи компьютер» будит Mac только из сна.';
+    $('pcremove').hidden = false;
+  }
+}
 async function setupPc() {
-  $('pcbtn').disabled = true; msg('pcmsg', 'Устанавливаю программу для ПК… подтвердите запрос администратора Windows.');
+  $('pcbtn').disabled = true;
+  msg('pcmsg', info.os === 'macos' ? 'Подключаю этот Mac…' : 'Устанавливаю программу для ПК… подтвердите запрос администратора Windows.');
   const r = await api('/api/pc', { ip: chosen.ip });
   $('pcbtn').disabled = false;
   if (r.error) { msg('pcmsg', r.error, false); return; }
   msg('pcmsg', r.text, true); setTimeout(() => go('done'), 1500);
 }
+async function removePc() {
+  if (!confirm('Удалить программу для управления этим Mac? Колонка перестанет им управлять.')) return;
+  const r = await api('/api/pc/remove', { ip: chosen ? chosen.ip : '' });
+  msg('pcmsg', r.error || r.text, !r.error);
+}
 function finish() {
-  const url = `http://${chosen.ip}:8765/`;
+  // The demo ends on the real speaker's page, in its own demo (the panel's welcome without saving anything).
+  const url = info.demo && demoReal ? `http://${demoReal.ip}:8765/?demo=1` : `http://${chosen.ip}:8765/`;
   $('doneurl').textContent = url; $('openpanel').href = url; $('donemodel').textContent = chosen.model;
 }
 const IN_APP = new URLSearchParams(location.search).has('app');
@@ -316,11 +441,100 @@ function openPanel(url) {
   api('/api/open', { url }).catch(() => {});
   return false;
 }
-async function quit() { try { await api('/api/quit', {}); } catch (e) {} document.body.innerHTML = '<div class="card"><h1>Можно закрыть эту вкладку</h1></div>'; }
+// In the app the window just closes (the process exits); «Можно закрыть эту вкладку» is for a browser tab only —
+// in the app it flashed for a moment before the window went away.
+async function quit() {
+  try { await api('/api/quit', {}); } catch (e) {}
+  if (!IN_APP) document.body.innerHTML = '<div class="card"><h1>Можно закрыть эту вкладку</h1></div>';
+}
+
+// ---- Лаунчер ----
+let saved = null;
+async function launcher() {
+  let r; try { r = await api('/api/launcher'); } catch (e) { return false; }
+  if (!r.speaker) return false;
+  saved = r.speaker;
+  chosen = { ip: saved.ip, model: saved.model || 'Яндекс Станция', root: true, configured: true };
+  $('lmodel').textContent = chosen.model;
+  $('lurl').textContent = `http://${saved.ip}:8765`;
+  $('ldot').className = 'ldot';
+  $('lstate').textContent = 'проверяю связь с колонкой…';
+  $('lpc').hidden = !(info.os === 'macos' || info.os === 'windows');
+  go('launcher');
+  checkOnline();
+  return true;
+}
+// The status line follows the speaker: checked now, and again every few seconds while it does not answer
+// (and every half a minute while it does, so a switched-off speaker shows too).
+let onlineTimer = null;
+async function checkOnline() {
+  clearTimeout(onlineTimer);
+  if (!saved) return;
+  let r; try { r = await api('/api/online', { ip: saved.ip }); } catch (e) { r = { online: false, why: 'установщик не отвечает' }; }
+  if (!saved) return;
+  saved.online = !!r.online;
+  if (r.version) saved.version = r.version;
+  $('ldot').className = 'ldot ' + (r.online ? 'on' : 'off');
+  $('lstate').textContent = r.online ? `в сети · soundya ${shownVersion(saved.version)}` : `${saved.ip}: ${r.why || 'не отвечает'} — проверяю снова…`;
+  if (document.querySelector('.step.on')?.dataset.step === 'launcher' || !document.querySelector('.step.on')) onlineTimer = setTimeout(checkOnline, r.online ? 30000 : 4000);
+}
+function launcherOpen() {
+  const url = `http://${saved.ip}:8765/`;
+  if (IN_APP) api('/api/open', { url }).catch(() => {}); else window.open(url, '_blank');
+}
+async function launcherUpdate() {
+  msg('lmsg', 'Проверяю колонку…');
+  const r = await api('/api/probe', { ip: saved.ip });
+  if (r.error) { msg('lmsg', r.error, false); return; }
+  chosen = r; msg('lmsg', '');
+  // ADB is closed (after a reboot) but soundya answers: the update goes through soundya.
+  if (r.adb === false) startNetUpdate(''); else startInstall(true);
+}
+// Through soundya: the speaker asks «установить?» out loud and installs after «Алиса, да».
+async function startNetUpdate(pin) {
+  go('install'); resetBar();
+  $('insttitle').textContent = 'Обновляю soundya…';
+  $('instback').hidden = true; $('instnext').hidden = true; msg('instmsg', ''); $('log').textContent = '';
+  const r = await api('/api/netupdate', { ip: (chosen || saved).ip, pin });
+  if (r.error) { msg('instmsg', r.error, false); $('instback').hidden = false; return; }
+  poll = setInterval(followInstall, 900);
+}
+function launcherPc() { finish(); saveMusicSkip(); }
+// To «Этот компьютер» without the music step (the speaker keeps its choice).
+function saveMusicSkip() { pcText(); go('pc'); }
+let demoReal = null;
+async function startDemo() {
+  demoReal = saved;
+  await api('/api/demo', { on: true });
+  info.demo = true; saved = null; chosen = null; devices = [];
+  showDemoBadge();
+  go('hello');
+}
+async function stopDemo() {
+  await api('/api/demo', { on: false });
+  location.reload();
+}
+function showDemoBadge() {
+  if ($('demobadge')) return;
+  const b = document.createElement('button'); b.id = 'demobadge'; b.className = 'demobadge';
+  b.textContent = 'Демо — колонка не трогается · выйти'; b.onclick = stopDemo;
+  document.body.appendChild(b);
+}
+async function launcherOther() {
+  if (!confirm('Забыть эту колонку и найти другую? С колонки ничего не удаляется.')) return;
+  await api('/api/forget', {}).catch(() => {});
+  saved = null; chosen = null; go('find');
+}
 
 (async () => {
-  go('hello');
-  try { info = await api('/api/info'); $('ver').textContent = 'soundya ' + info.version; } catch (e) {}
+  try {
+    info = await api('/api/info');
+    $('ver').textContent = 'soundya ' + shownVersion(info.version); $('hellover').textContent = shownVersion(info.version);
+  } catch (e) {}
+  // Developer builds: the whole first run as a new user sees it, without touching the speaker.
+  if (/dev/.test(info.version || '')) $('ldemo').hidden = false;
+  if (info.demo) showDemoBadge();
+  if (!(await launcher())) go('hello');
   setInterval(() => fetch('/api/ping').catch(() => {}), 20000);
 })();
 </script>

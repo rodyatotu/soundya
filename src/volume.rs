@@ -194,6 +194,8 @@ fn learn_later(n: i32) {
 /// with no amixer on the speaker, by pressing her buttons.
 pub fn set(target: i32) -> Result<i32, String> {
     let _one = BUSY.lock().unwrap();
+    // Alice's volume manager and the buttons make the firmware draw the level.
+    crate::led::firmware_animates();
     let target = target.clamp(0, MAX);
     // Under Luna: its volume API (Alice's volume manager, else the mixer, done
     // the way Luna knows works on this model).
@@ -387,6 +389,7 @@ fn unhush_click() {
 /// One press of + (`up`) or −, `steps` times, without Alice's tick.
 pub fn press(up: bool, steps: u32) -> Result<(), String> {
     PRESSING.store(true, Ordering::Release);
+    crate::led::firmware_animates();
     let hushed = hush_click();
     let r = press_keys(up, steps);
     // The button reader sees them a moment later, and the last tick plays then.

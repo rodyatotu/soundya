@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+  <key>NSExtension</key><dict><key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string></dict>
+  <!-- macOS 15: the speaker is in the local network; without this permission «Колонка не отвечает». -->
+  <key>NSLocalNetworkUsageDescription</key><string>Виджет soundya показывает, что играет на вашей колонке, и управляет ею по домашней сети.</string>
+  <key>NSAppTransportSecurity</key><dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+    <key>NSAllowsArbitraryLoads</key><true/>
+  </dict>
+</dict></plist>

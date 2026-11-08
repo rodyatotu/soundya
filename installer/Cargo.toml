@@ -12,6 +12,11 @@ publish = false
 [dependencies]
 serde_json = "1"
 
+[features]
+# The developer build: the wizard with the feedback mode, installs the speaker's
+# developer build (dist/soundya-armv7-dev.tar). None of it is in the normal build.
+dev = []
+
 [profile.release]
 opt-level = "z"
 lto = "fat"

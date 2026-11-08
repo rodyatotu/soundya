@@ -49,6 +49,14 @@ pub struct Settings {
     /// AirPlay receiver on.
     #[serde(default = "yes")]
     pub airplay: bool,
+    /// Bluetooth output: the headphones / speaker soundya's music goes to (bt.rs).
+    #[serde(default)]
+    pub bt_mac: String,
+    #[serde(default)]
+    pub bt_name: String,
+    /// Music to that device now (when it is connected); off: on the speaker.
+    #[serde(default)]
+    pub bt_on: bool,
     /// Name in the AirPlay list on the iPhone; "" = «Яндекс Станция».
     #[serde(default)]
     pub airplay_name: String,
@@ -58,6 +66,11 @@ pub struct Settings {
     /// Anonymous daily «I'm running» ping for the speaker count (src/stats.rs).
     #[serde(default = "yes")]
     pub stats: bool,
+    /// The last phrase Alice heard in /api/status (`heard`), for programs on the
+    /// PC such as the Ditoo Plus launcher. Off: phrases are private, and the
+    /// status is readable by anyone in the home network.
+    #[serde(default)]
+    pub share_heard: bool,
     /// «Обход блокировок без прокси»: the strategy found by bypass::pick ("" = none yet).
     #[serde(default)]
     pub bypass: String,
@@ -163,6 +176,9 @@ pub struct Settings {
     /// Morning brief: on, minute of the day, "all" | "weekdays".
     #[serde(default)]
     pub brief_on: bool,
+    /// The brief also when told «Алиса, доброе утро».
+    #[serde(default)]
+    pub brief_phrase: bool,
     #[serde(default = "eight")]
     pub brief_at: u16,
     #[serde(default = "all_days")]
@@ -170,6 +186,65 @@ pub struct Settings {
     /// New tasks by voice: "google" (when connected) or "local".
     #[serde(default = "google_target")]
     pub plan_target: String,
+    /// «Сделали?» without an answer: again after this many minutes, this many times.
+    #[serde(default = "thirty")]
+    pub plan_check_every: u16,
+    #[serde(default = "three")]
+    pub plan_check_times: u8,
+    /// Working hours (minutes of the day) and days: "weekdays" | "all".
+    #[serde(default = "ten_hours")]
+    pub work_from: u16,
+    #[serde(default = "nineteen_hours")]
+    pub work_to: u16,
+    #[serde(default = "weekdays")]
+    pub work_days: String,
+    /// The planner's mode: "simple" (one list, nothing about work) | "work" (work tasks
+    /// apart: «сделали?» in working hours, to Google in «Рабочие — в Google»). "" = an
+    /// older settings file: "work" if it chose «Рабочие — в Google», else "simple".
+    #[serde(default)]
+    pub plan_mode: String,
+    /// Pomodoro (timer.rs): minutes of work, break, long break; rounds before the long one.
+    #[serde(default = "pomo_work")]
+    pub pomo_work: u16,
+    #[serde(default = "pomo_break")]
+    pub pomo_break: u16,
+    #[serde(default = "pomo_long")]
+    pub pomo_long: u16,
+    #[serde(default = "pomo_rounds")]
+    pub pomo_rounds: u8,
+    /// Scenarios (macro phrases) run when a pomodoro's work starts, a break starts, it ends.
+    #[serde(default)]
+    pub pomo_on_work: String,
+    #[serde(default)]
+    pub pomo_on_break: String,
+    #[serde(default)]
+    pub pomo_on_done: String,
+    /// Teams for «созвон … пригласи всю команду» (Google Meet + Telegram group).
+    #[serde(default)]
+    pub teams: Vec<Team>,
+    /// The bot that posts meeting links (e.g. the team's bot running on a VPS): the
+    /// speaker only sends with it (sendMessage), never reads its updates, so it does not
+    /// fight the VPS for them. Empty: the speaker's own Telegram bot. A secret.
+    #[serde(default)]
+    pub meet_bot_token: String,
+    /// A meeting without a length said: this many minutes.
+    #[serde(default = "thirty")]
+    pub meet_minutes: u16,
+    /// The panel's home screen: widgets switched off, and their order (empty = the usual one).
+    /// Kept on the speaker, so every browser and phone shows the same; chosen in the installer.
+    #[serde(default = "home_hidden")]
+    pub home_hidden: Vec<String>,
+    #[serde(default)]
+    pub home_order: Vec<String>,
+    /// The panel's own «Пульт» tab (a big TV remote), switched on in «Устройства».
+    #[serde(default)]
+    pub remote_tab: bool,
+    /// Keep the speaker's network ADB (port 5555) on, also after a restart (adbkeep.rs).
+    #[serde(default = "yes")]
+    pub adb_keep: bool,
+    /// soundya's timer on the clock display and the ring.
+    #[serde(default = "yes")]
+    pub timer_face: bool,
     /// Google Calendar + Tasks with the user's own OAuth client (google.rs).
     /// The secret and the refresh token are secrets.
     #[serde(default)]
@@ -277,6 +352,23 @@ pub struct Contact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct Team {
+    /// «команда», «маркетинг»: «пригласи команду маркетинг»; the first one is «вся команда».
+    #[serde(default)]
+    pub name: String,
+    /// Invited to the meeting in Google Calendar.
+    #[serde(default)]
+    pub emails: Vec<String>,
+    /// Telegram group the meeting link goes to (0 = none) and its title, by bot number.
+    #[serde(default)]
+    pub tg_chat: i64,
+    #[serde(default)]
+    pub tg_chat_name: String,
+    #[serde(default)]
+    pub tg_bot: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Macro {
     /// Spoken trigger, e.g. "включи вечерний режим".
     #[serde(default)]
@@ -326,6 +418,64 @@ fn ten() -> u8 {
 fn display_widgets() -> Vec<String> {
     vec!["clock".into(), "weather".into(), "pc".into()]
 }
+fn three() -> u8 {
+    3
+}
+
+fn ten_hours() -> u16 {
+    10 * 60
+}
+
+fn nineteen_hours() -> u16 {
+    19 * 60
+}
+
+fn weekdays() -> String {
+    "weekdays".into()
+}
+
+/// The home widgets the panel knows.
+pub const HOME_WIDGETS: [&str; 9] = ["weather", "timer", "plans", "remote", "scenes", "foryou", "sc", "recent", "pc"];
+
+/// The timer is the owner's own tool: off on the home screen unless chosen.
+fn home_hidden() -> Vec<String> {
+    vec!["timer".into()]
+}
+
+fn pomo_work() -> u16 {
+    25
+}
+fn pomo_break() -> u16 {
+    5
+}
+fn pomo_long() -> u16 {
+    15
+}
+fn pomo_rounds() -> u8 {
+    4
+}
+
+impl Settings {
+    /// "work" | "simple", also for a settings file from before the mode existed.
+    pub fn plan_mode(&self) -> &'static str {
+        match self.plan_mode.as_str() {
+            "work" => "work",
+            "" if self.plan_target == "work" => "work",
+            _ => "simple",
+        }
+    }
+
+    /// Where new tasks go in this mode: «Рабочие — в Google» only in the work mode
+    /// (in the simple one there are no work tasks: those stay on the speaker).
+    pub fn plan_target_now(&self) -> String {
+        if self.plan_target == "work" && self.plan_mode() == "simple" { "local".into() } else { self.plan_target.clone() }
+    }
+
+    pub fn pomo(&self) -> crate::timer::Pomo {
+        crate::timer::Pomo { work: self.pomo_work, brk: self.pomo_break, long: self.pomo_long, rounds: self.pomo_rounds }.clamped()
+    }
+}
+
 fn thirty() -> u16 {
     30
 }
@@ -397,9 +547,13 @@ impl Default for Settings {
             pc_mac: String::new(),
             pc_contacts: Vec::new(),
             airplay: true,
+            bt_mac: String::new(),
+            bt_name: String::new(),
+            bt_on: false,
             airplay_name: String::new(),
             airplay_icon: speaker(),
             stats: true,
+            share_heard: false,
             tv_host: String::new(),
             macros: Vec::new(),
             bypass: String::new(),
@@ -456,9 +610,31 @@ impl Default for Settings {
             plan_warn: 30,
             plan_due_time: 18 * 60,
             brief_on: false,
+            brief_phrase: false,
             brief_at: 8 * 60,
             brief_days: "all".into(),
             plan_target: "google".into(),
+            plan_check_every: 30,
+            plan_check_times: 3,
+            work_from: 10 * 60,
+            work_to: 19 * 60,
+            work_days: "weekdays".into(),
+            plan_mode: "simple".into(),
+            pomo_work: 25,
+            pomo_break: 5,
+            pomo_long: 15,
+            pomo_rounds: 4,
+            timer_face: true,
+            teams: Vec::new(),
+            meet_minutes: 30,
+            meet_bot_token: String::new(),
+            adb_keep: true,
+            home_hidden: home_hidden(),
+            home_order: Vec::new(),
+            remote_tab: false,
+            pomo_on_work: String::new(),
+            pomo_on_break: String::new(),
+            pomo_on_done: String::new(),
             g_on: false,
             g_client_id: String::new(),
             g_client_secret: String::new(),
@@ -595,7 +771,7 @@ impl Settings {
         let main = path(dir);
         // The current file is good (it was read or written by us): keep it as the backup.
         if crate::fsx::read_string(&main).is_some_and(|t| parse(&t).is_ok()) {
-            let _ = std::fs::copy(&main, backup_path(dir)).and_then(|_| sync_file(&backup_path(dir)));
+            let _ = crate::fsx::copy(&main, &backup_path(dir)).and_then(|_| sync_file(&backup_path(dir)));
         }
         std::fs::rename(&tmp, &main)?;
         sync_dir(dir);
@@ -664,6 +840,12 @@ impl Settings {
                         self.bypass_on = false;
                     }
                 }
+                // «Что показывать на главной»: the widgets chosen, in their order.
+                "home" => {
+                    let shown: Vec<String> = v.split(',').map(|w| w.trim().to_owned()).filter(|w| HOME_WIDGETS.contains(&w.as_str())).collect();
+                    self.home_hidden = HOME_WIDGETS.iter().filter(|w| !shown.iter().any(|s| s == *w)).map(|w| w.to_string()).collect();
+                    self.home_order = shown;
+                }
                 _ => continue,
             }
             any = true;
@@ -728,6 +910,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_planner_mode_survives_an_old_settings_file() {
+        // Before the mode: «Рабочие — в Google» meant the work mode.
+        let s: Settings = serde_json::from_str(r#"{"plan_target":"work"}"#).unwrap();
+        assert_eq!((s.plan_mode(), s.plan_target_now().as_str()), ("work", "work"));
+        let s: Settings = serde_json::from_str(r#"{"plan_target":"google"}"#).unwrap();
+        assert_eq!(s.plan_mode(), "simple");
+        // Switched to the simple one: no work tasks, so nothing «work» goes to Google.
+        let s: Settings = serde_json::from_str(r#"{"plan_target":"work","plan_mode":"simple"}"#).unwrap();
+        assert_eq!((s.plan_mode(), s.plan_target_now().as_str()), ("simple", "local"));
+        assert_eq!(s.pomo(), crate::timer::Pomo { work: 25, brk: 5, long: 15, rounds: 4 });
+        assert!(s.timer_face);
+    }
+
+    #[test]
+    fn the_home_screen_chosen_in_the_installer() {
+        let mut s = Settings::default();
+        assert_eq!(s.home_hidden, vec!["timer"], "the timer only when asked for");
+        assert!(s.apply_features("home=plans,timer,recent\n"));
+        assert_eq!(s.home_order, vec!["plans", "timer", "recent"]);
+        assert_eq!(s.home_hidden, vec!["weather", "remote", "scenes", "foryou", "sc", "pc"], "everything not chosen");
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.home_hidden, vec!["timer"]);
+    }
+
+    #[test]
     fn installer_choice() {
         let mut s = Settings::default();
         assert!(s.apply_features("soundcloud=1\nairplay=0\npc=0\ntv=1\nbypass=0\n"));
@@ -768,6 +975,7 @@ mod tests {
         assert_eq!(s.led_order, "rgb");
         assert!(s.onboarded, "no wizard for existing users");
         assert!(!Settings::default().onboarded, "wizard on a fresh install");
+        assert!(!s.share_heard && !Settings::default().share_heard, "Alice's phrases are not shared unless allowed");
         // The old file is kept as it was.
         assert!(crate::fsx::read_string(&d.join("config.v0.json")).unwrap().contains("2-1-x"));
         let _ = std::fs::remove_dir_all(&d);

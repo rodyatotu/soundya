@@ -136,12 +136,19 @@ fn reports_dir(dir: &Path) -> PathBuf {
     dir.join("reports")
 }
 
-/// Where reports go: SOUNDYA_REPORT_URL (soundya.env) or the statistics server.
+/// Reports' own server, set at build time (SOUNDYA_REPORT_URL): the statistics may stay on
+/// another one (a server that can reach Telegram is not always the one that counts speakers).
+const BUILT_REPORT_URL: Option<&str> = option_env!("SOUNDYA_REPORT_URL");
+
+/// Where reports go: SOUNDYA_REPORT_URL (soundya.env), the one built in, or the statistics server.
 pub fn url() -> String {
     if let Ok(u) = std::env::var("SOUNDYA_REPORT_URL") {
         if !u.trim().is_empty() {
             return u.trim().to_owned();
         }
+    }
+    if let Some(u) = BUILT_REPORT_URL.map(str::trim).filter(|u| !u.is_empty()) {
+        return u.to_owned();
     }
     let base = crate::stats::URL;
     if base.is_empty() {
@@ -164,7 +171,7 @@ fn new_id() -> String {
 
 /// Values that must never leave the speaker, read from the settings.
 pub fn secrets(s: &crate::settings::Settings) -> Vec<String> {
-    let mut out = vec![s.token.clone(), s.pc_token.clone(), s.panel_pin.clone(), s.cal_url.clone(), s.g_client_secret.clone(), s.g_refresh.clone()];
+    let mut out = vec![s.token.clone(), s.pc_token.clone(), s.panel_pin.clone(), s.cal_url.clone(), s.g_client_secret.clone(), s.g_refresh.clone(), s.meet_bot_token.clone()];
     // The calendar's secret part alone too (…/private-<hex>/…), in case it is logged in pieces.
     if let Some(p) = s.cal_url.split('/').find(|p| p.starts_with("private-")) {
         out.push(p.to_owned());
@@ -324,6 +331,13 @@ fn read(p: &str) -> Option<String> {
     crate::fsx::read_string(Path::new(p))
 }
 
+/// The end of /tmp/soundya.log without secrets (the developer build's feedback).
+#[cfg(feature = "dev")]
+pub fn log_tail(dir: &Path, lines: usize) -> String {
+    let secrets = secrets(&crate::settings::Settings::load(dir));
+    redact(&tail(&read("/tmp/soundya.log").unwrap_or_default(), lines), &secrets, true)
+}
+
 fn tail(text: &str, lines: usize) -> String {
     let all: Vec<&str> = text.lines().collect();
     all[all.len().saturating_sub(lines)..].join("\n")
@@ -384,7 +398,9 @@ fn status_summary(shared: &Shared) -> Value {
                 "tv_host_set": set(s.get("tv_host")),
                 "contacts": s.get("pc_contacts").and_then(Value::as_array).map_or(0, Vec::len),
             });
-            for k in ["token", "proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "zapret_args", "airplay_name", "cal_url", "g_client_secret", "g_refresh", "g_client_id"] {
+            for k in ["token", "proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "zapret_args", "airplay_name", "cal_url", "g_client_secret", "g_refresh", "g_client_id",
+                      // Personal: team emails, Telegram ids and names, the headphones, the city.
+                      "teams", "tg_allowed", "tg_bots", "meet_bot_token", "bt_mac", "display_city", "panel_pin"] {
                 s.remove(k);
             }
             s.insert("secrets".into(), facts);
@@ -429,7 +445,7 @@ pub fn build(dir: &Path, shared: &Shared, req: &Request) -> Vec<File> {
         }
         files.push(File { name: "error.log".into(), data: clean(&err).into_bytes() });
         let diag = json!({
-            "soundya": env!("CARGO_PKG_VERSION"),
+            "soundya": crate::VERSION,
             "model": crate::stats::model(),
             "firmware": firmware(),
             "kernel": read("/proc/version").map(|v| v.trim().to_owned()),
@@ -549,7 +565,7 @@ fn record(req: &Request, id: String, files: &[File], dir: &Path) -> Record {
         last_error: None,
         next_try: 0,
         sent_at: None,
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: crate::VERSION.into(),
         model: crate::stats::model(),
         firmware: firmware(),
         installation: req.install_id.then(|| crate::stats::install_id(dir)).flatten(),
@@ -608,10 +624,10 @@ fn prune(dir: &Path) {
     for (i, r) in all.iter().enumerate() {
         let fdir = reports_dir(dir).join(&r.id);
         if r.status != "queued" {
-            let _ = std::fs::remove_dir_all(&fdir);
+            crate::fsx::remove_tree(&fdir);
         }
         if i >= KEEP {
-            let _ = std::fs::remove_dir_all(&fdir);
+            crate::fsx::remove_tree(&fdir);
             let _ = std::fs::remove_file(reports_dir(dir).join(format!("{}.json", r.id)));
         }
     }
@@ -644,7 +660,7 @@ fn send_one(dir: &Path, r: &Record, proxy: &str) -> Sent {
     let fdir = reports_dir(dir).join(&r.id);
     let mut files = Vec::new();
     for (name, _) in &r.files {
-        match std::fs::read(fdir.join(name)) {
+        match crate::fsx::read_bytes(&fdir.join(name)) {
             Ok(data) => files.push(json!({ "name": name, "data": crate::pc::base64(&data) })),
             Err(e) => return Sent::Never(format!("файл {name} пропал: {e}")),
         }
@@ -671,14 +687,22 @@ fn send_one(dir: &Path, r: &Record, proxy: &str) -> Sent {
         Err(ureq::Error::Status(code, resp)) => {
             let why = resp.into_string().unwrap_or_default();
             let why = clip(&why, 200);
-            match code {
-                429 => Sent::Later("сервер просит подождать".into()),
-                400 | 404 | 413 | 422 => Sent::Never(format!("сервер не принял отчёт ({code} {why})")),
-                503 => Sent::Later("приём отчётов на сервере выключен".into()),
-                _ => Sent::Later(format!("сервер ответил {code} {why}")),
-            }
+            answer(code, &why)
         }
         Err(e) => Sent::Later(format!("нет связи с сервером: {e}")),
+    }
+}
+
+/// The server's refusal → try later or give up.
+fn answer(code: u16, why: &str) -> Sent {
+    match code {
+        429 => Sent::Later("сервер просит подождать".into()),
+        // No /report at all: a server from before 0.5.00 (only /feedback). Kept and sent
+        // again once the server is updated (server/README.md), not thrown away.
+        404 => Sent::Later("на сервере старая версия без приёма отчётов (404) — повторю, когда его обновят".into()),
+        400 | 413 | 422 => Sent::Never(format!("сервер не принял отчёт ({code} {why})")),
+        503 => Sent::Later("приём отчётов на сервере выключен".into()),
+        _ => Sent::Later(format!("сервер ответил {code} {why}")),
     }
 }
 
@@ -772,6 +796,14 @@ pub fn run(dir: PathBuf, shared: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_server_keeps_the_report_for_later() {
+        // The owner's VPS ran stats.py from 0.4.40: /report → 404, and the reports were thrown away.
+        assert!(matches!(answer(404, "not found"), Sent::Later(e) if e.contains("старая версия")));
+        assert!(matches!(answer(413, "too big"), Sent::Never(_)), "a report too big stays refused");
+        assert!(matches!(answer(503, ""), Sent::Later(_)));
+    }
 
     #[test]
     fn secrets_never_survive() {

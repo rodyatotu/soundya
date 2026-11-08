@@ -657,9 +657,11 @@ function Test-Auth($req) {
         if (-not $ts -or -not $nonce -or [Math]::Abs($now - [long]$ts) -gt 120) { return $false }
         if ($Seen.Contains("$ts/$nonce")) { return $false }
         $head = [Text.Encoding]::UTF8.GetBytes("$ts`n$nonce`n$($req.Path)`n")
-        $msg = New-Object byte[] ($head.Length + @($req.Raw).Count)
+        $raw = [byte[]]$req.Raw
+        if ($null -eq $raw) { $raw = [byte[]]@() }
+        $msg = New-Object byte[] ($head.Length + $raw.Length)
         [Array]::Copy($head, $msg, $head.Length)
-        if (@($req.Raw).Count) { [Array]::Copy([byte[]]@($req.Raw), 0, $msg, $head.Length, @($req.Raw).Count) }
+        if ($raw.Length) { [Array]::Copy($raw, 0, $msg, $head.Length, $raw.Length) }
         $h = New-Object System.Security.Cryptography.HMACSHA256 (,[Text.Encoding]::UTF8.GetBytes($Key))
         $want = -join ($h.ComputeHash($msg) | ForEach-Object { $_.ToString('x2') })
         if ($want -ne $sign.ToLower()) { return $false }
@@ -717,6 +719,46 @@ function Test-Running([string]$name) {
     if ($running.Count) { "Да, $name запущен" } else { "Нет, $name сейчас не запущен" }
 }
 
+# Scenarios: a mouse click at screen pixels and a key / shortcut (the speaker checked them; checked again here).
+$MouseCode = @'
+using System; using System.Runtime.InteropServices;
+public static class SoundyaMouse {
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+    public static void Click(int x, int y, bool right, bool twice) {
+        SetCursorPos(x, y);
+        uint down = right ? 0x0008u : 0x0002u, up = right ? 0x0010u : 0x0004u;
+        for (int i = 0; i < (twice ? 2 : 1); i++) { mouse_event(down, 0, 0, 0, UIntPtr.Zero); mouse_event(up, 0, 0, 0, UIntPtr.Zero); System.Threading.Thread.Sleep(60); }
+    }
+}
+'@
+function Do-Click([string]$spec) {
+    if ($spec -notmatch '^(\d{1,5}),(\d{1,5})(,(double|right))?$') { return 'Не поняла, куда кликнуть' }
+    if (-not ('SoundyaMouse' -as [type])) { Add-Type -TypeDefinition $MouseCode -Language CSharp }
+    [SoundyaMouse]::Click([int]$Matches[1], [int]$Matches[2], $Matches[4] -eq 'right', $Matches[4] -eq 'double')
+    'Готово'
+}
+$KeyNames = @{ enter = '{ENTER}'; esc = '{ESC}'; tab = '{TAB}'; space = ' '; backspace = '{BACKSPACE}'; delete = '{DELETE}';
+    up = '{UP}'; down = '{DOWN}'; left = '{LEFT}'; right = '{RIGHT}'; home = '{HOME}'; end = '{END}'; pageup = '{PGUP}';
+    pagedown = '{PGDN}'; insert = '{INSERT}' }
+function Do-Key([string]$spec) {
+    $parts = $spec.ToLower().Split('+')
+    $key = $parts[-1]
+    $mods = ''
+    foreach ($m in $parts[0..($parts.Count - 2)]) {
+        if ($parts.Count -eq 1) { break }
+        switch ($m) { 'ctrl' { $mods += '^' } 'cmd' { $mods += '^' } 'shift' { $mods += '+' } 'alt' { $mods += '%' } 'option' { $mods += '%' }
+            'win' { return 'Клавишу Windows сценарий нажать не может' } default { return 'Не знаю такой клавиши' } }
+    }
+    if ($KeyNames.ContainsKey($key)) { $k = $KeyNames[$key] }
+    elseif ($key -match '^f([1-9]|1[0-2])$') { $k = '{F' + $Matches[1] + '}' }
+    elseif ($key -match '^[a-z0-9]$') { $k = $key }
+    elseif ($key -match '^[-=\[\];'',./`]$') { $k = '{' + $key + '}' }
+    else { return 'Не знаю такой клавиши' }
+    (New-Object -ComObject WScript.Shell).SendKeys($mods + $k)
+    'Готово'
+}
+
 function Handle([string]$action, [string]$body) {
     switch ($action) {
         'ping' { "Компьютер $env:COMPUTERNAME на связи" }
@@ -725,6 +767,8 @@ function Handle([string]$action, [string]$body) {
         'open' { Do-Open $body }
         'close' { Do-Close $body }
         'do' { Do-Command $body }
+        'click' { Do-Click $body }
+        'key' { Do-Key $body }
         'lock' { Start-Process rundll32.exe 'user32.dll,LockWorkStation'; 'Заблокировала компьютер' }
         'sleep' {
             Later { Start-Sleep -Seconds 2; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false) | Out-Null }
@@ -764,14 +808,20 @@ function Read-Request($stream) {
     [pscustomobject]@{
         Method = $parts[0]; Path = $parts[1]; Headers = $headers
         Body = [Text.Encoding]::UTF8.GetString($buf, 0, $got)
-        Raw = $buf[0..([Math]::Max($got, 1) - 1)] | Select-Object -First $got
+        # Always a byte[]: with no body the old expression gave $null, and @($null).Count
+        # is 1, so a stray zero byte went into the signed message and every command
+        # without a body (ping, sleep, lock, metrics) was refused as a wrong key.
+        Raw = $(if ($got -gt 0) { [byte[]]$buf[0..($got - 1)] } else { [byte[]]@() })
     }
 }
 
 function Send-Answer($stream, [int]$code, [string]$text) {
     $reason = @{ 200 = 'OK'; 403 = 'Forbidden'; 404 = 'Not Found'; 400 = 'Bad Request' }[$code]
     $body = [Text.Encoding]::UTF8.GetBytes($text)
-    $head = "HTTP/1.1 $code $reason`r`nContent-Type: text/plain; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
+    # A refusal says that this soundya-pc checks signatures, so the speaker never
+    # retries with the key in the clear (it does that only for soundya-pc before 0.5.00).
+    $auth = if ($code -eq 403) { "X-Soundya-Auth: hmac`r`n" } else { '' }
+    $head = "HTTP/1.1 $code $reason`r`n$($auth)Content-Type: text/plain; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
     $h = [Text.Encoding]::ASCII.GetBytes($head)
     $stream.Write($h, 0, $h.Length)
     $stream.Write($body, 0, $body.Length)

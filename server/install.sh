@@ -16,7 +16,12 @@ command -v python3 >/dev/null || { apt-get update && apt-get install -y python3;
 ENVFILE=/etc/soundya-stats.env
 if [ -n "${SOUNDYA_TG_TOKEN:-}" ] && [ -n "${SOUNDYA_TG_CHAT:-}" ]; then
     umask 077
-    printf 'SOUNDYA_TG_TOKEN=%s\nSOUNDYA_TG_CHAT=%s\n' "$SOUNDYA_TG_TOKEN" "$SOUNDYA_TG_CHAT" > "$ENVFILE"
+    # Only these two lines are replaced: the rest (SOUNDYA_COMMUNITY, SOUNDYA_CHANNEL_INVITE,
+    # SOUNDYA_TARGET_CHAT, SOUNDYA_ADMINS…) stays. It used to be overwritten whole.
+    touch "$ENVFILE"
+    grep -v -e '^SOUNDYA_TG_TOKEN=' -e '^SOUNDYA_TG_CHAT=' "$ENVFILE" > "$ENVFILE.new" || true
+    printf 'SOUNDYA_TG_TOKEN=%s\nSOUNDYA_TG_CHAT=%s\n' "$SOUNDYA_TG_TOKEN" "$SOUNDYA_TG_CHAT" >> "$ENVFILE.new"
+    mv "$ENVFILE.new" "$ENVFILE"
     chown soundya-stats:soundya-stats "$ENVFILE" 2>/dev/null || true
     echo "обратная связь включена: токен и chat id записаны в $ENVFILE"
 elif [ ! -f "$ENVFILE" ]; then
@@ -28,6 +33,7 @@ id soundya-stats >/dev/null 2>&1 || useradd --system --home /var/lib/soundya-sta
 install -d -o soundya-stats -g soundya-stats /var/lib/soundya-stats
 install -D -m 755 "$SRC/stats.py" /opt/soundya-stats/stats.py
 install -D -m 644 "$SRC/showcase.html" /opt/soundya-stats/showcase.html
+install -D -m 644 "$SRC/community-bot.py" /opt/soundya-stats/community-bot.py
 cat > /etc/systemd/system/soundya-stats.service <<UNIT
 [Unit]
 Description=soundya statistics (counts running speakers)

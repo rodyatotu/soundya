@@ -21,6 +21,11 @@ const ORANGE: (u8, u8, u8) = (255, 50, 0);
 const TICK_MS: u64 = 50;
 /// Alice quiet for this long before the ring is ours again.
 const IDLE_MS: u64 = 1000;
+/// After a button press or a volume change the firmware shows the volume on the
+/// ring: it is left to it for this long (from the last press)…
+const KEY_YIELD_MS: u64 = 2500;
+/// …and for this long after the LEDs last changed by someone else's hand.
+const FOREIGN_YIELD_MS: u64 = 1200;
 /// A playing track whose position has not moved for this long is loading.
 const STUCK_MS: u64 = 1500;
 /// One breath of the loading animation: fades out and back in.
@@ -54,7 +59,8 @@ fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
 /// green, so the colour is gamma-corrected (2.2) the way a screen would.
 pub fn led_colour(hex: &str) -> Option<Rgb> {
     let h = hex.trim().trim_start_matches('#');
-    if h.len() != 6 {
+    // Bytes are checked, so «#aжbcd» (6 bytes) cannot cut a letter in half and panic.
+    if h.len() != 6 || !h.bytes().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
     let ch = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
@@ -182,6 +188,23 @@ fn music_frame(light: &Light, zones: usize, heard: Option<[f32; 3]>, smooth: &mu
 }
 
 /// Smooth fade out and in, 1 → BREATH_MIN → 1 over BREATH_MS.
+/// soundya's timer on the ring (timer.rs): the part of the ring still left lights up
+/// (work red, break green, a plain timer in the quiet colour), dimmer when paused;
+/// a ring of one zone cannot show a part, so only the end. At the end: blinking.
+pub fn timer_frame(zones: usize, left: f32, work: bool, plain: bool, paused: bool, ended: bool, quiet: Rgb, bright: f32, ms: u64) -> Option<Vec<Rgb>> {
+    let colour = if plain { quiet } else if work { (255, 30, 10) } else { (0, 200, 40) };
+    if ended {
+        let on = (ms / 300) % 2 == 0;
+        return Some(vec![if on { scale((255, 255, 255), bright) } else { (0, 0, 0) }; zones]);
+    }
+    if zones < 3 {
+        return None;
+    }
+    let level = bright * if paused { 0.12 } else { 0.35 };
+    let lit = (left.clamp(0.0, 1.0) * zones as f32).ceil() as usize;
+    Some((0..zones).map(|i| if i < lit { scale(colour, level) } else { (0, 0, 0) }).collect())
+}
+
 fn breath(ms: u64) -> f32 {
     let phase = (ms % BREATH_MS as u64) as f32 / BREATH_MS * std::f32::consts::TAU;
     BREATH_MIN + (1.0 - BREATH_MIN) * (0.5 + 0.5 * phase.cos())
@@ -442,6 +465,14 @@ impl Ring {
         }
     }
 
+    /// The raw values of every LED (sysfs only; the others cannot be read back).
+    fn snapshot(&self) -> Option<Vec<u32>> {
+        match self {
+            Ring::Sysfs(zones) => Some(zones.iter().flat_map(|z| z.paths().map(|p| brightness(p).unwrap_or(u32::MAX))).collect()),
+            _ => None,
+        }
+    }
+
     /// The ring shows exactly `frame` (one colour per zone)?
     fn shows(&self, frame: &[Rgb]) -> bool {
         match self {
@@ -660,6 +691,37 @@ mod mini1 {
     }
 }
 
+/// A button was pressed or the volume set: the firmware animates the ring now.
+static KEY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Called on the speaker's button presses and on every volume change.
+pub fn firmware_animates() {
+    KEY.store(true, Ordering::Release);
+}
+
+/// When the ring is ours again. Before 0.5.00 the loop redrew its frame the
+/// moment it saw another one, so with the firmware drawing the volume the two
+/// took turns every 40 ms and the ring blinked.
+#[derive(Default)]
+struct Yield {
+    wait_ms: u64,
+}
+
+impl Yield {
+    /// One tick: `pressed` — a button or a volume change since the last tick;
+    /// `foreign` — the LEDs changed and not by us. True when we may draw.
+    fn tick(&mut self, tick: u64, pressed: bool, foreign: bool) -> bool {
+        self.wait_ms = self.wait_ms.saturating_sub(tick);
+        if pressed {
+            self.wait_ms = self.wait_ms.max(KEY_YIELD_MS);
+        }
+        if foreign {
+            self.wait_ms = self.wait_ms.max(FOREIGN_YIELD_MS);
+        }
+        self.wait_ms == 0
+    }
+}
+
 pub fn run(shared: Arc<Shared>) {
     let Some(ring) = Ring::detect() else {
         eprintln!("led: no ring found, light disabled");
@@ -686,6 +748,9 @@ pub fn run(shared: Arc<Shared>) {
         // Position of the current track and how long it has not moved.
         let mut last_pos = u64::MAX;
         let mut still_ms = 0u64;
+        // What the LEDs held at the last tick (after our own writes), to see others' writes.
+        let mut seen: Option<Vec<u32>> = ring.snapshot();
+        let mut yielding = Yield::default();
         loop {
             let light = *shared.light.lock().unwrap();
             let on = shared.ring.load(Ordering::Acquire);
@@ -696,7 +761,11 @@ pub fn run(shared: Arc<Shared>) {
             let tick = if on && music && light.mode != Mode::Solid { 40 } else { TICK_MS };
             thread::sleep(Duration::from_millis(tick));
             clock += tick;
-            let alice_busy = shared.duck.active();
+            let now_seen = ring.snapshot();
+            let foreign = now_seen.is_some() && seen.is_some() && now_seen != seen;
+            seen = now_seen;
+            let free = yielding.tick(tick, KEY.swap(false, Ordering::AcqRel), foreign);
+            let alice_busy = shared.duck.active() || !free;
             idle_ms = if alice_busy { 0 } else { idle_ms.saturating_add(tick) };
 
             let track = shared.track.lock().unwrap().clone();
@@ -746,7 +815,14 @@ pub fn run(shared: Arc<Shared>) {
                 ring.set((0, 0, 0));
             }
             let loading = shared.fetching.load(Ordering::Acquire) || stuck;
-            let want: Option<Vec<Rgb>> = if !on {
+            // soundya's timer: the end blinks over everything; the time left only while no music plays.
+            let timer = crate::timer::ring_state().and_then(|(left, work, paused, ended)| {
+                let plain = crate::timer::current().is_some_and(|t| t.kind != "pomodoro");
+                (ended || !(music || loading)).then(|| timer_frame(zones, left, work, plain, paused, ended, light.quiet, light.bright, clock)).flatten()
+            });
+            let want: Option<Vec<Rgb>> = if let Some(frame) = timer {
+                Some(frame)
+            } else if !on {
                 None
             } else if loading {
                 // Breathing: the speaker is working on it.
@@ -779,13 +855,64 @@ pub fn run(shared: Arc<Shared>) {
                     shown = None;
                 }
             }
+            // Our own writes are not someone else's animation.
+            seen = ring.snapshot();
         }
     });
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn led_colour_rejects_non_ascii_without_panic() {
+        assert_eq!(super::led_colour("#aжbcd"), None);
+        assert_eq!(super::led_colour("#+f+f+f"), None);
+        assert!(super::led_colour("#ff7a00").is_some());
+    }
+
     use super::*;
+
+    #[test]
+    fn the_timer_shows_what_is_left() {
+        let f = timer_frame(12, 0.5, true, false, false, false, (255, 0, 0), 1.0, 0).unwrap();
+        assert_eq!(f.iter().filter(|c| **c != (0, 0, 0)).count(), 6, "half the ring");
+        assert!(f[0].0 > f[0].1, "work is red");
+        let b = timer_frame(12, 1.0, false, false, false, false, (255, 0, 0), 1.0, 0).unwrap();
+        assert!(b[11].1 > b[11].0, "the break is green, the whole ring at the start");
+        assert!(timer_frame(1, 0.5, true, false, false, false, (255, 0, 0), 1.0, 0).is_none(), "one zone: only the end");
+        let end = timer_frame(1, 0.0, true, false, false, true, (255, 0, 0), 1.0, 0).unwrap();
+        assert_eq!(end, vec![(255, 255, 255)]);
+        assert_eq!(timer_frame(1, 0.0, true, false, false, true, (255, 0, 0), 1.0, 300).unwrap(), vec![(0, 0, 0)], "blinks");
+    }
+
+    #[test]
+    fn leaves_the_ring_to_the_firmware_after_a_press() {
+        // Before: the loop redrew at once when the firmware drew the volume (blinking).
+        let mut y = Yield::default();
+        assert!(y.tick(40, false, false), "nothing happened: ours");
+        assert!(!y.tick(40, true, false), "volume button pressed");
+        let mut t = 0;
+        while !y.tick(40, false, false) {
+            t += 40;
+            assert!(t < 10_000);
+        }
+        assert!(t + 40 >= KEY_YIELD_MS, "waited {t} ms after the press");
+        // The firmware keeps animating: every change it makes pushes us back.
+        assert!(!y.tick(40, false, true));
+        for _ in 0..100 {
+            assert!(!y.tick(40, false, true), "still animating");
+        }
+        let mut t = 0;
+        while !y.tick(40, false, false) {
+            t += 40;
+        }
+        assert!(t + 40 >= FOREIGN_YIELD_MS && t < KEY_YIELD_MS, "after the animation stopped: {t} ms");
+        // A press during a long wait never shortens it.
+        let mut y = Yield::default();
+        y.tick(40, true, false);
+        y.tick(40, false, true);
+        assert!(y.wait_ms > FOREIGN_YIELD_MS);
+    }
 
     #[test]
     fn scales_to_the_drivers_range_and_order() {

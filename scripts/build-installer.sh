@@ -3,15 +3,28 @@
 #   dist/soundya-setup-windows.exe      (double-click; Windows 10/11, x64)
 #   dist/soundya.dmg                    (soundya.app, drag to Applications; Intel and Apple Silicon)
 #   dist/soundya-setup-mac.zip          (the same app, zipped)
-# Needs: rustup targets x86_64-pc-windows-gnu, aarch64-apple-darwin, x86_64-apple-darwin; zig + cargo-zigbuild.
+# Needs: rustup targets x86_64-pc-windows-gnu, aarch64-apple-darwin, x86_64-apple-darwin; zig + cargo-zigbuild;
+# python3 with Pillow; on Linux also xorriso. Only an image made on a Mac (hdiutil, signed bundle) may be handed out.
+# SOUNDYA_DEV=1: the developer build (feedback mode in the wizard, the speaker's developer
+# build inside) as dist/soundya-dev.dmg, soundya-setup-windows-dev.exe, soundya-setup-mac-dev.zip.
 set -eu
 cd "$(dirname "$0")/.."
-[ -f dist/soundya-armv7.tar ] || sh scripts/build-mac.sh
+FEAT="" SFX=""
+if [ -n "${SOUNDYA_DEV:-}" ]; then
+    FEAT="--features dev" SFX="-dev"
+    [ -f dist/soundya-armv7-dev.tar ] || sh scripts/build-mac.sh --dev
+else
+    [ -f dist/soundya-armv7.tar ] || sh scripts/build-mac.sh
+fi
 cd installer
-cargo zigbuild --release --target x86_64-pc-windows-gnu
-cargo zigbuild --release --target universal2-apple-darwin
+# shellcheck disable=SC2086
+cargo zigbuild --release $FEAT --target x86_64-pc-windows-gnu
+# Without this zig builds for its own default macOS (15.0), and the app would not
+# start on the macOS 11–14 that Info.plist promises (check_app.py checks it).
+# shellcheck disable=SC2086
+MACOSX_DEPLOYMENT_TARGET=11.0 cargo zigbuild --release $FEAT --target universal2-apple-darwin
 cd ..
-cp installer/target/x86_64-pc-windows-gnu/release/soundya-installer.exe dist/soundya-setup-windows.exe
+cp installer/target/x86_64-pc-windows-gnu/release/soundya-installer.exe "dist/soundya-setup-windows$SFX.exe"
 APP="dist/mac/soundya.app"
 rm -rf dist/mac && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp installer/target/universal2-apple-darwin/release/soundya-installer "$APP/Contents/MacOS/soundya"
@@ -45,9 +58,31 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   </dict>
 </dict></plist>
 PLIST
+python3 scripts/mac-dmg/check_app.py "$APP"
+if [ "$(uname -s)" = Darwin ]; then
+    # The widget (macOS 14+) in PlugIns, built by xcodebuild (needs Xcode). macOS shows widgets only from apps signed with a
+    # team's certificate: SOUNDYA_SIGN_ID="Apple Development: …" (Xcode, free Apple ID) or
+    # "Developer ID Application: …". Ad-hoc ("-", the default) builds it but it stays hidden.
+    sh scripts/mac-widget/build.sh "$APP" "$VERSION"
+    SIGN_ID=${SOUNDYA_SIGN_ID:--}
+    [ "$SIGN_ID" != "-" ] || echo "ВНИМАНИЕ: подпись ad-hoc — виджет macOS не покажет (задайте SOUNDYA_SIGN_ID)" >&2
+    # Inside out: the widget with its sandbox, then the app (--deep would strip the widget's entitlements).
+    xattr -cr "$APP"
+    codesign --force --options runtime --entitlements mac-widget/widget.entitlements --sign "$SIGN_ID" "$APP/Contents/PlugIns/SoundyaWidget.appex"
+    codesign --force --options runtime --sign "$SIGN_ID" "$APP"
+    codesign --verify --deep --strict "$APP"
+    # Again with the widget in place: Metadata.appintents, versions, minimum macOS.
+    python3 scripts/mac-dmg/check_app.py "$APP"
+fi
 # The disk image: open it, drag soundya to Applications.
 [ -d target/pydeps/ds_store ] || pip install -q --target target/pydeps ds_store mac_alias
-python3 scripts/mac-dmg/build_dmg.py "$APP" target/dmg-assets dist/soundya.dmg
+# On a Mac: hdiutil, compressed UDZO, the signed app — ready to hand out.
+python3 scripts/mac-dmg/build_dmg.py "$APP" target/dmg-assets "dist/soundya$SFX.dmg"
+if [ "$(uname -s)" != Darwin ]; then
+    echo "ВНИМАНИЕ: dist/soundya$SFX.dmg собран на $(uname -s) — это черновик, раздавать его нельзя:" >&2
+    echo "  скачанный, он не монтируется без предупреждения, а приложение в нём не подписано." >&2
+    echo "  На Mac: sh scripts/mac-dmg/sign-on-mac.sh dist/soundya$SFX.dmg → dist/soundya-signed.dmg" >&2
+fi
 # The zip too (for those who prefer it).
-(cd dist/mac && rm -f ../soundya-setup-mac.zip && zip -qry -X ../soundya-setup-mac.zip soundya.app)
-ls -la dist/soundya-setup-windows.exe dist/soundya.dmg dist/soundya-setup-mac.zip
+(cd dist/mac && rm -f "../soundya-setup-mac$SFX.zip" && zip -qry -X "../soundya-setup-mac$SFX.zip" soundya.app)
+ls -la "dist/soundya-setup-windows$SFX.exe" "dist/soundya$SFX.dmg" "dist/soundya-setup-mac$SFX.zip"

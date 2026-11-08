@@ -28,7 +28,7 @@ fn browser_headers(req: ureq::Request, next: ureq::MiddlewareNext) -> Result<ure
     let url = req.url().to_owned();
     let host = url.split("://").nth(1).and_then(|r| r.split(['/', '?', ':']).next()).unwrap_or("").to_owned();
     if !(host.ends_with("soundcloud.com") || host.ends_with("sndcdn.com") || host.ends_with("soundcloud.cloud")) {
-        return next.handle(req);
+        return note_stub(&host, next.handle(req));
     }
     let page = host == "soundcloud.com";
     let mut req = req
@@ -58,7 +58,29 @@ fn browser_headers(req: ureq::Request, next: ureq::MiddlewareNext) -> Result<ure
         }
         req = req.set("Sec-Fetch-Site", "same-site").set("Sec-Fetch-Mode", "cors").set("Sec-Fetch-Dest", "empty");
     }
-    next.handle(req)
+    note_stub(&host, next.handle(req))
+}
+
+/// Someone else's certificate: the provider's DNS stub, not the site (dns.rs takes it from there).
+fn note_stub(host: &str, r: Result<ureq::Response, ureq::Error>) -> Result<ureq::Response, ureq::Error> {
+    if let Err(ureq::Error::Transport(t)) = &r {
+        if crate::dns::wrong_certificate(&t.to_string()) {
+            crate::dns::stub(host);
+        }
+    }
+    r
+}
+
+/// GET with one more try on a network error, on another address (a stub, a dropped connection).
+pub fn get_retry(agent: &ureq::Agent, url: &str, timeout: Duration) -> Result<ureq::Response, ureq::Error> {
+    match agent.get(url).timeout(timeout).call() {
+        Err(ureq::Error::Transport(t)) => {
+            eprintln!("net: {}: {t}; one more try", url.split('?').next().unwrap_or(url));
+            crate::dns::failed(url);
+            agent.get(url).timeout(timeout).call()
+        }
+        r => r,
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -177,6 +199,12 @@ impl Track {
         self.candidates().into_iter().next()
     }
 
+    /// «Слушать здесь» can start where the speaker is: MP3/AAC by skipping bytes,
+    /// HLS from the segment holding the moment. Only a progressive MP4 cannot.
+    pub fn stream_seekable(&self) -> bool {
+        self.transcoding().is_some_and(|(t, k)| t.format.protocol == "hls" || k != Kind::Mp4)
+    }
+
     /// Why the speaker cannot play it, in words for the page and the log.
     pub fn why_not_playable(&self) -> String {
         match self.policy.as_deref() {
@@ -241,6 +269,11 @@ pub struct Client {
     /// The site's build number (`window.__sc_version`), sent as `app_version` like the web player.
     app_version: Arc<Mutex<Option<String>>>,
     last_scrape: Arc<Mutex<Option<std::time::Instant>>>,
+    /// When the site was last read successfully (the client_id is the site's current one).
+    scraped_ok: Arc<Mutex<Option<std::time::Instant>>>,
+    /// api-v2 and the site; other servers only in tests.
+    api_base: String,
+    site: String,
     token: Arc<Mutex<Option<String>>>,
     /// SoundCloud refused the token: requests go without it until a new one is entered.
     token_bad: Arc<std::sync::atomic::AtomicBool>,
@@ -267,6 +300,8 @@ pub struct PlaylistInfo {
     pub user: String,
     pub count: u64,
     pub link: String,
+    /// Cover (t300x300): the playlist's own, else its first track's; "" if none.
+    pub art: String,
 }
 
 fn playlist_info(v: &Value) -> Option<PlaylistInfo> {
@@ -285,6 +320,14 @@ fn playlist_info(v: &Value) -> Option<PlaylistInfo> {
             .to_owned(),
         count: v.get("track_count").and_then(Value::as_u64).unwrap_or(0),
         link: v.get("permalink_url").and_then(Value::as_str).unwrap_or("").to_owned(),
+        art: v
+            .get("artwork_url")
+            .and_then(Value::as_str)
+            .filter(|u| !u.is_empty())
+            .or_else(|| v.pointer("/tracks/0/artwork_url").and_then(Value::as_str))
+            .or_else(|| v.pointer("/user/avatar_url").and_then(Value::as_str))
+            .unwrap_or("")
+            .replace("-large.", "-t300x300."),
     })
 }
 
@@ -315,6 +358,9 @@ impl Client {
             client_id: Arc::new(Mutex::new(cached)),
             app_version: Arc::new(Mutex::new(None)),
             last_scrape: Arc::new(Mutex::new(None)),
+            scraped_ok: Arc::new(Mutex::new(None)),
+            api_base: API.to_owned(),
+            site: "https://soundcloud.com/".to_owned(),
             token: Arc::new(Mutex::new(None)),
             token_bad: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cache,
@@ -362,26 +408,84 @@ impl Client {
         }
         *self.last_scrape.lock().unwrap() = Some(std::time::Instant::now());
         let id = self.scrape_client_id()?;
-        eprintln!("soundcloud: new client_id");
-        if let Some(p) = &self.cache {
-            let _ = std::fs::write(p, &id);
-        }
-        *guard = Some(id.clone());
+        self.keep_client_id(&mut guard, &id);
         Ok(id)
     }
 
+    fn keep_client_id(&self, guard: &mut Option<String>, id: &str) {
+        eprintln!("soundcloud: new client_id");
+        if let Some(p) = &self.cache {
+            let _ = std::fs::write(p, id);
+        }
+        *guard = Some(id.to_owned());
+        *self.scraped_ok.lock().unwrap() = Some(std::time::Instant::now());
+    }
+
+    /// Reads the site for the current client_id now and then (every 6 hours) before a command
+    /// meets an old one. Called from the controller's loop; the reading runs in its own thread.
+    pub fn keep_fresh(&self) {
+        let due = self.scraped_ok.lock().unwrap().is_none_or(|t| t.elapsed() > Duration::from_secs(6 * 3600));
+        let tried = self.last_scrape.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(15 * 60));
+        if due && !tried {
+            *self.last_scrape.lock().unwrap() = Some(std::time::Instant::now());
+            let c = self.clone();
+            thread::spawn(move || {
+                let _ = c.fresh_client_id_now();
+            });
+        }
+    }
+
+    fn fresh_client_id_now(&self) -> Option<String> {
+        // The site is read without the lock: every command takes it (client_id), and
+        // reading can take minutes on a slow network, which froze music commands.
+        let scraped = self.scrape_client_id();
+        let mut guard = self.client_id.lock().unwrap();
+        match scraped {
+            Ok(id) => {
+                if guard.as_deref() != Some(id.as_str()) {
+                    self.keep_client_id(&mut guard, &id);
+                } else {
+                    *self.scraped_ok.lock().unwrap() = Some(std::time::Instant::now());
+                }
+                Some(id)
+            }
+            Err(e) => {
+                eprintln!("soundcloud: soundcloud.com not read for a client_id: {e}");
+                None
+            }
+        }
+    }
+
+    /// The site's current client_id: the one in use if the site was read lately, else read
+    /// now. None: the site could not be read (then nothing can be said about the token).
+    fn fresh_client_id(&self) -> Option<String> {
+        let mut guard = self.client_id.lock().unwrap();
+        if self.scraped_ok.lock().unwrap().is_some_and(|t| t.elapsed() < SCRAPE_EVERY) {
+            if let Some(id) = guard.as_ref() {
+                return Some(id.clone());
+            }
+        }
+        *self.last_scrape.lock().unwrap() = Some(std::time::Instant::now());
+        match self.scrape_client_id() {
+            Ok(id) => {
+                self.keep_client_id(&mut guard, &id);
+                Some(id)
+            }
+            Err(e) => {
+                eprintln!("soundcloud: soundcloud.com not read for a client_id: {e}");
+                None
+            }
+        }
+    }
+
     fn scrape_client_id(&self) -> Res<String> {
-        let html = self
-            .agent()
-            .get("https://soundcloud.com/")
-            .call()?
-            .into_string()?;
+        let html = get_retry(&self.agent(), &self.site, Duration::from_secs(30))?.into_string()?;
         if let Some(v) = app_version(&html) {
             *self.app_version.lock().unwrap() = Some(v);
         }
         let scripts = script_urls(&html);
         for url in scripts.iter().rev() {
-            let Ok(resp) = self.agent().get(url).call() else {
+            let Ok(resp) = get_retry(&self.agent(), url, Duration::from_secs(30)) else {
                 continue;
             };
             let mut js = String::new();
@@ -400,7 +504,7 @@ impl Client {
         let url = if path_or_url.starts_with("http") {
             path_or_url.to_owned()
         } else {
-            format!("{API}{path_or_url}")
+            format!("{}{path_or_url}", self.api_base)
         };
         let mut refreshed = false;
         let mut retried = false;
@@ -452,12 +556,20 @@ impl Client {
                     anonymous = true;
                     continue;
                 }
+                // Refused even without the token: the client_id is old (SoundCloud changes it every day
+                // or two). The site's current one, then the token again with it.
                 Err(e) if !refreshed && matches!(status_of(&e), Some(401 | 403)) => {
                     refreshed = true;
+                    if self.fresh_client_id().is_none() {
+                        return Err("SoundCloud не пустил: его ключ сайта сменился, а soundcloud.com не открылся за новым. Вход при этом цел".into());
+                    }
+                    anonymous = self.token_bad.load(bad);
                     continue;
                 }
-                Err(e) if matches!(status_of(&e), Some(401)) && self.has_token() => {
-                    return Err("SoundCloud не принял токен входа: обновите его на странице".into())
+                // Refused with the site's current client_id and without the token: not the login
+                // (0.4–0.5 said «токен не принят» here, and Alice told to log in again — the token was fine).
+                Err(e) if matches!(status_of(&e), Some(401 | 403)) => {
+                    return Err(format!("SoundCloud не пустил запрос ({}) — вход при этом цел", status_of(&e).unwrap_or(0)).into())
                 }
                 // Keep tokens out of messages and logs.
                 Err(ureq::Error::Status(code, _)) => return Err(format!("HTTP {code} на {short}").into()),
@@ -504,7 +616,7 @@ impl Client {
         let id = self.client_id(false).ok()?;
         let r = self
             .agent()
-            .get(&format!("{API}/me"))
+            .get(&format!("{}/me", self.api_base))
             .set("Accept", "application/json")
             .set("Authorization", &format!("OAuth {token}"))
             .query("client_id", &id)
@@ -516,7 +628,35 @@ impl Client {
                 }
                 Some(true)
             }
-            Err(e) if matches!(status_of(&e), Some(401 | 403)) => Some(false),
+            // Refused: the token, or a client_id SoundCloud no longer takes (after a restart the
+            // site could not be read for a fresh one). With a fresh client_id once more first.
+            Err(e) if matches!(status_of(&e), Some(401 | 403)) => {
+                let fresh = match self.fresh_client_id() {
+                    Some(f) if f != id => f,
+                    // Refused with the site's current client_id: the token itself.
+                    Some(_) => return Some(false),
+                    None => {
+                        eprintln!("soundcloud: token refused, but the client_id could not be checked: not dropping the login");
+                        return None;
+                    }
+                };
+                let r = self
+                    .agent()
+                    .get(&format!("{}/me", self.api_base))
+                    .set("Accept", "application/json")
+                    .set("Authorization", &format!("OAuth {token}"))
+                    .query("client_id", &fresh)
+                    .call();
+                match r {
+                    Ok(_) => {
+                        eprintln!("soundcloud: the token works with the new client_id");
+                        self.token_bad.store(false, std::sync::atomic::Ordering::Release);
+                        Some(true)
+                    }
+                    Err(e) if matches!(status_of(&e), Some(401 | 403)) => Some(false),
+                    Err(_) => None,
+                }
+            }
             Err(_) => None,
         }
     }
@@ -880,6 +1020,11 @@ impl Client {
     }
 
     /// Playlists return full objects only for the first few tracks; fetch the rest by id.
+    /// Tracks by their ids, in that order (unavailable ones left out).
+    pub fn by_ids(&self, ids: &[u64]) -> Res<Vec<Track>> {
+        self.hydrate(ids.iter().map(|id| Track::from_id(*id)).collect())
+    }
+
     fn hydrate(&self, tracks: Vec<Track>) -> Res<Vec<Track>> {
         let missing: Vec<u64> = tracks.iter().filter(|t| !t.hydrated()).map(|t| t.id).collect();
         let mut full = std::collections::HashMap::new();
@@ -936,6 +1081,13 @@ impl Client {
         Ok(ids)
     }
 
+    /// The shelves of soundcloud.com's home page for the logged-in user («Mixed for …»,
+    /// «More of what you like», daily / weekly mixes…), each with its playlists.
+    pub fn home(&self) -> Res<Vec<Shelf>> {
+        let v = self.api("/mixed-selections", &[("limit", "20")])?;
+        Ok(shelves(&v))
+    }
+
     pub fn related(&self, id: u64) -> Res<Vec<Track>> {
         let v = self.api(&format!("/tracks/{id}/related"), &[("limit", "20")])?;
         let c: Collection<Track> = serde_json::from_value(v)?;
@@ -978,6 +1130,13 @@ impl Client {
 
     /// Opens a streaming reader for the track's audio.
     pub fn open(&self, track: &Track) -> Res<(Box<dyn Read + Send + Sync>, Kind)> {
+        self.open_from(track, 0).map(|(r, k, _)| (r, k))
+    }
+
+    /// Like `open`, but an HLS stream starts at the segment holding `start_ms`
+    /// (not downloaded from the beginning); the third value is where its sound
+    /// starts (ms; 0 for a progressive file, which starts at the beginning).
+    pub fn open_from(&self, track: &Track, start_ms: u64) -> Res<(Box<dyn Read + Send + Sync>, Kind, u64)> {
         let mut errors = Vec::new();
         let label = |t: &Transcoding| format!("{} {}", t.format.protocol, t.format.mime_type);
         let mut candidates = track.candidates();
@@ -988,10 +1147,10 @@ impl Client {
         }
         for (t, kind) in candidates {
             let name = label(t);
-            match self.open_one(track, t, kind) {
-                Ok(reader) => {
+            match self.open_one(track, t, kind, start_ms) {
+                Ok((reader, started)) => {
                     eprintln!("stream: {name}");
-                    return Ok((Box::new(crate::buffer::Buffered::new(reader)), kind));
+                    return Ok((Box::new(crate::buffer::Buffered::new(reader)), kind, started));
                 }
                 Err(e) => {
                     let e = e.to_string();
@@ -1010,7 +1169,7 @@ impl Client {
         .into())
     }
 
-    fn open_one(&self, track: &Track, t: &Transcoding, _kind: Kind) -> Res<Box<dyn Read + Send + Sync>> {
+    fn open_one(&self, track: &Track, t: &Transcoding, _kind: Kind, start_ms: u64) -> Res<(Box<dyn Read + Send + Sync>, u64)> {
         let url = self.media_url(track, t)?;
         let refresh: Refresh = {
             let client = self.clone();
@@ -1019,9 +1178,10 @@ impl Client {
             Arc::new(move || client.media_url(&track, &t).ok())
         };
         if t.format.protocol == "progressive" {
-            Ok(Box::new(Http::new(self.agent(), url, Some(refresh))))
+            Ok((Box::new(Http::new(self.agent(), url, Some(refresh))), 0))
         } else {
-            Ok(Box::new(Hls::new(self.agent(), &url, refresh)?))
+            let (hls, started) = Hls::new(self.agent(), &url, refresh, start_ms)?;
+            Ok((Box::new(hls), started))
         }
     }
 }
@@ -1072,6 +1232,50 @@ type Refresh = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// Track ids and system playlists («soundcloud:system-playlists:…») anywhere in
 /// a home page selection or a playlist.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Shelf {
+    pub title: String,
+    pub items: Vec<PlaylistInfo>,
+}
+
+/// /mixed-selections → shelves of playlists (system playlists — the mixes — and plain ones).
+fn shelves(v: &Value) -> Vec<Shelf> {
+    fn walk(v: &Value, out: &mut Vec<PlaylistInfo>) {
+        match v {
+            Value::Array(a) => a.iter().for_each(|i| walk(i, out)),
+            Value::Object(o) => {
+                let kind = o.get("kind").and_then(Value::as_str).unwrap_or("");
+                if kind == "playlist" || kind == "system-playlist" {
+                    if let Some(p) = playlist_info(v).filter(|p| !p.title.is_empty()) {
+                        out.push(p);
+                    }
+                    return;
+                }
+                for (k, child) in o {
+                    if k != "user" {
+                        walk(child, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for s in v.get("collection").and_then(Value::as_array).into_iter().flatten() {
+        let title = s.get("title").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+        let mut items = Vec::new();
+        walk(s.get("items").unwrap_or(s), &mut items);
+        let mut seen = std::collections::HashSet::new();
+        items.retain(|p| seen.insert(p.id.clone()));
+        items.truncate(12);
+        if !title.is_empty() && !items.is_empty() {
+            out.push(Shelf { title, items });
+        }
+    }
+    out.truncate(8);
+    out
+}
+
 fn collect_picks(v: &Value, ids: &mut Vec<u64>, urns: &mut Vec<String>) {
     match v {
         Value::Array(items) => items.iter().for_each(|i| collect_picks(i, ids, urns)),
@@ -1238,6 +1442,9 @@ impl Read for Http {
 pub struct Hls {
     agent: ureq::Agent,
     urls: Vec<String>,
+    /// Which of `urls` to read, in turn (all of them, or the init segment and
+    /// those from a moment on: «Слушать здесь» from where the speaker is).
+    plan: Vec<usize>,
     next: usize,
     current: Option<Http>,
     refresh: Refresh,
@@ -1280,11 +1487,57 @@ pub fn parse_m3u8(base: &str, text: &str) -> Res<Vec<String>> {
     Ok(urls)
 }
 
+/// What to read of a media playlist (indices as `parse_m3u8` returns its URLs)
+/// to start at `start_ms`, and where that really starts: the beginning of the
+/// segment holding the moment (MP4 can only start on a segment; its init segment
+/// always comes first). Without one duration per segment: everything, from 0.
+pub fn segment_plan(text: &str, start_ms: u64) -> (Vec<usize>, u64) {
+    let mut durations = Vec::new();
+    let mut segments = 0;
+    let mut map = false;
+    for line in text.lines().map(str::trim) {
+        if let Some(d) = line.strip_prefix("#EXTINF:") {
+            let secs: f64 = d.split(',').next().unwrap_or("").trim().parse().unwrap_or(-1.0);
+            durations.push(if secs >= 0.0 { (secs * 1000.0).round() as u64 } else { u64::MAX });
+        } else if line.starts_with("#EXT-X-MAP:") {
+            map = true;
+        } else if !line.is_empty() && !line.starts_with('#') {
+            segments += 1;
+        }
+    }
+    let first = usize::from(map);
+    let all = (0..first + segments).collect();
+    if segments == 0 || durations.len() != segments || durations.contains(&u64::MAX) {
+        return (all, 0);
+    }
+    let (mut k, mut at) = (0, 0u64);
+    for (i, d) in durations.iter().enumerate() {
+        k = i;
+        if at + d > start_ms || i + 1 == segments {
+            break;
+        }
+        at += d;
+    }
+    if k == 0 {
+        return (all, 0);
+    }
+    let mut plan: Vec<usize> = if map { vec![0] } else { Vec::new() };
+    plan.extend(first + k..first + segments);
+    (plan, at)
+}
+
 impl Hls {
-    fn new(agent: ureq::Agent, url: &str, refresh: Refresh) -> Res<Self> {
+    /// The playlist at `url`, read from the segment holding `start_ms`; also
+    /// where the sound really starts (ms).
+    fn new(agent: ureq::Agent, url: &str, refresh: Refresh, start_ms: u64) -> Res<(Self, u64)> {
         let text = agent.get(url).call()?.into_string()?;
         let urls = parse_m3u8(url, &text)?;
-        Ok(Self { agent, urls, next: 0, current: None, refresh })
+        let (plan, started) = segment_plan(&text, start_ms);
+        if plan.iter().any(|&i| i >= urls.len()) {
+            let plan = (0..urls.len()).collect();
+            return Ok((Self { agent, urls, plan, next: 0, current: None, refresh }, 0));
+        }
+        Ok((Self { agent, urls, plan, next: 0, current: None, refresh }, started))
     }
 
     fn reload(&mut self) -> bool {
@@ -1305,10 +1558,10 @@ impl Read for Hls {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             if self.current.is_none() {
-                if self.next >= self.urls.len() {
+                if self.next >= self.plan.len() {
                     return Ok(0);
                 }
-                self.current = Some(Http::new(self.agent.clone(), self.urls[self.next].clone(), None));
+                self.current = Some(Http::new(self.agent.clone(), self.urls[self.plan[self.next]].clone(), None));
                 self.next += 1;
             }
             let seg = self.current.as_mut().unwrap();
@@ -1325,7 +1578,7 @@ impl Read for Hls {
                         eprintln!("download: segment {}: {last}; fresh links, attempt {attempt}", self.next);
                         backoff(attempt);
                         self.reload();
-                        let mut fresh = Http::new(self.agent.clone(), self.urls[self.next - 1].clone(), None);
+                        let mut fresh = Http::new(self.agent.clone(), self.urls[self.plan[self.next - 1]].clone(), None);
                         fresh.pos = pos;
                         match fresh.read(buf) {
                             Ok(n) => {
@@ -1350,6 +1603,101 @@ impl Read for Hls {
 
 #[cfg(test)]
 mod tests {
+    /// A fake SoundCloud: /me takes only the token "good" with the client_id "NEW…"; the site
+    /// gives that id from its script. The speaker starts with yesterday's id.
+    fn fake_soundcloud() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read as _, Write as _};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        let scrapes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (b, n) = (base.clone(), scrapes.clone());
+        thread::spawn(move || {
+            for c in l.incoming().flatten() {
+                let mut c = c;
+                let mut buf = vec![0u8; 8192];
+                let k = c.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..k]).to_string();
+                let line = req.lines().next().unwrap_or("").to_owned();
+                let new_id = line.contains("client_id=NEWNEWNEWNEWNEWNEWNEWNEWNEWNEW12");
+                let token = req.to_lowercase().contains("authorization: oauth good");
+                let (code, body) = if line.starts_with("GET / ") {
+                    n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ("200 OK", format!("<script src=\"{b}/a-v2.sndcdn.com/assets/app.js\"></script>"))
+                } else if line.contains("/assets/app.js") {
+                    ("200 OK", "x={client_id:\"NEWNEWNEWNEWNEWNEWNEWNEWNEWNEW12\"}".to_owned())
+                } else if line.contains("/me") && new_id && token {
+                    ("200 OK", "{\"id\":7,\"username\":\"demo\"}".to_owned())
+                } else {
+                    ("401 Unauthorized", "{}".to_owned())
+                };
+                let _ = write!(c, "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        (base, scrapes)
+    }
+
+    #[test]
+    fn a_new_client_id_is_not_a_lost_login() {
+        // Since the first versions: once a day or two SoundCloud changes its client_id; the old
+        // one is refused with and without the token, and soundya said «вход устарел», although
+        // the token was fine. Now: the site's new id, the token with it, and the login stays.
+        let (base, scrapes) = fake_soundcloud();
+        let dir = std::env::temp_dir().join(format!("soundya-scid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("client_id"), "OLDOLDOLDOLDOLDOLDOLDOLDOLDOLD12").unwrap();
+        let mut c = Client::new(Some(dir.join("client_id")), "");
+        c.api_base = base.clone();
+        c.site = format!("{base}/");
+        c.set_token("good");
+        let (id, name) = c.me().expect("the login must survive a new client_id");
+        assert_eq!((id, name.as_str()), (7, "demo"));
+        assert!(!c.token_refused());
+        assert_eq!(scrapes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read_to_string(dir.join("client_id")).unwrap(), "NEWNEWNEWNEWNEWNEWNEWNEWNEWNEW12");
+        // A really dead token: refused with the current id too — then, and only then, it is the login.
+        c.set_token("revoked");
+        assert!(c.me().is_err());
+        assert_eq!(c.verify_token(), Some(false));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_dropped_connection_is_tried_once_more() {
+        use std::io::{Read as _, Write as _};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        thread::spawn(move || {
+            // First connection: closed at once (the stub / a dropped proxy). Second: answers.
+            drop(l.accept().unwrap().0);
+            let (mut c, _) = l.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = c.read(&mut buf);
+            let _ = c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        });
+        let agent = ureq::AgentBuilder::new().build();
+        let r = get_retry(&agent, &format!("http://127.0.0.1:{port}/art.jpg"), Duration::from_secs(5)).unwrap();
+        assert_eq!(r.into_string().unwrap(), "ok");
+    }
+
+    #[test]
+    fn home_shelves_from_mixed_selections() {
+        let v: Value = serde_json::from_str(r#"{"collection":[
+            {"title":"Mixed for Rodion","items":{"collection":[
+                {"kind":"system-playlist","urn":"soundcloud:system-playlists:daily-mix:1","title":"Daily Mix 1",
+                 "artwork_url":"https://i1.sndcdn.com/artworks-a-large.jpg","user":{"username":"SoundCloud"}},
+                {"kind":"playlist","id":77,"title":"Chill","track_count":20,"permalink_url":"https://soundcloud.com/x/sets/chill",
+                 "tracks":[{"artwork_url":"https://i1.sndcdn.com/artworks-t-large.jpg"}]}]}},
+            {"title":"Empty shelf","items":{"collection":[]}},
+            {"title":"","items":{"collection":[{"kind":"playlist","id":1,"title":"x"}]}}]}"#).unwrap();
+        let s = shelves(&v);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].title, "Mixed for Rodion");
+        let ids: Vec<&str> = s[0].items.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["soundcloud:system-playlists:daily-mix:1", "77"]);
+        assert_eq!(s[0].items[0].art, "https://i1.sndcdn.com/artworks-a-t300x300.jpg");
+        assert_eq!(s[0].items[1].art, "https://i1.sndcdn.com/artworks-t-t300x300.jpg");
+    }
+
     use super::*;
 
     #[test]
@@ -1389,6 +1737,37 @@ mod tests {
         let mut snip = t.clone();
         snip.policy = Some("SNIP".into());
         assert!(snip.transcoding().is_none());
+    }
+
+    #[test]
+    fn hls_mp4_can_start_in_the_middle() {
+        // SoundCloud now often has only HLS AAC in MP4 (init.mp4 + .m4s): «Слушать здесь»
+        // starts it at a segment. Only a progressive MP4 file has to start at 0.
+        let only = |protocol: &str, mime: &str| -> Track {
+            serde_json::from_value(serde_json::json!({"id": 1, "title": "x", "policy": "ALLOW",
+                "media": {"transcodings": [{"url": "u", "snipped": false, "format": {"protocol": protocol, "mime_type": mime}}]}})).unwrap()
+        };
+        assert!(only("hls", "audio/mp4; codecs=\"mp4a.40.2\"").stream_seekable());
+        assert!(only("hls", "audio/mpeg").stream_seekable());
+        assert!(only("progressive", "audio/mpeg").stream_seekable());
+        assert!(!only("progressive", "audio/mp4").stream_seekable());
+    }
+
+    #[test]
+    fn starts_at_the_segment_with_the_asked_moment() {
+        let text = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10,\ns0\n#EXTINF:10.5,\ns1\n#EXTINF:9.5,\ns2\n#EXT-X-ENDLIST\n";
+        // The init segment always first (MP4 needs it), then the segment that holds the moment.
+        assert_eq!(segment_plan(text, 0), (vec![0, 1, 2, 3], 0));
+        assert_eq!(segment_plan(text, 9_999), (vec![0, 1, 2, 3], 0));
+        assert_eq!(segment_plan(text, 10_000), (vec![0, 2, 3], 10_000));
+        assert_eq!(segment_plan(text, 25_000), (vec![0, 3], 20_500));
+        // Past the end: the last segment, not nothing.
+        assert_eq!(segment_plan(text, 99_000), (vec![0, 3], 20_500));
+        // MP3/AAC segments stand alone: no init.
+        let plain = "#EXTINF:5,\na\n#EXTINF:5,\nb\n";
+        assert_eq!(segment_plan(plain, 6_000), (vec![1], 5_000));
+        // Durations missing or not one per segment: from the start, as before.
+        assert_eq!(segment_plan("#EXTINF:5,\na\nb\n", 6_000), (vec![0, 1], 0));
     }
 
     #[test]

@@ -26,10 +26,11 @@ const DOMAINS: &str = "soundcloud.com,sndcdn.com,soundcloud.cloud";
 /// Strategies, named after zapret for Windows («zapret-discord-youtube»), whose
 /// .bat files most people already know (the TLS, port 443, part of each), plus
 /// the one from alice-zapret2 made for Yandex Stations.
-/// `{FAKE}` is zapret's fake ClientHello of www.google.com (packaging/fake).
+/// `{FAKE}` is zapret's fake ClientHello of www.google.com (packaging/fake); `{BIN}name`
+/// is another file there.
 /// The ones with `--lua-desync` run in zapret2's nfqws2: there the same hello is
 /// the blob `tls_google`. New ones go at the end: ids are positions.
-pub const PRESETS: [(&str, &str); 21] = [
+pub const PRESETS: [(&str, &str); 22] = [
     // From github.com/lr1ne/alice-zapret2 (zapret2, checked on a Station Mini 2),
     // the same moves in nfqws v1 terms: a fake with TCP MD5 and seq −10000, then
     // the ClientHello in pieces, back to front.
@@ -56,6 +57,10 @@ pub const PRESETS: [(&str, &str); 21] = [
     ("zapret2: hostfakesplit", "--payload=tls_client_hello --lua-desync=hostfakesplit:host=www.google.com:tcp_ts=-1000:repeats=2"),
     ("zapret2: fake tls_mod + multidisorder", "--payload=tls_client_hello --lua-desync=fake:blob=0x00000000:tcp_seq=-3000:repeats=6 --lua-desync=fake:blob=tls_google:tcp_seq=-3000:tls_mod=rnd,dupsid:repeats=6 --lua-desync=multidisorder:pos=1,midsld"),
     ("zapret2: fake badsum + multisplit", "--payload=tls_client_hello --lua-desync=fake:blob=tls_google:badsum:repeats=6 --lua-desync=multisplit:pos=1,sniext+1,host+1,midsld"),
+    // «general (ALT11).bat» of github.com/Flowseal/zapret-discord-youtube (2026-07),
+    // its TLS line: gets through where «general (ALT)» stopped working (late 2026).
+    // `{BIN}name` is packaging/fake/name. Tried first by «Подобрать» (bypass::order).
+    ("general (ALT11)", "--dpi-desync=fake,multisplit --dpi-desync-split-seqovl=664 --dpi-desync-split-pos=1 --dpi-desync-fooling=ts --dpi-desync-repeats=8 --dpi-desync-split-seqovl-pattern={BIN}tls_clienthello_www_sferum_ru.bin --dpi-desync-fake-tls={BIN}stun2.bin --dpi-desync-fake-tls={BIN}tls_clienthello_www_sferum_ru.bin"),
 ];
 
 /// A strategy for zapret2's nfqws2 (Lua), not nfqws.
@@ -158,7 +163,9 @@ pub fn from_bat(text: &str, dir: &Path) -> Vec<String> {
 
 fn preset_args(index: usize, dir: &Path) -> Vec<String> {
     let fake = format!("@{}", dir.join("fake").join("tls_clienthello_www_google_com.bin").display());
-    PRESETS[index].1.split_whitespace().map(|a| a.replace("{FAKE}", &fake)).collect()
+    let bin = format!("@{}/", dir.join("fake").display());
+    // Split first: the folder may have spaces (only in tests; on the speaker it has none).
+    PRESETS[index].1.split_whitespace().map(|a| a.replace("{FAKE}", &fake).replace("{BIN}", &bin)).collect()
 }
 
 static RUNNING: Mutex<Option<Child>> = Mutex::new(None);
@@ -415,6 +422,44 @@ pub fn restore(dir: &Path, bypass: &str, custom: &str) {
 mod tests {
     use super::*;
 
+    /// The TLS line (tcp 80,443, list-general) of «general (ALT11).bat» from
+    /// github.com/Flowseal/zapret-discord-youtube (commit 4e71116, 2026-07): the
+    /// one that gets through where «general (ALT)» stopped working.
+    const ALT11_BAT: &str = r#"--filter-tcp=80,443 --hostlist="%LISTS%list-general.txt" --hostlist="%LISTS%list-general-user.txt" --hostlist-exclude="%LISTS%list-exclude.txt" --hostlist-exclude="%LISTS%list-exclude-user.txt" --ipset-exclude="%LISTS%ipset-exclude.txt" --ipset-exclude="%LISTS%ipset-exclude-user.txt" --dpi-desync=fake,multisplit --dpi-desync-split-seqovl=664 --dpi-desync-split-pos=1 --dpi-desync-fooling=ts --dpi-desync-repeats=8 --dpi-desync-split-seqovl-pattern="%BIN%tls_clienthello_www_sferum_ru.bin" --dpi-desync-fake-tls="%BIN%stun2.bin" --dpi-desync-fake-tls="%BIN%tls_clienthello_www_sferum_ru.bin" --dpi-desync-fake-http="%BIN%tls_clienthello_www_sferum_ru.bin" --new ^"#;
+
+    #[test]
+    fn alt11_is_offered_as_in_its_bat() {
+        // packaging/ stands for the speaker's folder: its fake/ is what gets installed.
+        let packaging = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging");
+        let dir = packaging.as_path();
+        let i = PRESETS.iter().position(|(n, _)| *n == "general (ALT11)").expect("no «general (ALT11)»");
+        // At the end: ids are positions, the saved ones must keep pointing where they did.
+        assert_eq!(i, PRESETS.len() - 1);
+        // The same TLS arguments as the .bat (its HTTP fake is for port 80, not used here).
+        let from_file: Vec<String> = from_bat(ALT11_BAT, dir).into_iter().filter(|a| !a.starts_with("--dpi-desync-fake-http")).collect();
+        assert_eq!(preset_args(i, dir), from_file);
+    }
+
+    #[test]
+    fn every_fake_file_is_shipped() {
+        // Each file a strategy names must be in packaging/fake (copied to the speaker):
+        // nfqws refuses to start without it, and a pasted .bat line would quietly
+        // get Google's hello instead (another strategy in effect).
+        let packaging = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging");
+        for i in 0..PRESETS.len() {
+            for a in preset_args(i, &packaging) {
+                if let Some((_, p)) = a.split_once("=@") {
+                    assert!(Path::new(p).exists(), "{}: no {p}", PRESETS[i].0);
+                }
+            }
+        }
+        let wanted: Vec<&str> = ALT11_BAT.split('"').filter(|t| t.starts_with("%BIN%")).map(|t| &t[5..]).collect();
+        let got = from_bat(ALT11_BAT, &packaging).join(" ");
+        for name in wanted {
+            assert!(got.contains(&format!("fake/{name}")), "the .bat needs packaging/fake/{name}; got: {got}");
+        }
+    }
+
     #[test]
     fn reads_a_windows_bat_line() {
         let bat = r#"--wf-tcp=80,443 --wf-udp=443,50000-50100 ^
@@ -460,7 +505,11 @@ mod tests {
         assert_eq!(index_of("nfq1"), Some(0));
         assert_eq!(index_of(&id_of(5)), Some(5));
         assert_eq!(index_of("nfq0"), None);
-        assert_eq!(index_of("nfq22"), None);
+        assert_eq!(index_of("nfq23"), None);
+        // Saved ids keep their strategy; the new one took the next number.
+        assert_eq!(name_of("nfq21"), "zapret2: fake badsum + multisplit");
+        assert_eq!(name_of("nfq22"), "general (ALT11)");
+        assert_eq!(engine("nfq22", ""), 1);
         assert_eq!(engine("nfq1", ""), 1);
         assert_eq!(engine("nfq13", ""), 2);
         assert_eq!(engine(CUSTOM, "--lua-desync=multisplit"), 2);

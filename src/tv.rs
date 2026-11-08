@@ -7,33 +7,188 @@ use std::{path::Path, time::Duration};
 use crate::{adb, alice::TvAction};
 
 /// Spoken app names → parts of their package names (first match wins).
-const APPS: &[(&[&str], &[&str])] = &[
-    (&["ютуб", "youtube", "ютьюб"], &["com.google.android.youtube.tv", "youtube.tv", "youtube"]),
-    (&["ютуб музык", "ютуб мьюзик"], &["youtube.tv.unplugged", "youtube.music", "youtube.tvmusic"]),
-    (&["кинопоиск"], &["kinopoisk"]),
-    (&["иви", "ivi"], &["ivi"]),
-    (&["окко", "okko"], &["okko"]),
-    (&["винк", "wink"], &["wink", "ru.rt.video"]),
-    (&["кион", "kion"], &["kion", "mts.mtstv", "ru.mts"]),
-    (&["нетфликс", "netflix"], &["netflix"]),
-    (&["твич", "twitch"], &["twitch"]),
-    (&["вк видео", "вк", "вконтакте"], &["vkvideo", "vk.video", "com.vk"]),
-    (&["рутуб", "rutube"], &["rutube"]),
-    (&["премьер"], &["premier"]),
-    (&["амедиатек"], &["amediateka"]),
-    (&["смотрешк"], &["smotreshka"]),
-    (&["плекс", "plex"], &["plex"]),
-    (&["коди", "kodi"], &["kodi"]),
-    (&["влц", "vlc"], &["videolan"]),
-    (&["спотифай", "spotify"], &["spotify"]),
-    (&["яндекс музык"], &["yandex.music"]),
-    (&["браузер", "хром"], &["browser", "chrome"]),
-    (&["настройки", "параметры"], &["com.android.tv.settings", "settings"]),
-    (&["гугл плей", "плей маркет", "плеймаркет", "магазин"], &["com.android.vending"]),
-    (&["лампа", "lampa"], &["lampa"]),
-    (&["кинопаб", "kinopub"], &["kinopub"]),
-    (&["видеобокс", "hd videobox"], &["videobox"]),
+/// (shown name, spoken names, package names or parts of them)
+const APPS: &[(&str, &[&str], &[&str])] = &[
+    ("YouTube", &["ютуб", "youtube", "ютьюб"], &["com.google.android.youtube.tv", "youtube.tv", "youtube"]),
+    ("YouTube Music", &["ютуб музык", "ютуб мьюзик"], &["youtube.tv.unplugged", "youtube.music", "youtube.tvmusic"]),
+    ("Кинопоиск", &["кинопоиск"], &["kinopoisk"]),
+    ("ivi", &["иви", "ivi"], &["ivi"]),
+    ("Okko", &["окко", "okko"], &["okko"]),
+    ("Wink", &["винк", "wink"], &["wink", "ru.rt.video"]),
+    ("KION", &["кион", "kion"], &["kion", "mts.mtstv", "ru.mts"]),
+    ("Netflix", &["нетфликс", "netflix"], &["netflix"]),
+    ("Twitch", &["твич", "twitch"], &["twitch"]),
+    ("VK Видео", &["вк видео", "вк", "вконтакте"], &["vkvideo", "vk.video", "com.vk"]),
+    ("RUTUBE", &["рутуб", "rutube"], &["rutube"]),
+    ("PREMIER", &["премьер"], &["premier"]),
+    ("Амедиатека", &["амедиатек"], &["amediateka"]),
+    ("Смотрёшка", &["смотрешк"], &["smotreshka"]),
+    ("Plex", &["плекс", "plex"], &["plex"]),
+    ("Kodi", &["коди", "kodi"], &["kodi"]),
+    ("VLC", &["влц", "vlc"], &["videolan"]),
+    ("Spotify", &["спотифай", "spotify"], &["spotify"]),
+    ("Яндекс Музыка", &["яндекс музык"], &["yandex.music"]),
+    ("Браузер", &["браузер", "хром"], &["browser", "chrome"]),
+    ("Настройки", &["настройки", "параметры"], &["com.android.tv.settings", "settings"]),
+    ("Google Play", &["гугл плей", "плей маркет", "плеймаркет", "магазин"], &["com.android.vending"]),
+    ("Lampa", &["лампа", "lampa"], &["lampa"]),
+    ("KinoPub", &["кинопаб", "kinopub"], &["kinopub"]),
+    ("HD VideoBox", &["видеобокс", "hd videobox"], &["videobox"]),
+    ("SmartTube", &["смарт тьюб", "смарттьюб", "смарт туб", "смарт тюб", "смарт тьюбе", "smarttube", "smart tube"], &["liskovsoft.smarttubetv", "smarttube"]),
+    ("VPN", &["впн", "vpn", "випиэн"], &["vpn", "wireguard", "amnezia", "outline", "hiddify", "v2ray", "nekobox", "openvpn"]),
 ];
+
+/// Does what was said start with a known app's name («смарт тьюб», «ютуб»)?
+pub fn app_named(said: &str) -> bool {
+    let s = said.trim();
+    APPS.iter().any(|(_, names, _)| names.iter().any(|n| s.starts_with(n)))
+}
+
+/// Apps only the TV has: said without «на проекторе», the phrase is still the TV's.
+pub fn tv_only_app(said: &str) -> bool {
+    ["смарт тьюб", "смарттьюб", "смарт туб", "смарт тюб", "smarttube", "smart tube"].iter().any(|n| said.contains(n))
+}
+
+// ---------------------------------------------------------------- the screen
+
+/// Something on the TV's screen (uiautomator): its words and where it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiNode {
+    pub label: String,
+    pub x1: i32,
+    pub y1: i32,
+    pub x2: i32,
+    pub y2: i32,
+    pub clickable: bool,
+}
+
+impl UiNode {
+    fn center(&self) -> (i32, i32) {
+        ((self.x1 + self.x2) / 2, (self.y1 + self.y2) / 2)
+    }
+    fn area(&self) -> i64 {
+        i64::from(self.x2 - self.x1).max(0) * i64::from(self.y2 - self.y1).max(0)
+    }
+}
+
+fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let key = format!(" {name}=\"");
+    let start = tag.find(&key)? + key.len();
+    let end = tag[start..].find('"')? + start;
+    Some(&tag[start..end])
+}
+
+fn unescape(s: &str) -> String {
+    s.replace("&quot;", "\"").replace("&apos;", "'").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+}
+
+/// uiautomator's XML → the nodes that have words (text or content-desc) and a place.
+pub fn ui_nodes(xml: &str) -> Vec<UiNode> {
+    let mut out = Vec::new();
+    for tag in xml.split("<node").skip(1) {
+        let tag = tag.split('>').next().unwrap_or("");
+        let text = attr(tag, "text").map(unescape).unwrap_or_default();
+        let desc = attr(tag, "content-desc").map(unescape).unwrap_or_default();
+        let label = if text.trim().is_empty() { desc } else { text };
+        let Some(b) = attr(tag, "bounds") else { continue };
+        let n: Vec<i32> = b.split(|c: char| !c.is_ascii_digit() && c != '-').filter(|x| !x.is_empty()).filter_map(|x| x.parse().ok()).collect();
+        let [x1, y1, x2, y2] = n[..] else { continue };
+        let yes = |k: &str| attr(tag, k) == Some("true");
+        out.push(UiNode { label: label.trim().to_owned(), x1, y1, x2, y2, clickable: yes("clickable") || yes("focusable") });
+    }
+    out
+}
+
+fn norm(s: &str) -> String {
+    s.to_lowercase().replace('ё', "е").chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Words said → the thing on the screen: the whole label first, then the label
+/// inside what was said or the other way round, then the stems («историю» → «история»).
+pub fn find_on_screen<'a>(nodes: &'a [UiNode], said: &str) -> Option<&'a UiNode> {
+    let q = norm(said);
+    if q.is_empty() {
+        return None;
+    }
+    let stem = |w: &str| w.chars().take(5).collect::<String>();
+    let score = |n: &UiNode| -> u8 {
+        let l = norm(&n.label);
+        if l.is_empty() {
+            0
+        } else if l == q {
+            4
+        } else if l.chars().count() >= 3 && (q.contains(&l) || l.contains(&q)) {
+            3
+        } else if q.split(' ').all(|w| l.split(' ').any(|lw| stem(lw) == stem(w))) {
+            2
+        } else if q.split(' ').next().is_some_and(|w| w.chars().count() >= 4 && l.split(' ').any(|lw| stem(lw) == stem(w))) {
+            1
+        } else {
+            0
+        }
+    };
+    nodes
+        .iter()
+        .filter(|n| n.area() > 0)
+        .map(|n| (score(n), n))
+        .filter(|(s, _)| *s > 0)
+        // Best match; then a pressable one; then the smaller (the item, not its whole row).
+        .max_by_key(|(s, n)| (*s, n.clickable, -n.area()))
+        .map(|(_, n)| n)
+}
+
+/// The first video of a list or grid: pressable, with words, out of the left menu
+/// (the left fifth of the screen), not a menu item; the top one, then the left one.
+pub fn first_item<'a>(nodes: &'a [UiNode]) -> Option<&'a UiNode> {
+    let w = nodes.iter().map(|n| n.x2).max().unwrap_or(0);
+    let h = nodes.iter().map(|n| n.y2).max().unwrap_or(0);
+    let menu = ["главная", "история", "подписки", "поиск", "настройки", "библиотека", "плейлисты", "home", "history", "subscriptions", "search", "settings"];
+    nodes
+        .iter()
+        .filter(|n| n.clickable && !n.label.is_empty() && n.x1 >= w / 5 && n.y1 > h / 10)
+        .filter(|n| !menu.contains(&norm(&n.label).as_str()))
+        .filter(|n| n.area() > i64::from(w) * i64::from(h) / 400)
+        .min_by_key(|n| (n.y1 / 40, n.x1))
+}
+
+/// The words a VPN's main button may have, best first.
+const START_WORDS: [&str; 8] = ["подключить", "подключиться", "включить", "connect", "start", "старт", "запустить", "tap to connect"];
+
+fn dump_screen(sh: &dyn Fn(&str) -> Result<String, String>) -> Result<Vec<UiNode>, String> {
+    // uiautomator needs a still screen; a moving one («could not get idle state») is tried again.
+    for _ in 0..3 {
+        let out = sh("uiautomator dump /data/local/tmp/soundya-ui.xml >/dev/null 2>&1; cat /data/local/tmp/soundya-ui.xml 2>/dev/null")?;
+        let nodes = ui_nodes(&out);
+        if !nodes.is_empty() {
+            return Ok(nodes);
+        }
+        std::thread::sleep(Duration::from_millis(1200));
+    }
+    Err("Не получилось прочитать экран телевизора".into())
+}
+
+fn tap(sh: &dyn Fn(&str) -> Result<String, String>, n: &UiNode) -> Result<(), String> {
+    let (x, y) = n.center();
+    sh(&format!("input tap {x} {y}")).map(|_| ())
+}
+
+fn open_app(sh: &dyn Fn(&str) -> Result<String, String>, name: &str) -> Result<String, String> {
+    let list = sh("pm list packages")?;
+    let packages: Vec<String> = list.lines().filter_map(|l| l.trim().strip_prefix("package:")).map(str::to_owned).collect();
+    let Some(pkg) = find_package(name, &packages) else {
+        return Err(format!("Не нашла на телевизоре приложение {name}"));
+    };
+    let out = sh(&launch_script(&pkg))?;
+    if out.contains("Error") || out.contains("No activities") || out.contains("Exception") {
+        return Err(format!("Телевизор не открыл {name}"));
+    }
+    Ok(pkg)
+}
+
+/// Labels on the screen for the log when nothing matched (to tune the words).
+fn seen(nodes: &[UiNode]) -> String {
+    nodes.iter().filter(|n| !n.label.is_empty()).take(25).map(|n| n.label.chars().take(30).collect::<String>()).collect::<Vec<_>>().join(" | ")
+}
 
 fn translit(s: &str) -> String {
     let mut out = String::new();
@@ -54,13 +209,35 @@ fn translit(s: &str) -> String {
     out
 }
 
+/// A package as people know it: «com.google.android.youtube.tv» → «YouTube».
+/// A known app by its package (the longest matching part wins: «…youtube.tvmusic»
+/// is YouTube Music); another: the telling part of its name, the package after it.
+pub fn label(package: &str) -> String {
+    let full = |p: &str| p.matches('.').count() >= 2;
+    let known = APPS
+        .iter()
+        .filter_map(|(shown, _, parts)| {
+            let len = parts.iter().filter(|p| if full(p) { package == **p } else { package.contains(**p) }).map(|p| p.len()).max()?;
+            Some((len, *shown))
+        })
+        .max_by_key(|(len, _)| *len);
+    if let Some((_, shown)) = known {
+        return shown.to_owned();
+    }
+    const PLAIN: [&str; 14] = ["com", "org", "net", "ru", "tv", "app", "apps", "android", "google", "mobile", "atv", "androidtv", "release", "free"];
+    let word = package.split('.').filter(|w| !PLAIN.contains(w) && w.len() > 1).max_by_key(|w| w.len()).unwrap_or(package);
+    let mut c = word.chars();
+    let word = c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default();
+    format!("{word} ({package})")
+}
+
 /// The installed package for a spoken app name.
 pub fn find_package(spoken: &str, packages: &[String]) -> Option<String> {
     let spoken = spoken.trim().to_lowercase();
     // The most specific name wins: «ютуб музыку» is YouTube Music, not YouTube.
     let entry = APPS
         .iter()
-        .filter_map(|(names, parts)| {
+        .filter_map(|(_, names, parts)| {
             let len = names.iter().filter(|n| spoken.starts_with(**n)).map(|n| n.len()).max()?;
             Some((len, *parts))
         })
@@ -71,7 +248,7 @@ pub fn find_package(spoken: &str, packages: &[String]) -> Option<String> {
         // A full package name («com.google.android.youtube.tv») only matches itself.
         let full = |p: &str| p.matches('.').count() >= 2;
         let others: Vec<&str> =
-            APPS.iter().flat_map(|(_, p)| p.iter().copied()).filter(|p| !parts.contains(p) && !full(p)).collect();
+            APPS.iter().flat_map(|(_, _, p)| p.iter().copied()).filter(|p| !parts.contains(p) && !full(p)).collect();
         for part in parts {
             if let Some(p) = packages.iter().find(|p| p.as_str() == *part) {
                 return Some(p.clone());
@@ -155,11 +332,26 @@ fn speech(e: &adb::Error) -> String {
 }
 
 /// Runs the action; the answer is a short sentence for Alice to say.
+/// The ADB key, read from disk once (it was read and parsed on every key press).
+fn key(dir: &Path) -> Result<std::sync::Arc<adb::Key>, String> {
+    static KEY: std::sync::Mutex<Option<(std::path::PathBuf, std::sync::Arc<adb::Key>)>> = std::sync::Mutex::new(None);
+    let mut g = KEY.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((d, k)) = &*g {
+        if d == dir {
+            return Ok(k.clone());
+        }
+    }
+    let k = std::sync::Arc::new(adb::Key::load_or_create(dir).map_err(|e| format!("нет ключа для телевизора: {e}"))?);
+    *g = Some((dir.to_owned(), k.clone()));
+    Ok(k)
+}
+
 pub fn run(host: &str, dir: &Path, action: &TvAction) -> Result<String, String> {
-    let key = adb::Key::load_or_create(dir).map_err(|e| format!("нет ключа для телевизора: {e}"))?;
+    let key = key(dir)?;
     // Waiting for «Разрешить» makes sense only for the check from the settings page.
     let wait = if matches!(action, TvAction::Ping) { Duration::from_secs(40) } else { Duration::from_secs(8) };
-    let sh = |cmd: &str| adb::shell(host, &key, cmd, wait).map_err(|e| speech(&e));
+    // One connection kept between presses: the remote answers without a new handshake.
+    let sh = |cmd: &str| adb::shell_kept(host, &key, cmd, wait).map_err(|e| speech(&e));
     match action {
         TvAction::Ping => {
             let out = sh("getprop ro.product.manufacturer; getprop ro.product.model")?;
@@ -196,7 +388,8 @@ pub fn run(host: &str, dir: &Path, action: &TvAction) -> Result<String, String> 
             }
             apps.sort();
             apps.dedup();
-            Ok(serde_json::json!({ "apps": apps }).to_string())
+            let names: serde_json::Map<String, serde_json::Value> = apps.iter().map(|a| (a.clone(), label(a).into())).collect();
+            Ok(serde_json::json!({ "apps": apps, "names": names }).to_string())
         }
         TvAction::OpenPackage(pkg) => {
             if !valid_package(pkg) {
@@ -218,6 +411,63 @@ pub fn run(host: &str, dir: &Path, action: &TvAction) -> Result<String, String> 
                 find_package(name, &packages).ok_or_else(|| format!("Не нашла на телевизоре приложение {name}"))?
             };
             sh(&format!("am force-stop {pkg}")).map(|_| format!("Закрыла {name}"))
+        }
+        // Handled by the controller (no TV involved).
+        TvAction::RemoteMode(_) => Ok(String::new()),
+        TvAction::Tap(what) => {
+            let nodes = dump_screen(&sh)?;
+            match find_on_screen(&nodes, what) {
+                Some(n) => {
+                    tap(&sh, n)?;
+                    Ok(format!("Нажала {}", n.label))
+                }
+                None => {
+                    eprintln!("tv: «{what}» not on the screen; seen: {}", seen(&nodes));
+                    Err(format!("Не вижу на экране «{what}»"))
+                }
+            }
+        }
+        TvAction::OpenIn(app, section) => {
+            open_app(&sh, app)?;
+            // The app's first screen takes a few seconds.
+            for attempt in 0..4 {
+                std::thread::sleep(Duration::from_millis(if attempt == 0 { 3500 } else { 1500 }));
+                let Ok(nodes) = dump_screen(&sh) else { continue };
+                if let Some(n) = find_on_screen(&nodes, section) {
+                    tap(&sh, n)?;
+                    return Ok(format!("Открываю {section}"));
+                }
+                if attempt == 3 {
+                    eprintln!("tv: section «{section}» not found in {app}; seen: {}", seen(&nodes));
+                }
+            }
+            Err(format!("Открыла {app}, но не нашла там «{section}»"))
+        }
+        TvAction::PlayFirst => {
+            let nodes = dump_screen(&sh)?;
+            match first_item(&nodes) {
+                Some(n) => {
+                    tap(&sh, n)?;
+                    Ok(format!("Включаю {}", n.label.chars().take(60).collect::<String>()))
+                }
+                None => {
+                    // Nothing recognisable: the focused item, as the remote's OK would.
+                    eprintln!("tv: no first item; seen: {}", seen(&nodes));
+                    sh("input keyevent KEYCODE_DPAD_CENTER").map(|_| "Включаю".into())
+                }
+            }
+        }
+        TvAction::OpenAndStart(app) => {
+            open_app(&sh, app)?;
+            std::thread::sleep(Duration::from_millis(3500));
+            let nodes = dump_screen(&sh).unwrap_or_default();
+            if let Some(n) = START_WORDS.iter().find_map(|w| find_on_screen(&nodes, w)) {
+                tap(&sh, n)?;
+                return Ok(format!("Открыла {app} и нажала {}", n.label));
+            }
+            // Most TV VPN apps open with the big button in focus.
+            eprintln!("tv: no start button in {app}; seen: {}", seen(&nodes));
+            sh("input keyevent KEYCODE_DPAD_CENTER").map(|_| format!("Открыла {app} и нажала главную кнопку"))
         }
         TvAction::Open(name) => {
             let list = sh("pm list packages")?;
@@ -267,6 +517,53 @@ fn launch_script(pkg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A SmartTube-like screen: the menu on the left, a grid of videos.
+    const SCREEN: &str = r#"<?xml version='1.0'?><hierarchy rotation="0">
+<node index="0" text="" class="android.widget.FrameLayout" content-desc="" clickable="false" focusable="false" bounds="[0,0][1920,1080]">
+<node text="Главная" content-desc="" clickable="true" focusable="true" bounds="[20,200][300,260]" />
+<node text="История" content-desc="" clickable="true" focusable="true" bounds="[20,280][300,340]" />
+<node text="" content-desc="Поиск" clickable="true" focusable="true" bounds="[20,120][300,180]" />
+<node text="Как приготовить плов &amp; не сжечь" content-desc="" clickable="true" focusable="true" bounds="[420,200][900,520]" />
+<node text="Обзор проектора" content-desc="" clickable="true" focusable="true" bounds="[940,200][1420,520]" />
+<node text="Вторая строка" content-desc="" clickable="true" focusable="true" bounds="[420,560][900,880]" />
+</node></hierarchy>"#;
+
+    #[test]
+    fn reads_the_screen_and_finds_what_was_said() {
+        let nodes = ui_nodes(SCREEN);
+        assert_eq!(nodes.len(), 7);
+        assert_eq!(nodes[4].label, "Как приготовить плов & не сжечь");
+        assert_eq!(nodes[3].label, "Поиск", "content-desc when there is no text");
+        assert_eq!(find_on_screen(&nodes, "историю").unwrap().label, "История", "the case Alice heard");
+        assert_eq!(find_on_screen(&nodes, "история просмотров").unwrap().label, "История");
+        assert_eq!(find_on_screen(&nodes, "поиск").unwrap().center(), (160, 150));
+        assert_eq!(find_on_screen(&nodes, "обзор").unwrap().label, "Обзор проектора");
+        assert!(find_on_screen(&nodes, "настройки").is_none());
+        assert_eq!(first_item(&nodes).unwrap().label, "Как приготовить плов & не сжечь", "top left of the grid, not the menu");
+    }
+
+    #[test]
+    fn smarttube_and_vpn_by_name() {
+        let pk = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let installed = pk(&["com.google.android.youtube.tv", "com.liskovsoft.smarttubetv.beta", "org.amnezia.vpn"]);
+        assert_eq!(find_package("смарт тьюб", &installed).as_deref(), Some("com.liskovsoft.smarttubetv.beta"));
+        assert_eq!(find_package("впн", &installed).as_deref(), Some("org.amnezia.vpn"));
+        assert!(START_WORDS.iter().any(|w| find_on_screen(&ui_nodes(r#"<node text="Подключиться" clickable="true" bounds="[800,500][1100,600]" />"#), w).is_some()));
+    }
+
+    #[test]
+    fn packages_get_names_people_know() {
+        // The scenario editor listed bare package names; nobody could tell what opens.
+        assert_eq!(label("com.google.android.youtube.tv"), "YouTube");
+        assert_eq!(label("com.google.android.youtube.tvmusic"), "YouTube Music");
+        assert_eq!(label("ru.kinopoisk.tv"), "Кинопоиск");
+        assert_eq!(label("com.android.vending"), "Google Play");
+        assert_eq!(label("com.example.wink.tv"), "Wink");
+        // Unknown: the telling part of the name, the package after it.
+        assert_eq!(label("com.teamsmart.videomanager.tv"), "Videomanager (com.teamsmart.videomanager.tv)");
+        assert_eq!(label("org.example.app"), "Example (org.example.app)");
+    }
 
     #[test]
     fn finds_apps_by_spoken_name() {

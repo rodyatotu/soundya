@@ -129,7 +129,7 @@ pub fn run(dir: &Path, shared: Arc<Shared>, voice: bool, existing: bool, port: u
         crate::led::set_install(Some(Install::Loading));
     }
     thread::spawn(move || {
-        let version = env!("CARGO_PKG_VERSION");
+        let version = crate::VERSION;
         // Wait for the network (the address is the point), at most 3 minutes.
         let mut ip = None;
         for _ in 0..36 {

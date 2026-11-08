@@ -266,19 +266,158 @@ pub fn json() -> serde_json::Value {
 
 /// Weather from Open-Meteo (free, no key), through the proxy from the settings.
 fn fetch_weather(shared: &crate::Shared, lat: f64, lon: f64) -> Result<i64, String> {
+    let v = forecast(shared, lat, lon)?;
+    parse_weather(&v).ok_or_else(|| "в ответе нет температуры".into())
+}
+
+/// One wait per source: the panel waited 15 s and then showed an error.
+const WEATHER_WAIT: Duration = Duration::from_secs(6);
+
+/// The forecast in Open-Meteo's shape: from Open-Meteo, else from MET Norway.
+/// Some Russian networks do not reach api.open-meteo.com (its geocoding, on another
+/// address, works): the connection just times out.
+fn forecast(shared: &crate::Shared, lat: f64, lon: f64) -> Result<serde_json::Value, String> {
     let proxy = shared.proxy.lock().unwrap().clone();
     let agent = crate::sc::build_agent(&proxy).map_err(|e| e.to_string())?;
-    let v: serde_json::Value = agent
+    let open_meteo = agent
         .get("https://api.open-meteo.com/v1/forecast")
         .query("latitude", &format!("{lat:.3}"))
         .query("longitude", &format!("{lon:.3}"))
-        .query("current", "temperature_2m")
-        .timeout(Duration::from_secs(15))
+        .query("current", "temperature_2m,weather_code,wind_speed_10m,apparent_temperature")
+        .query("daily", "temperature_2m_max,temperature_2m_min,precipitation_probability_max")
+        .query("forecast_days", "1")
+        .query("timezone", "auto")
+        .timeout(WEATHER_WAIT)
         .call()
-        .map_err(|e| e.to_string())?
-        .into_json()
-        .map_err(|e| e.to_string())?;
-    parse_weather(&v).ok_or_else(|| "в ответе нет температуры".into())
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.into_json::<serde_json::Value>().map_err(|e| e.to_string()));
+    let first = match open_meteo {
+        Ok(v) if parse_weather(&v).is_some() => return Ok(v),
+        Ok(_) => "в ответе нет температуры".to_owned(),
+        Err(e) => e,
+    };
+    eprintln!("weather: open-meteo: {first}; trying met.no");
+    // MET Norway asks for a User-Agent that says who calls.
+    let met = agent
+        .get("https://api.met.no/weatherapi/locationforecast/2.0/compact")
+        .query("lat", &format!("{lat:.3}"))
+        .query("lon", &format!("{lon:.3}"))
+        .set("User-Agent", "soundya/0.5 github.com/rodyatotu/soundya")
+        .timeout(WEATHER_WAIT)
+        .call()
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.into_json::<serde_json::Value>().map_err(|e| e.to_string()));
+    match met.map(|v| met_no_as_open_meteo(&v)) {
+        Ok(Some(v)) => Ok(v),
+        Ok(None) => Err(format!("сервис погоды не ответил: {first}; met.no: в ответе нет температуры")),
+        Err(e) => Err(format!("сервис погоды не ответил: {first}; met.no: {e}")),
+    }
+}
+
+/// MET Norway's locationforecast → the fields of Open-Meteo's answer we use:
+/// now from the first entry, today's high and low from the next 24 hours.
+pub fn met_no_as_open_meteo(v: &serde_json::Value) -> Option<serde_json::Value> {
+    let series = v["properties"]["timeseries"].as_array()?;
+    let first = series.first()?;
+    let now = &first["data"]["instant"]["details"];
+    let temp = now["air_temperature"].as_f64()?;
+    let symbol = first["data"]["next_1_hours"]["summary"]["symbol_code"]
+        .as_str()
+        .or_else(|| first["data"]["next_6_hours"]["summary"]["symbol_code"].as_str())
+        .unwrap_or("");
+    let temps: Vec<f64> = series.iter().take(24).filter_map(|e| e["data"]["instant"]["details"]["air_temperature"].as_f64()).collect();
+    let max = temps.iter().cloned().fold(f64::MIN, f64::max);
+    let min = temps.iter().cloned().fold(f64::MAX, f64::min);
+    Some(serde_json::json!({
+        "current": {
+            "temperature_2m": temp,
+            "weather_code": met_symbol_code(symbol),
+            // m/s → km/h, as Open-Meteo gives it.
+            "wind_speed_10m": now["wind_speed"].as_f64().map(|w| w * 3.6),
+            "apparent_temperature": null,
+        },
+        "daily": {
+            "temperature_2m_max": [max],
+            "temperature_2m_min": [min],
+            "precipitation_probability_max": [null],
+        },
+    }))
+}
+
+/// MET Norway's symbol («lightrainshowers_day») → the WMO code the panel draws.
+fn met_symbol_code(symbol: &str) -> i64 {
+    let s = symbol.split('_').next().unwrap_or("");
+    if s.contains("thunder") {
+        95
+    } else if s.contains("snowshowers") {
+        85
+    } else if s.contains("snow") || s.contains("sleet") {
+        71
+    } else if s.contains("rainshowers") {
+        80
+    } else if s.contains("rain") {
+        61
+    } else {
+        match s {
+            "clearsky" => 0,
+            "fair" => 1,
+            "partlycloudy" => 2,
+            "cloudy" => 3,
+            "fog" => 45,
+            _ => -1,
+        }
+    }
+}
+
+/// The home screen's weather (Open-Meteo, no key): now, today's high and low, kept 15 minutes.
+static HOME_WEATHER: Mutex<Option<(f64, f64, serde_json::Value, Instant)>> = Mutex::new(None);
+
+pub fn home_weather(shared: &crate::Shared, lat: f64, lon: f64) -> Result<serde_json::Value, String> {
+    if let Some((la, lo, v, at)) = HOME_WEATHER.lock().unwrap().clone() {
+        if la == lat && lo == lon && at.elapsed() < Duration::from_secs(900) {
+            return Ok(v);
+        }
+    }
+    let v = forecast(shared, lat, lon)?;
+    let out = home_weather_of(&v).ok_or("в ответе нет погоды")?;
+    *HOME_WEATHER.lock().unwrap() = Some((lat, lon, out.clone(), Instant::now()));
+    Ok(out)
+}
+
+/// Open-Meteo's answer → {temp, feels, code, text, wind, max, min, rain}.
+pub fn home_weather_of(v: &serde_json::Value) -> Option<serde_json::Value> {
+    let c = &v["current"];
+    let temp = c["temperature_2m"].as_f64()?.round() as i64;
+    let code = c["weather_code"].as_i64().unwrap_or(-1);
+    let day = |k: &str| v["daily"][k][0].as_f64().map(|x| x.round() as i64);
+    Some(serde_json::json!({
+        "temp": temp,
+        "feels": c["apparent_temperature"].as_f64().map(|x| x.round() as i64),
+        "code": code,
+        "text": weather_words(code),
+        "wind": c["wind_speed_10m"].as_f64().map(|x| (x / 3.6).round() as i64),
+        "max": day("temperature_2m_max"),
+        "min": day("temperature_2m_min"),
+        "rain": day("precipitation_probability_max"),
+    }))
+}
+
+/// WMO weather codes in words.
+pub fn weather_words(code: i64) -> &'static str {
+    match code {
+        0 => "ясно",
+        1 => "почти ясно",
+        2 => "переменная облачность",
+        3 => "пасмурно",
+        45 | 48 => "туман",
+        51..=57 => "морось",
+        61..=67 => "дождь",
+        71..=77 => "снег",
+        80..=82 => "ливень",
+        85 | 86 => "снегопад",
+        95..=99 => "гроза",
+        _ => "",
+    }
 }
 
 pub fn parse_weather(v: &serde_json::Value) -> Option<i64> {
@@ -294,7 +433,7 @@ pub fn find_city(shared: &crate::Shared, name: &str) -> Result<(String, f64, f64
         .query("name", name)
         .query("count", "1")
         .query("language", "ru")
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(8))
         .call()
         .map_err(|e| format!("сервис погоды не ответил: {e}"))?
         .into_json()
@@ -355,7 +494,7 @@ pub fn run() {
             }
             let note = NOTE.lock().unwrap().clone().filter(|(_, until)| Instant::now() < *until);
             let widgets = WIDGETS.lock().unwrap().clone().filter(|w| w.on);
-            // What to draw: install > interrupt > widget; None = the firmware's clock.
+            // What to draw: install > interrupt > timer > widget; None = the firmware's clock.
             let draw: Option<(Vec<String>, bool, String)> = if let Some(p) = &phase {
                 let ip = crate::mdns::own_ip().map(|i| i.to_string());
                 let (lit, colon) = frame(p, started.elapsed().as_millis() as u64, ip.as_deref(), clock.dots);
@@ -363,6 +502,11 @@ pub fn run() {
             } else if let Some((text, until)) = note {
                 let blink = (until.saturating_duration_since(Instant::now()).as_millis() / 400) % 2 == 0;
                 Some((if blink { segments(&text) } else { Vec::new() }, false, text))
+            } else if let Some(text) = crate::timer::display_text() {
+                // soundya's timer: MM:SS with the colon (blinking while it runs, steady when paused).
+                let paused = crate::timer::current().is_some_and(|t| t.paused.is_some());
+                let colon = paused || cycle.elapsed().as_millis() % 1000 < 500;
+                Some((segments(&text), colon, text))
             } else if let Some(text) = widgets.as_ref().and_then(|w| widget_now(w, cycle.elapsed().as_millis() as u64)) {
                 let mut lit = segments(&text);
                 if text.ends_with('C') {
@@ -394,6 +538,25 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn met_no_answer_reads_like_open_meteo() {
+        // A real answer for Saint Petersburg (2026-11-08), cut to 26 hours.
+        let v: serde_json::Value = serde_json::from_str(include_str!("../testdata/metno-spb.json")).unwrap();
+        let om = super::met_no_as_open_meteo(&v).expect("converted");
+        let w = super::home_weather_of(&om).expect("the panel's weather");
+        assert_eq!(w["temp"], 7, "6.6 °C now");
+        assert_eq!(w["code"], 3, "cloudy");
+        assert_eq!(w["text"], "пасмурно");
+        assert_eq!(w["wind"], 5, "5.3 m/s");
+        assert!(w["max"].as_i64().unwrap() >= w["min"].as_i64().unwrap());
+        assert_eq!(super::parse_weather(&om), Some(7));
+        assert_eq!(super::met_symbol_code("lightrainshowers_day"), 80);
+        assert_eq!(super::met_symbol_code("heavysnow"), 71);
+        assert_eq!(super::met_symbol_code("rainandthunder"), 95);
+        assert_eq!(super::met_symbol_code("clearsky_night"), 0);
+        assert!(super::met_no_as_open_meteo(&serde_json::json!({})).is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -404,6 +567,18 @@ mod tests {
         assert_eq!(segments(" HI ").len(), 5 + 2);
         assert_eq!(spinner(0).len(), 2);
         assert_ne!(spinner(0), spinner(1));
+    }
+
+    #[test]
+    fn the_home_weather_in_words() {
+        let v = serde_json::json!({
+            "current": {"temperature_2m": -2.6, "weather_code": 71, "wind_speed_10m": 18.0, "apparent_temperature": -7.2},
+            "daily": {"temperature_2m_max": [0.4], "temperature_2m_min": [-5.5], "precipitation_probability_max": [80]}
+        });
+        let w = home_weather_of(&v).unwrap();
+        assert_eq!((w["temp"].as_i64(), w["text"].as_str(), w["wind"].as_i64()), (Some(-3), Some("снег"), Some(5)));
+        assert_eq!((w["max"].as_i64(), w["min"].as_i64(), w["rain"].as_i64(), w["feels"].as_i64()), (Some(0), Some(-6), Some(80), Some(-7)));
+        assert!(home_weather_of(&serde_json::json!({})).is_none());
     }
 
     #[test]

@@ -70,6 +70,10 @@ struct State {
     g_lists: Vec<(String, String)>,
     g_events: Vec<Event>,
     g_tasks: Vec<crate::google::GTask>,
+    /// Lists whose open tasks were all read in the last successful fetch. A task
+    /// missing from g_tasks counts as closed only in these: a failed request, a list
+    /// past the first 10 or past 100 open tasks, or the cache at start-up prove nothing.
+    g_full_lists: HashSet<String>,
     g_error: String,
     g_fetched: i64,
 }
@@ -115,6 +119,7 @@ pub fn configure_google(on: bool, read: &[String], write: &str, list: &str) {
         if !on {
             s.g_events.clear();
             s.g_tasks.clear();
+            s.g_full_lists.clear();
             s.g_error.clear();
         }
         changed
@@ -376,6 +381,7 @@ fn merged(s: &State, from: i64, to: i64, off: i64) -> Vec<Event> {
 pub fn test_google(events: Vec<Event>, tasks: Vec<crate::google::GTask>) {
     with(|s| {
         s.g_on = !events.is_empty() || !tasks.is_empty();
+        s.g_full_lists = tasks.iter().map(|t| t.list.clone()).collect();
         s.g_events = events;
         s.g_tasks = tasks;
     });
@@ -501,11 +507,29 @@ fn refresh_google(shared: &crate::Shared) {
                 events.push(Event { uid: id, title, start, end, all_day, cal: c.name.clone() });
             }
         }
-        let lists = crate::google::task_lists(&a)?;
-        let mut tasks = Vec::new();
-        for (id, _) in lists.iter().take(10) {
-            tasks.extend(crate::google::tasks(&a, id)?);
-        }
+        // Tasks on their own: a project without the Tasks API still gives its calendars.
+        let fetched = (|| -> Result<_, String> {
+            let lists = crate::google::task_lists(&a)?;
+            let mut tasks = Vec::new();
+            let mut full = HashSet::new();
+            for (id, _) in lists.iter().take(10) {
+                let got = crate::google::tasks(&a, id)?;
+                if got.len() < crate::google::TASKS_PAGE {
+                    full.insert(id.clone());
+                }
+                tasks.extend(got);
+            }
+            Ok((lists, tasks, full))
+        })();
+        // A failed read keeps the last copy: an empty list would close every linked task.
+        let (lists, tasks, full, tasks_error) = match fetched {
+            Ok((l, t, f)) => (l, t, f, String::new()),
+            Err(e) => {
+                eprintln!("google: tasks: {e}");
+                let (l, t, f) = with(|s| (s.g_lists.clone(), s.g_tasks.clone(), s.g_full_lists.clone()));
+                (l, t, f, format!("Задачи Google: {e}"))
+            }
+        };
         eprintln!("google: {} calendars, {} events, {} lists, {} open tasks", cals.len(), events.len(), lists.len(), tasks.len());
         if let Some(dir) = DIR.lock().unwrap().clone() {
             let cache = json!({ "events": events, "tasks": tasks.iter().map(|t| json!({
@@ -518,7 +542,8 @@ fn refresh_google(shared: &crate::Shared) {
             s.g_lists = lists;
             s.g_events = events;
             s.g_tasks = tasks;
-            s.g_error.clear();
+            s.g_full_lists = full;
+            s.g_error = tasks_error;
             s.g_fetched = now();
         });
         Ok(())
@@ -569,18 +594,57 @@ pub fn add_event(title: &str, start: i64, end: i64, all_day: bool) -> Done {
     Ok(name)
 }
 
+/// A meeting with invitations and a Meet room: (calendar name, Meet link).
+pub fn add_meeting(title: &str, start: i64, end: i64, emails: &[String]) -> Result<(String, Option<String>), String> {
+    let cal = with(|s| s.g_write.clone());
+    let cal = if cal.is_empty() { "primary".to_owned() } else { cal };
+    let (id, link) = crate::google::add_meeting(&agent()?, &cal, title, start, end, emails, offset())?;
+    let name = with(|s| {
+        let name = s.g_cals.iter().find(|c| c.id == cal || (cal == "primary" && c.primary)).map_or("Google".into(), |c| c.name.clone());
+        s.g_events.push(Event { uid: id, title: title.to_owned(), start, end, all_day: false, cal: name.clone() });
+        name
+    });
+    wake();
+    Ok((name, link))
+}
+
 /// A new Google task (the list chosen in the settings, else the first).
 pub fn add_task(title: &str, due_day: Option<i64>, notes: &str) -> Done {
+    add_task_linked(title, due_day, notes).map(|(name, _, _)| name)
+}
+
+/// Like `add_task`, also giving the list's and the new task's ids: (list name, list id, task id).
+pub fn add_task_linked(title: &str, due_day: Option<i64>, notes: &str) -> Result<(String, String, String), String> {
     let list = with(|s| if s.g_list.is_empty() { s.g_lists.first().map(|l| l.0.clone()).unwrap_or_else(|| "@default".into()) } else { s.g_list.clone() });
     let id = crate::google::add_task(&agent()?, &list, title, due_day, notes)?;
-    with(|s| s.g_tasks.push(crate::google::GTask { id, list: list.clone(), title: title.to_owned(), notes: notes.to_owned(), due_day }));
+    with(|s| s.g_tasks.push(crate::google::GTask { id: id.clone(), list: list.clone(), title: title.to_owned(), notes: notes.to_owned(), due_day }));
     wake();
-    Ok(with(|s| s.g_lists.iter().find(|l| l.0 == list).map_or("Google Задачи".into(), |l| l.1.clone())))
+    let name = with(|s| s.g_lists.iter().find(|l| l.0 == list).map_or("Google Задачи".into(), |l| l.1.clone()));
+    Ok((name, list, id))
+}
+
+/// Is a Google task still open? False only when its list was read in full and the
+/// task was not there (or soundya itself closed or deleted it).
+pub fn task_open(list: &str, id: &str) -> bool {
+    with(|s| !s.g_full_lists.contains(list) || s.g_tasks.iter().any(|t| t.id == id))
 }
 
 pub fn complete_task(list: &str, id: &str) -> Done {
     crate::google::complete_task(&agent()?, list, id)?;
     with(|s| s.g_tasks.retain(|t| !(t.list == list && t.id == id)));
+    wake();
+    Ok(String::new())
+}
+
+pub fn update_task(list: &str, id: &str, title: &str, due_day: Option<i64>, notes: &str) -> Done {
+    crate::google::update_task(&agent()?, list, id, title, due_day, notes)?;
+    with(|s| {
+        if let Some(t) = s.g_tasks.iter_mut().find(|t| t.list == list && t.id == id) {
+            t.title = title.to_owned();
+            t.due_day = due_day;
+            t.notes = notes.to_owned();
+        }
+    });
     wake();
     Ok(String::new())
 }

@@ -13,6 +13,7 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::Path,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -527,27 +528,50 @@ fn connect_max(host: &str, key: &Key, confirm_wait: Duration) -> Result<(TcpStre
 }
 
 /// Runs `command` in the TV's shell and returns what it printed.
+#[allow(dead_code)] // the installer's; the speaker uses shell_kept
 pub fn shell(host: &str, key: &Key, command: &str, confirm_wait: Duration) -> Result<String, Error> {
     shell_for(host, key, command, confirm_wait, Duration::from_secs(30))
 }
 
 /// `shell` that may run up to `total` (a foreground install takes minutes).
+#[allow(dead_code)]
 pub fn shell_for(host: &str, key: &Key, command: &str, confirm_wait: Duration, total: Duration) -> Result<String, Error> {
     let mut s = connect(host, key, confirm_wait)?;
-    let _ = s.set_read_timeout(Some(total.min(Duration::from_secs(600))));
-    let local = 1u32;
+    run_shell(&mut s, 1, command, total, None).map_err(|(e, _)| e)
+}
+
+/// One shell stream on an open connection. The error says whether the device took
+/// the command (answered the OPEN): if not, it is safe to send it again.
+/// `first_wait`: how long to wait for that first answer (a kept connection may be dead).
+fn run_shell(s: &mut TcpStream, local: u32, command: &str, total: Duration, first_wait: Option<Duration>) -> Result<String, (Error, bool)> {
+    let total_wait = total.min(Duration::from_secs(600));
+    let _ = s.set_read_timeout(Some(first_wait.unwrap_or(total_wait)));
     let mut service = format!("shell:{command}").into_bytes();
     service.push(0);
-    send(&mut s, OPEN, local, 0, &service)?;
+    send(s, OPEN, local, 0, &service).map_err(|e| (Error::Other(format!("связь оборвалась: {e}")), false))?;
     let mut remote = 0u32;
+    let mut acked = false;
     let mut out = Vec::new();
     let deadline = Instant::now() + total;
     while Instant::now() < deadline {
-        let m = match recv(&mut s) {
+        let m = match recv(s) {
             Ok(m) => m,
-            Err(e) if matches!(e.kind(), io::ErrorKind::UnexpectedEof) => break,
-            Err(e) => return Err(Error::Other(format!("связь оборвалась: {e}"))),
+            Err(e) if acked && matches!(e.kind(), io::ErrorKind::UnexpectedEof) => break,
+            // A timeout before the answer is not proof of a dead connection (a busy TV forks
+            // the shell late): treated as taken, so a key is never pressed twice.
+            Err(e) => {
+                let timeout = matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut);
+                return Err((Error::Other(format!("связь оборвалась: {e}")), acked || timeout));
+            }
         };
+        // On a kept connection, a late message of an earlier stream.
+        if matches!(m.cmd, OKAY | WRTE | CLSE) && m.a1 != local {
+            continue;
+        }
+        if !acked && matches!(m.cmd, OKAY | WRTE | CLSE) {
+            acked = true;
+            let _ = s.set_read_timeout(Some(total_wait));
+        }
         match m.cmd {
             OKAY => remote = m.a0,
             WRTE => {
@@ -555,16 +579,65 @@ pub fn shell_for(host: &str, key: &Key, command: &str, confirm_wait: Duration, t
                 if out.len() < 256 * 1024 {
                     out.extend_from_slice(&m.data);
                 }
-                send(&mut s, OKAY, local, remote, &[])?;
+                send(s, OKAY, local, remote, &[]).map_err(|e| (Error::Other(format!("связь оборвалась: {e}")), true))?;
             }
             CLSE => {
-                let _ = send(&mut s, CLSE, local, m.a0.max(remote), &[]);
+                let _ = send(s, CLSE, local, m.a0.max(remote), &[]);
                 break;
             }
             _ => {}
         }
     }
     Ok(String::from_utf8_lossy(&out).replace("\r\n", "\n"))
+}
+
+/// The connection kept for the TV remote: (host, stream, last stream id, last used).
+static KEPT: Mutex<Option<(String, TcpStream, u32, Instant)>> = Mutex::new(None);
+/// After this long unused a kept connection is not trusted (the TV may have slept).
+const KEPT_FOR: Duration = Duration::from_secs(120);
+
+/// `shell` on a connection kept open between calls: a remote's key press skips the
+/// TCP connect and the RSA signature (a fraction of a second each on the speaker).
+/// A dead connection is replaced once — only when the device did not take the command,
+/// so a key is never pressed twice.
+pub fn shell_kept(host: &str, key: &Key, command: &str, confirm_wait: Duration) -> Result<String, Error> {
+    for attempt in 0..2 {
+        let mut g = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+        let fresh = !matches!(&*g, Some((h, _, _, used)) if h == host && used.elapsed() < KEPT_FOR);
+        if fresh {
+            // Connecting (up to the «Разрешить» wait) without the lock: other presses are
+            // not held behind a TV that is asleep or not allowed yet.
+            *g = None;
+            drop(g);
+            let s = connect(host, key, confirm_wait)?;
+            g = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+            *g = Some((host.to_owned(), s, 0, Instant::now()));
+        }
+        let (_, s, id, used) = g.as_mut().expect("just set");
+        *id = id.wrapping_add(1).max(1);
+        let local = *id;
+        // A kept connection answers at once; a dead one usually fails at once (reset, EOF).
+        let first_wait = (!fresh).then_some(Duration::from_secs(5));
+        match run_shell(s, local, command, Duration::from_secs(30), first_wait) {
+            Ok(out) => {
+                *used = Instant::now();
+                return Ok(out);
+            }
+            Err((e, acked)) => {
+                *g = None;
+                if acked || fresh || attempt == 1 {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    unreachable!("the loop returns")
+}
+
+/// Tests: drop the kept connection.
+#[cfg(test)]
+pub fn forget_kept() {
+    *KEPT.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// (Used by the installer, installer/: the speaker itself never pushes.)
@@ -656,6 +729,81 @@ pub fn quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fake adbd (no auth): answers each shell with «ran: <command>». `mode` per
+    /// connection: 0 = normal, 1 = close right after one command, 2 = take the second
+    /// OPEN (OKAY) and then drop the connection.
+    fn fake_adbd(modes: Vec<u8>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let host = format!("127.0.0.1:{}", l.local_addr().unwrap().port());
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let c2 = count.clone();
+        std::thread::spawn(move || {
+            for (i, conn) in l.incoming().enumerate() {
+                let Ok(mut c) = conn else { break };
+                c2.fetch_add(1, Ordering::SeqCst);
+                let mode = modes.get(i).copied().unwrap_or(0);
+                std::thread::spawn(move || {
+                    let Ok(m) = recv(&mut c) else { return };
+                    assert_eq!(m.cmd, CNXN);
+                    let _ = send(&mut c, CNXN, VERSION, MAX_DATA, b"device::test;\0");
+                    let mut opens = 0;
+                    while let Ok(m) = recv(&mut c) {
+                        if m.cmd != OPEN {
+                            continue;
+                        }
+                        opens += 1;
+                        let cmd = String::from_utf8_lossy(&m.data).trim_end_matches('\0').trim_start_matches("shell:").to_owned();
+                        let _ = send(&mut c, OKAY, 900 + m.a0, m.a0, &[]);
+                        if mode == 2 && opens == 2 {
+                            return;
+                        }
+                        let _ = send(&mut c, WRTE, 900 + m.a0, m.a0, format!("ran: {cmd}").as_bytes());
+                        let _ = recv(&mut c); // their OKAY
+                        let _ = send(&mut c, CLSE, 900 + m.a0, m.a0, &[]);
+                        if mode == 1 {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (host, count)
+    }
+
+    #[test]
+    fn the_remote_keeps_one_connection() {
+        use std::sync::atomic::Ordering;
+        let dir = std::env::temp_dir().join(format!("soundya-adb-kept-{}", std::process::id()));
+        crate::fsx::ensure_dir(&dir);
+        let key = Key::load_or_create(&dir).unwrap();
+        let w = Duration::from_secs(2);
+
+        // Two presses, one connection.
+        forget_kept();
+        let (host, count) = fake_adbd(vec![0]);
+        assert_eq!(shell_kept(&host, &key, "input keyevent UP", w).unwrap(), "ran: input keyevent UP");
+        assert_eq!(shell_kept(&host, &key, "input keyevent DOWN", w).unwrap(), "ran: input keyevent DOWN");
+        assert_eq!(count.load(Ordering::SeqCst), 1, "no new handshake per key");
+
+        // The TV dropped the connection after a command: the next one reconnects by itself.
+        forget_kept();
+        let (host, count) = fake_adbd(vec![1, 0]);
+        assert_eq!(shell_kept(&host, &key, "a", w).unwrap(), "ran: a");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(shell_kept(&host, &key, "b", w).unwrap(), "ran: b");
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+
+        // The TV took the press, then the connection died: never sent a second time.
+        forget_kept();
+        let (host, count) = fake_adbd(vec![2, 0]);
+        shell_kept(&host, &key, "warm", w).unwrap();
+        let _ = shell_kept(&host, &key, "press", w);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "a taken command is not sent again");
+        forget_kept();
+        crate::fsx::remove_tree(&dir);
+    }
 
     #[test]
     fn montgomery_matches_plain_arithmetic() {

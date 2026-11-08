@@ -29,7 +29,7 @@ fn at(p: &str) -> PathBuf {
 }
 
 fn read(p: &str) -> Option<String> {
-    std::fs::read_to_string(at(p)).ok().map(|s| s.trim().to_owned())
+    crate::fsx::read_string(&at(p)).map(|s| s.trim().to_owned())
 }
 
 fn names(dir: &str) -> Vec<String> {
@@ -68,7 +68,7 @@ fn find(prog: &str, dir: &Path) -> Option<String> {
         dirs.push(PathBuf::from(d));
     }
     dirs.push(dir.to_owned());
-    dirs.iter().map(|d| if root() == Path::new("/") { d.join(prog) } else { at(&d.join(prog).to_string_lossy()) }).find(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned())
+    dirs.iter().map(|d| if root() == Path::new("/") { d.join(prog) } else { at(&d.join(prog).to_string_lossy()) }).find(|p| crate::fsx::is_file(p)).map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Running programs whose name has one of `words` (names only, no arguments).
@@ -162,6 +162,11 @@ pub fn run(dir: &Path) -> Value {
         (true, false) => "BlueZ есть, BlueALSA нет — для A2DP её нужно собрать и проверить.".into(),
         _ => "BlueZ (bluetoothd) нет — Bluetooth-звук soundya сделать не может без него.".into(),
     });
+    let bt_plugin = crate::bt::plugin(&root());
+    summary.push(match &bt_plugin {
+        Some(p) => format!("ALSA-модуль BlueALSA есть ({p}) — музыку можно отправить в наушники."),
+        None => "ALSA-модуля BlueALSA нет — отправить музыку в наушники soundya не сможет.".into(),
+    });
     summary.push(if ap2 {
         format!("AirPlay 2: shairport-sync собран с AirPlay 2; nqptp {}.", if nqptp.is_some() { "есть" } else { "нет — без него AirPlay 2 не работает" })
     } else if shairport.is_some() {
@@ -191,6 +196,7 @@ pub fn run(dir: &Path) -> Value {
             "tools": bt_tools,
             "processes": bt_proc,
             "quasar_files": quasar_bt,
+            "alsa_plugin": bt_plugin,
         },
         "airplay2": {
             "shairport": shairport,

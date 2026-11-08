@@ -471,6 +471,41 @@ def selftest():
     return 0 if code == 200 else 1
 
 
+def start_community(data_dir):
+    """SOUNDYA_COMMUNITY=1: the same bot also lets people into the Telegram community
+    after they accept its rules (community-bot.py, next to this file), in its own thread.
+    Its journals go next to the database (the service may write only there)."""
+    if os.environ.get("SOUNDYA_COMMUNITY", "").strip() not in ("1", "yes", "true"):
+        return
+    if not TG_TOKEN:
+        print("community: SOUNDYA_COMMUNITY=1, но нет SOUNDYA_TG_TOKEN — бот приёма не запущен", flush=True)
+        return
+    import importlib.util
+    os.environ.setdefault("SOUNDYA_CONSENTS", os.path.join(data_dir, "consents.jsonl"))
+    os.environ.setdefault("SOUNDYA_DECLINES", os.path.join(data_dir, "declines.jsonl"))
+    try:
+        spec = importlib.util.spec_from_file_location("community_bot", os.path.join(BASE, "community-bot.py"))
+        bot = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bot)
+    except Exception as e:  # an old install without the file must not stop the reports
+        print(f"community: бот приёма не загрузился: {e}", flush=True)
+        return
+    # Its log lines straight to the journal (stdout is buffered under systemd).
+    import functools
+    bot.print = functools.partial(print, flush=True)
+
+    def run():
+        while True:
+            try:
+                bot.main()
+            except Exception as e:  # never let the bot take the report server down
+                print(f"community: {e}; restarting in 10 s", flush=True)
+                time.sleep(10)
+
+    threading.Thread(target=run, name="community-bot", daemon=True).start()
+    print("community: бот приёма в сообщество запущен в этом же процессе", flush=True)
+
+
 def main():
     global db
     ap = argparse.ArgumentParser()
@@ -486,6 +521,7 @@ def main():
             raise SystemExit(2)
         raise SystemExit(selftest())
     print(f"soundya-stats on {a.host}:{a.port}, db {a.db}", flush=True)
+    start_community(os.path.dirname(os.path.abspath(a.db)))
     ThreadingHTTPServer((a.host, a.port), Handler).serve_forever()
 
 

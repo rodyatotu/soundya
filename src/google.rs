@@ -104,12 +104,13 @@ fn dec(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        // `<=`: «%41» at the very end is decoded too. Bytes, not a str slice:
+        // «%aЖ» must not cut the letter in half.
+        if b[i] == b'%' && i + 2 <= b.len() - 1 && b[i + 1].is_ascii_hexdigit() && b[i + 2].is_ascii_hexdigit() {
+            let hex = |c: u8| (c as char).to_digit(16).unwrap_or(0) as u8;
+            out.push(hex(b[i + 1]) * 16 + hex(b[i + 2]));
+            i += 3;
+            continue;
         }
         out.push(if b[i] == b'+' { b' ' } else { b[i] });
         i += 1;
@@ -202,6 +203,19 @@ pub fn code_from(pasted: &str) -> Option<(String, Option<String>)> {
     (!p.contains(char::is_whitespace) && !p.contains("://") && p.len() > 10).then(|| (p.to_owned(), None))
 }
 
+/// Google's «… API has not been used in project N before or it is disabled»: which one, and where to switch it on.
+fn disabled_api(msg: &str) -> String {
+    let m = msg.to_ascii_lowercase();
+    let (name, id) = if m.contains("tasks") {
+        ("Google Tasks API", "tasks.googleapis.com")
+    } else if m.contains("calendar") {
+        ("Google Calendar API", "calendar-json.googleapis.com")
+    } else {
+        return "в проекте Google Cloud не включён Calendar API или Tasks API".into();
+    };
+    format!("в проекте Google Cloud выключен {name} — включите его: https://console.cloud.google.com/apis/library/{id} (вход в Google при этом не пропал)")
+}
+
 fn google_error(e: ureq::Error) -> String {
     match e {
         ureq::Error::Status(code, resp) => {
@@ -211,9 +225,7 @@ fn google_error(e: ureq::Error) -> String {
             match err.as_str() {
                 "invalid_grant" => "вход в Google устарел или отозван — войдите заново (в режиме «Тестирование» Google отзывает вход через 7 дней)".into(),
                 "invalid_client" | "unauthorized_client" => "Google не принял ID или секрет клиента — проверьте, что клиент типа «Приложение для ПК»".into(),
-                "PERMISSION_DENIED" if msg.contains("has not been used") || msg.contains("disabled") => {
-                    "в проекте Google Cloud не включён Calendar API или Tasks API".into()
-                }
+                "PERMISSION_DENIED" if msg.contains("has not been used") || msg.contains("disabled") => disabled_api(&msg),
                 _ => format!("Google ответил {code}{}{}", if err.is_empty() { "" } else { ": " }, if msg.is_empty() { err } else { msg }),
             }
         }
@@ -341,7 +353,7 @@ pub fn parse_calendars(v: &Value) -> Vec<Cal> {
 }
 
 pub fn calendars(agent: &ureq::Agent) -> Result<Vec<Cal>, String> {
-    call(agent, "GET", "/calendar/v3/users/me/calendarList", &[("maxResults", "100".into())], None).map(|v| parse_calendars(&v))
+    call(agent, "GET", "/calendar/v3/users/me/calendarList", &[("maxResults", TASKS_PAGE.to_string())], None).map(|v| parse_calendars(&v))
 }
 
 /// (id, title, start, end, all-day).
@@ -401,6 +413,35 @@ pub fn add_event(agent: &ureq::Agent, cal: &str, title: &str, start: i64, end: i
     Ok(v["id"].as_str().unwrap_or("").to_owned())
 }
 
+/// A meeting: the people invited and a Google Meet room made for it.
+pub fn meeting_body(title: &str, start: i64, end: i64, emails: &[String], request_id: &str, off: i64) -> Value {
+    json!({
+        "summary": title,
+        "start": { "dateTime": rfc3339(start, off) },
+        "end": { "dateTime": rfc3339(end, off) },
+        "attendees": emails.iter().map(|e| json!({ "email": e })).collect::<Vec<_>>(),
+        "conferenceData": { "createRequest": { "requestId": request_id, "conferenceSolutionKey": { "type": "hangoutsMeet" } } },
+    })
+}
+
+/// The Meet link of a created event (hangoutLink, else the video entry point).
+pub fn meet_link(v: &Value) -> Option<String> {
+    v["hangoutLink"].as_str().map(str::to_owned).or_else(|| {
+        v["conferenceData"]["entryPoints"].as_array()?.iter().find(|e| e["entryPointType"] == "video")?["uri"].as_str().map(str::to_owned)
+    })
+}
+
+/// Creates the meeting and sends Google's invitations to everyone: (event id, Meet link).
+pub fn add_meeting(agent: &ureq::Agent, cal: &str, title: &str, start: i64, end: i64, emails: &[String], off: i64) -> Result<(String, Option<String>), String> {
+    // Unique per request: Google makes one Meet room per id.
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let rid = format!("soundya-{start}-{nanos}");
+    let body = meeting_body(title, start, end, emails, &rid, off);
+    let q = [("conferenceDataVersion", "1".to_owned()), ("sendUpdates", "all".to_owned())];
+    let v = call(agent, "POST", &format!("/calendar/v3/calendars/{}/events", enc(cal)), &q, Some(&body))?;
+    Ok((v["id"].as_str().unwrap_or("").to_owned(), meet_link(&v)))
+}
+
 // ---------------------------------------------------------------- tasks
 
 #[derive(Debug, Clone, PartialEq)]
@@ -443,15 +484,18 @@ pub fn parse_tasks(v: &Value, list: &str) -> Vec<GTask> {
 }
 
 pub fn task_lists(agent: &ureq::Agent) -> Result<Vec<(String, String)>, String> {
-    call(agent, "GET", "/tasks/v1/users/@me/lists", &[("maxResults", "100".into())], None).map(|v| parse_lists(&v))
+    call(agent, "GET", "/tasks/v1/users/@me/lists", &[("maxResults", TASKS_PAGE.to_string())], None).map(|v| parse_lists(&v))
 }
+
+/// Open tasks read from one list at once; a full page may mean there are more.
+pub const TASKS_PAGE: usize = 100;
 
 pub fn tasks(agent: &ureq::Agent, list: &str) -> Result<Vec<GTask>, String> {
     let v = call(
         agent,
         "GET",
         &format!("/tasks/v1/lists/{}/tasks", enc(list)),
-        &[("showCompleted", "false".into()), ("showHidden", "false".into()), ("maxResults", "100".into())],
+        &[("showCompleted", "false".into()), ("showHidden", "false".into()), ("maxResults", TASKS_PAGE.to_string())],
         None,
     )?;
     Ok(parse_tasks(&v, list))
@@ -469,6 +513,16 @@ pub fn add_task(agent: &ureq::Agent, list: &str, title: &str, due_day: Option<i6
     Ok(v["id"].as_str().unwrap_or("").to_owned())
 }
 
+/// New title, date (None: no date) and notes of a task.
+pub fn update_task(agent: &ureq::Agent, list: &str, id: &str, title: &str, due_day: Option<i64>, notes: &str) -> Result<(), String> {
+    let body = json!({
+        "title": title,
+        "due": due_day.map(|d| format!("{}T00:00:00.000Z", date(d))),
+        "notes": notes,
+    });
+    call(agent, "PATCH", &format!("/tasks/v1/lists/{}/tasks/{}", enc(list), enc(id)), &[], Some(&body)).map(|_| ())
+}
+
 pub fn complete_task(agent: &ureq::Agent, list: &str, id: &str) -> Result<(), String> {
     call(agent, "PATCH", &format!("/tasks/v1/lists/{}/tasks/{}", enc(list), enc(id)), &[], Some(&json!({ "status": "completed" }))).map(|_| ())
 }
@@ -479,6 +533,37 @@ pub fn delete_task(agent: &ureq::Agent, list: &str, id: &str) -> Result<(), Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dec_handles_cyrillic_and_tail() {
+        assert_eq!(super::dec("%aЖx"), "%aЖx");
+        assert_eq!(super::dec("a%41"), "aA");
+        assert_eq!(super::dec("%D0%96+%"), "Ж %");
+        let _ = super::code_from("http://localhost/?code=%aЖ");
+    }
+
+    #[test]
+    fn a_meeting_invites_and_asks_for_meet() {
+        let b = super::meeting_body("Созвон", 1_794_214_800, 1_794_216_600, &["a@x.ru".into(), "b@y.com".into()], "r1", 3 * 3600);
+        assert_eq!(b["attendees"][1]["email"], "b@y.com");
+        assert_eq!(b["conferenceData"]["createRequest"]["conferenceSolutionKey"]["type"], "hangoutsMeet");
+        assert_eq!(b["conferenceData"]["createRequest"]["requestId"], "r1");
+        assert!(b["start"]["dateTime"].as_str().unwrap().ends_with("+03:00"), "{}", b["start"]);
+        let v = serde_json::json!({"hangoutLink": "https://meet.google.com/abc-defg-hij"});
+        assert_eq!(super::meet_link(&v).as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+        let v = serde_json::json!({"conferenceData": {"entryPoints": [{"entryPointType": "phone", "uri": "tel:+1"}, {"entryPointType": "video", "uri": "https://meet.google.com/x"}]}});
+        assert_eq!(super::meet_link(&v).as_deref(), Some("https://meet.google.com/x"));
+        assert_eq!(super::meet_link(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn a_disabled_api_is_named() {
+        let t = disabled_api("Google Tasks API has not been used in project 123 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/tasks.googleapis.com/overview?project=123");
+        assert!(t.contains("Google Tasks API") && t.contains("library/tasks.googleapis.com"), "{t}");
+        let c = disabled_api("Google Calendar API has not been used in project 123 before or it is disabled.");
+        assert!(c.contains("Google Calendar API") && c.contains("calendar-json"), "{c}");
+        assert!(disabled_api("something disabled").contains("Calendar API или Tasks API"));
+    }
+
     use super::*;
 
     const MSK: i64 = 3 * 3600;

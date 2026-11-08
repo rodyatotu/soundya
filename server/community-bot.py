@@ -24,6 +24,10 @@ SOUNDYA_CHANNEL_INVITE: тогда по ней в группу попасть н
 username, имя, время (UTC), версия правил.
 
 Запуск:  SOUNDYA_BOT_TOKEN=123:abc python3 community-bot.py
+
+Или внутри сервера отчётов (stats.py) тем же ботом, что присылает баг-репорты:
+SOUNDYA_COMMUNITY=1 в /etc/soundya-stats.env — stats.py запустит main() в своём потоке
+с токеном SOUNDYA_TG_TOKEN. Тогда SOUNDYA_BOT_TOKEN не нужен.
 """
 import json
 import os
@@ -32,12 +36,20 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-TOKEN = os.environ.get("SOUNDYA_BOT_TOKEN", "").strip()
-CHANNEL_INVITE = os.environ.get("SOUNDYA_CHANNEL_INVITE", "https://t.me/+lvaSgqYWrXUwYzA0").strip()
+# Свой бот или бот отчётов (stats.py): один и тот же токен можно использовать для обоих.
+TOKEN = (os.environ.get("SOUNDYA_BOT_TOKEN", "") or os.environ.get("SOUNDYA_TG_TOKEN", "")).strip()
+CHANNEL_INVITE = os.environ.get("SOUNDYA_CHANNEL_INVITE", "https://t.me/+t9kgMTEpnQM3N2Vk").strip()
 TARGET_CHAT = os.environ.get("SOUNDYA_TARGET_CHAT", "").strip()
 CONSENTS = os.environ.get("SOUNDYA_CONSENTS", "consents.jsonl")
 DECLINES = os.environ.get("SOUNDYA_DECLINES", "declines.jsonl")
+# Delete «X joined / was accepted / left» service messages in the group (the bot needs the
+# admin right «Удаление сообщений»). On by default; SOUNDYA_HIDE_JOINS=0 keeps them.
+HIDE_JOINS = os.environ.get("SOUNDYA_HIDE_JOINS", "1").strip() not in ("0", "no", "false")
+SERVICE_KEYS = ("new_chat_members", "left_chat_member")
 ADMINS = {int(x) for x in os.environ.get("SOUNDYA_ADMINS", "").replace(" ", "").split(",") if x.lstrip("-").isdigit()}
+# Без SOUNDYA_ADMINS админ — тот, кому бот отчётов шлёт баг-репорты (если это человек, а не группа).
+if not ADMINS and os.environ.get("SOUNDYA_TG_CHAT", "").strip().isdigit():
+    ADMINS = {int(os.environ["SOUNDYA_TG_CHAT"].strip())}
 # Заявки, ждущие ответа: user_id -> chat_id группы (в памяти; Telegram хранит заявки сам).
 PENDING = {}
 
@@ -236,9 +248,22 @@ def on_admin(msg, text):
     return True
 
 
+def is_join_notice(msg):
+    """«Rodion was accepted to the group», «X added Y», «X left the group»: in a group, not a DM."""
+    return msg.get("chat", {}).get("type") in ("group", "supergroup") and any(k in msg for k in SERVICE_KEYS)
+
+
+def hide(msg):
+    res = api("deleteMessage", chat_id=msg["chat"]["id"], message_id=msg["message_id"])
+    if not res.get("ok"):
+        print(f"не удалось убрать служебное сообщение (у бота нет права «Удаление сообщений»?): {res.get('description', '')}")
+
+
 def main():
     if not TOKEN:
-        raise SystemExit("нет SOUNDYA_BOT_TOKEN: создайте бота у @BotFather и задайте токен")
+        raise SystemExit("нет SOUNDYA_BOT_TOKEN (или SOUNDYA_TG_TOKEN): создайте бота у @BotFather и задайте токен")
+    # A webhook on the token makes getUpdates fail (409) forever; the reports bot uses none.
+    api("deleteWebhook")
     me = api("getMe")
     if me.get("ok"):
         print(f"бот @{me['result'].get('username')} запущен; соглашение версии {AGREEMENT_VERSION}")
@@ -251,7 +276,9 @@ def main():
         for upd in res["result"]:
             offset = upd["update_id"] + 1
             try:
-                if "message" in upd:
+                if "message" in upd and HIDE_JOINS and is_join_notice(upd["message"]):
+                    hide(upd["message"])
+                elif "message" in upd:
                     msg = upd["message"]
                     text = (msg.get("text") or "").strip()
                     if text.startswith("/") and on_admin(msg, text):

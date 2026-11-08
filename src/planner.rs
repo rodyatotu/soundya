@@ -50,6 +50,38 @@ pub struct Task {
     pub remind: bool,
     #[serde(default)]
     pub created: i64,
+    /// "" (personal) | "work": work tasks are asked about in working hours only.
+    #[serde(default)]
+    pub profile: String,
+    /// At the deadline Alice asks «сделали?» and comes back until it is done.
+    #[serde(default)]
+    pub check: bool,
+    /// The next «сделали?» (None: at `due`).
+    #[serde(default)]
+    pub ask_at: Option<i64>,
+    /// Questions in a row left without an answer.
+    #[serde(default)]
+    pub asks: u8,
+    /// Asked `check_times` times, never answered: shown so in the list.
+    #[serde(default)]
+    pub unanswered: bool,
+    /// A work task also in Google Tasks (list id, task id): Google's copy is the one
+    /// listed; this one keeps the «сделали?» and closes Google's when done.
+    #[serde(default)]
+    pub g_list: String,
+    #[serde(default)]
+    pub g_id: String,
+}
+
+/// Listed among soundya's own tasks (not a copy of a Google task, which is listed itself).
+pub fn listed(t: &Task) -> bool {
+    t.g_id.is_empty()
+}
+
+/// Does a new task go to Google Tasks? `target`: "google" (all), "work" (work tasks
+/// only), "local" (none); `explicit`: «создай задачу в гугле …».
+pub fn to_google(target: &str, profile: &str, google: bool, explicit: bool) -> bool {
+    google && (explicit || target == "google" || (target == "work" && profile == "work"))
 }
 
 fn normal() -> String {
@@ -85,8 +117,14 @@ fn with<T>(f: impl FnOnce(&mut Vec<Task>) -> T) -> T {
     f(list)
 }
 
+/// One writer at a time: the planner thread, the controller and spawned threads all
+/// save, and two of them writing the same .tmp could leave a torn planner.json
+/// (read back as an empty list, so the next save would wipe every task).
+static SAVING: Mutex<()> = Mutex::new(());
+
 fn save() {
     let Some(dir) = DIR.lock().unwrap().clone() else { return };
+    let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
     let data = with(|l| serde_json::to_vec_pretty(l).unwrap_or_default());
     let tmp = dir.join("planner.json.tmp");
     if crate::settings::write_synced(&tmp, &data).is_ok() {
@@ -199,6 +237,11 @@ pub struct When {
 
 const MONTHS_GEN: [&str; 12] = ["январ", "феврал", "март", "апрел", "ма", "июн", "июл", "август", "сентябр", "октябр", "ноябр", "декабр"];
 
+fn days_in_month(y: i64, m: u32) -> u32 {
+    let (y2, m2) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    (days_from_civil(y2, m2, 1) - days_from_civil(y, m, 1)) as u32
+}
+
 /// «12 марта», «1 мая»: the month after a day number.
 fn month(w: &str) -> Option<u32> {
     if w == "мая" || w == "май" {
@@ -247,7 +290,8 @@ pub fn parse_when_full(text: &str, now: i64, off: i64) -> Option<When> {
                     } else {
                         break;
                     };
-                    total += n * mult;
+                    // «через 99999999999999 недель» must not overflow (it wraps in release).
+                    total = total.saturating_add(n.clamp(0, 100_000).saturating_mul(mult));
                     j = unit_at + 1;
                     if words.get(j) == Some(&"и") {
                         j += 1;
@@ -312,14 +356,19 @@ pub fn parse_when_full(text: &str, now: i64, off: i64) -> Option<When> {
                 let d = w.parse::<u32>().unwrap_or(1);
                 let m = month(words[i + 1]).unwrap_or(1);
                 let (y, _, _) = civil(today);
-                let mut dd = days_from_civil(y, m, d);
-                if dd < today {
-                    dd = days_from_civil(y + 1, m, d);
+                // The first year from this one where the date exists and is not past:
+                // «31 февраля» is no date (it used to become 3 March), «29 февраля» waits for a leap year.
+                let found = (y..y + 9).find(|&yy| d <= days_in_month(yy, m) && days_from_civil(yy, m, d) >= today);
+                if let Some(yy) = found {
+                    day = Some(days_from_civil(yy, m, d));
+                    take(2, &mut used);
                 }
-                day = Some(dd);
-                take(2, &mut used);
                 i += 2;
                 continue;
+            }
+            // «к 5 мая», «до 8 марта», «в 12 марта»: the date, not 5:00 / 8:00 / 12:00.
+            "в" | "во" | "к" | "до" if words.get(i + 1).is_some_and(|d| d.parse::<u32>().is_ok()) && words.get(i + 2).and_then(|m| month(m)).is_some() => {
+                take(1, &mut used);
             }
             "в" | "во" | "к" | "до" => {
                 let next = words.get(i + 1).copied().unwrap_or("");
@@ -331,19 +380,30 @@ pub fn parse_when_full(text: &str, now: i64, off: i64) -> Option<When> {
                     day = Some(today + delta);
                     take(2, &mut used);
                 } else if let Some((h, m)) = clock(next) {
-                    let mut h = h;
-                    let after = words.get(i + 2).copied().unwrap_or("");
+                    let (mut h, mut m) = (h, m);
                     let mut n = 2;
+                    // «в 10 00», «в 10 30»: Alice writes minutes said apart as a separate word.
+                    if !next.contains([':', '.']) {
+                        if let Some(mm) = words.get(i + 2).filter(|w| w.len() == 2 || **w == "0").and_then(|w| w.parse::<i64>().ok()).filter(|mm| *mm < 60) {
+                            m = mm;
+                            n = 3;
+                        }
+                    }
+                    // «в 7 часов вечера», «в 3 часа дня»
+                    if words.get(i + n).is_some_and(|w| ["час", "часа", "часов"].contains(w)) {
+                        n += 1;
+                    }
+                    let after = words.get(i + n).copied().unwrap_or("");
                     if after == "вечера" || after == "дня" {
                         if h < 12 {
                             h += 12;
                         }
-                        n = 3;
+                        n += 1;
                     } else if after == "утра" || after == "ночи" {
                         if h == 12 {
                             h = 0;
                         }
-                        n = 3;
+                        n += 1;
                     }
                     secs = Some(h * 3600 + m * 60);
                     take(n, &mut used);
@@ -352,6 +412,13 @@ pub fn parse_when_full(text: &str, now: i64, off: i64) -> Option<When> {
             _ => {}
         }
         i += 1;
+    }
+    // «через неделю в 10», «через 2 дня в 10»: that day at that time (the clock was lost).
+    if let (Some(r), Some(_), None) = (relative, secs, day) {
+        if r >= 86_400 && r % 86_400 == 0 {
+            day = Some(today + r / 86_400);
+            relative = None;
+        }
     }
     let has_time = relative.is_some() || secs.is_some();
     let due = if let Some(r) = relative {
@@ -392,8 +459,8 @@ fn clock(w: &str) -> Option<(i64, i64)> {
 // ---------------------------------------------------------------- tasks
 
 pub fn add(title: &str, due: Option<i64>, repeat: &str, remind: bool, category: &str, priority: &str) -> Task {
-    let t = Task {
-        id: with(|l| l.iter().map(|t| t.id).max().unwrap_or(0) + 1),
+    let mut t = Task {
+        id: 0,
         title: title.trim().chars().take(200).collect(),
         due,
         repeat: if ["daily", "weekdays", "weekly", "monthly"].contains(&repeat) { repeat.into() } else { String::new() },
@@ -402,8 +469,19 @@ pub fn add(title: &str, due: Option<i64>, repeat: &str, remind: bool, category: 
         done: false,
         remind,
         created: now(),
+        profile: String::new(),
+        check: false,
+        ask_at: None,
+        asks: 0,
+        unanswered: false,
+        g_list: String::new(),
+        g_id: String::new(),
     };
-    with(|l| l.push(t.clone()));
+    // The id is taken under the same lock as the push: two adds at once got the same id.
+    with(|l| {
+        t.id = l.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+        l.push(t.clone());
+    });
     save();
     t
 }
@@ -427,7 +505,14 @@ pub fn set_done(id: u64, done: bool) -> bool {
         Some(t) => {
             // A repeating one moves on instead of being finished.
             match (done, t.due.and_then(|d| next_due(d, &t.repeat, offset()))) {
-                (true, Some(next)) => t.due = Some(next),
+                // The next one starts afresh: the old «спрошу в 10:30» is already
+                // past and would ask «сделали?» again at once.
+                (true, Some(next)) => {
+                    t.due = Some(next);
+                    t.ask_at = None;
+                    t.asks = 0;
+                    t.unanswered = false;
+                }
                 _ => t.done = done,
             }
             true
@@ -436,6 +521,34 @@ pub fn set_done(id: u64, done: bool) -> bool {
     });
     save();
     ok
+}
+
+/// Changes a task from the page's pencil. A new deadline asks «сделали?» anew.
+/// Gives back the task as it is now (to change Google's copy too), None if there is no such task.
+pub fn edit(id: u64, title: &str, due: Option<i64>, repeat: &str, priority: &str) -> Option<Task> {
+    let title: String = title.trim().chars().take(200).collect();
+    if title.is_empty() {
+        return None;
+    }
+    let t = with(|l| {
+        let t = l.iter_mut().find(|t| t.id == id)?;
+        if t.due != due {
+            t.ask_at = None;
+            t.asks = 0;
+            t.unanswered = false;
+            t.check = t.check || (t.profile == "work" && due.is_some());
+            if due.is_none() {
+                t.check = false;
+            }
+        }
+        t.title = title;
+        t.due = due;
+        t.repeat = if ["daily", "weekdays", "weekly", "monthly"].contains(&repeat) && due.is_some() { repeat.into() } else { String::new() };
+        t.priority = if ["low", "high"].contains(&priority) { priority.into() } else { "normal".into() };
+        Some(t.clone())
+    })?;
+    save();
+    Some(t)
 }
 
 pub fn delete(id: u64) -> bool {
@@ -481,11 +594,45 @@ pub struct Plan {
     pub brief_days: String,
     /// New tasks by voice: "google" (when connected) or "local".
     pub target: String,
+    /// «Алиса, доброе утро» says the morning brief.
+    pub brief_phrase: bool,
+    /// «Сделали?» without an answer: asked again after this many minutes…
+    pub check_every: u16,
+    /// …this many times in all.
+    pub check_times: u8,
+    /// Working hours (minutes of the day) and days ("weekdays" | "all").
+    pub work_from: u16,
+    pub work_to: u16,
+    pub work_days: String,
+    /// The «рабочий» mode: work tasks apart (working hours, Google). Off: one simple list.
+    pub work_mode: bool,
+    /// «Созвон … пригласи всю команду»: the teams and a meeting's length in minutes.
+    pub teams: Vec<crate::settings::Team>,
+    pub meet_minutes: u16,
+    /// Send-only bot for the links (settings.meet_bot_token); empty = the speaker's bot.
+    pub meet_bot: String,
 }
 
 impl Default for Plan {
     fn default() -> Self {
-        Plan { warn: 30, due_time: 18 * 60, brief_on: false, brief_at: 8 * 60, brief_days: "all".into(), target: "google".into() }
+        Plan {
+            warn: 30,
+            due_time: 18 * 60,
+            brief_on: false,
+            brief_at: 8 * 60,
+            brief_days: "all".into(),
+            target: "google".into(),
+            brief_phrase: false,
+            check_every: 30,
+            check_times: 3,
+            work_from: 10 * 60,
+            work_to: 19 * 60,
+            work_days: "weekdays".into(),
+            work_mode: false,
+            teams: Vec::new(),
+            meet_minutes: 30,
+            meet_bot: String::new(),
+        }
     }
 }
 
@@ -538,7 +685,7 @@ const WEEKDAY_NAMES: [&str; 7] = ["понедельник", "вторник", "�
 const WEEKDAY_ON: [&str; 7] = ["в понедельник", "во вторник", "в среду", "в четверг", "в пятницу", "в субботу", "в воскресенье"];
 const MONTHS: [&str; 12] = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
 
-fn hm(t: i64, off: i64) -> String {
+pub(crate) fn hm(t: i64, off: i64) -> String {
     let (_, s) = local(t, off);
     format!("{}:{:02}", s / 3600, s / 60 % 60)
 }
@@ -650,7 +797,7 @@ pub fn collect(from: i64, to: i64, off: i64) -> Vec<Item> {
             priority: "normal".into(),
         });
     }
-    for t in with(|l| l.iter().filter(|t| !t.done).cloned().collect::<Vec<_>>()) {
+    for t in with(|l| l.iter().filter(|t| !t.done && listed(t)).cloned().collect::<Vec<_>>()) {
         let Some(due) = t.due else { continue };
         let d = local(due, off).0;
         if d >= from && d < to {
@@ -694,7 +841,7 @@ pub fn overdue(now: i64, off: i64) -> Vec<Item> {
     let (today, _) = local(now, off);
     let mut out: Vec<Item> = with(|l| {
         l.iter()
-            .filter(|t| !t.done && !t.remind && t.due.is_some_and(|d| d < now))
+            .filter(|t| !t.done && !t.remind && listed(t) && t.due.is_some_and(|d| d < now))
             .map(|t| Item {
                 kind: "task",
                 title: t.title.clone(),
@@ -735,7 +882,7 @@ pub fn overdue(now: i64, off: i64) -> Vec<Item> {
 pub fn undated() -> Vec<Item> {
     let mut out: Vec<Item> = with(|l| {
         l.iter()
-            .filter(|t| !t.done && t.due.is_none())
+            .filter(|t| !t.done && listed(t) && t.due.is_none())
             .map(|t| Item {
                 kind: "task",
                 title: t.title.clone(),
@@ -964,7 +1111,8 @@ pub fn json() -> Value {
         "google": crate::calendar::google_on(),
         "plan": {
             "warn": plan().warn, "due_time": plan().due_time, "brief_on": plan().brief_on,
-            "brief_at": plan().brief_at, "brief_days": plan().brief_days, "target": plan().target,
+            "brief_at": plan().brief_at, "brief_days": plan().brief_days, "brief_phrase": plan().brief_phrase, "target": plan().target,
+            "mode": if plan().work_mode { "work" } else { "simple" },
         },
         "today": agenda_text(Ask::Plans(0), now, off),
         "items": timeline,
@@ -1001,12 +1149,136 @@ pub enum Voice {
     Ask(Ask),
     Done(String),
     Delete(String),
+    /// A task with «сделали?» at its deadline: (phrase, profile).
+    AddChecked(String, String),
+    /// «Я работаю» / «я закончил работать».
+    Work(bool),
+    /// «Создай задачу в гугле …»: to Google Tasks whatever the mode.
+    AddGoogle(String),
+    /// What was said back to «сделали?» / «через сколько уточнить?».
+    CheckAnswer(String),
+    /// «Созвон в 12:00, пригласи всю команду»: Google Meet with the team, the link to its Telegram group.
+    Meeting(String),
 }
 
 impl Voice {
     /// Only asks, changes nothing.
     pub fn is_query(&self) -> bool {
         matches!(self, Voice::Agenda(_) | Voice::Ask(_))
+    }
+}
+
+/// «Поставь задачу в гугл созвон 1200 пригласи всю команду»: (what and when, team name; "" = the first team).
+/// Needs both a call word and an invitation, else it is an ordinary task / event.
+pub fn meeting_phrase(text: &str) -> Option<(String, String)> {
+    let mut t = format!(" {} ", text.trim());
+    for p in [
+        " поставь задачу в гугле ", " поставь задачу в гугл ", " создай задачу в гугле ", " создай задачу в гугл ", " добавь задачу в гугле ",
+        " добавь задачу в гугл ", " поставь в гугле ", " поставь в гугл ", " в гугл календарь ", " поставь задачу ", " поставь ", " назначь ",
+        " создай ", " запланируй ", " добавь ", " организуй ", " сделай ",
+    ] {
+        if let Some(r) = t.strip_prefix(p) {
+            t = format!(" {r}");
+            break;
+        }
+    }
+    let calls = ["созвон", "звонок", "встреч", "митинг", "планерк", "колл", "конференц", "совещани", "звонк"];
+    if !t.split_whitespace().any(|w| calls.iter().any(|c| w.starts_with(c))) {
+        return None;
+    }
+    let at = [" пригласи ", " позови ", " со всей командой", " с командой", " для команды", " с коллегами", " всех пригласи"]
+        .iter()
+        .filter_map(|m| t.find(m))
+        .min()?;
+    let (head, tail) = t.split_at(at);
+    let filler = ["и", "пригласи", "позови", "всю", "всей", "вся", "со", "с", "для", "команду", "командой", "команды", "команда", "всех", "коллегами", "туда", "на", "него", "нее", "неё"];
+    let team: Vec<&str> = tail.split_whitespace().filter(|w| !filler.contains(w)).collect();
+    // «1200» / «930» from speech: a clock time.
+    let mut head: Vec<String> = head
+        .split_whitespace()
+        .map(|w| match (w.len(), w.parse::<u32>()) {
+            (3 | 4, Ok(n)) if n / 100 < 24 && n % 100 < 60 => format!("{}:{:02}", n / 100, n % 100),
+            _ => w.to_owned(),
+        })
+        .collect();
+    while head.last().is_some_and(|w| w == "и" || w == "," || w == "а") {
+        head.pop();
+    }
+    // «созвон 12:00» → «созвон в 12:00»: the time parser wants the preposition.
+    let is_clock = |w: &str| w.split_once(':').is_some_and(|(h, m)| !h.is_empty() && m.len() == 2 && h.chars().chain(m.chars()).all(|c| c.is_ascii_digit()));
+    let mut k = 0;
+    while k < head.len() {
+        if is_clock(&head[k]) && (k == 0 || !["в", "к", "до", "на", "с", "около"].contains(&head[k - 1].as_str())) {
+            head.insert(k, "в".into());
+            k += 1;
+        }
+        k += 1;
+    }
+    // «назначь встречу …»: the title is «Встреча …».
+    if let Some(first) = head.first_mut() {
+        if let Some(n) = [("встречу", "встреча"), ("планерку", "планерка"), ("конференцию", "конференция")].iter().find(|(a, _)| first == a) {
+            *first = n.1.to_owned();
+        }
+    }
+    Some((head.join(" "), team.join(" ")))
+}
+
+/// The team by a name said («маркетинг», «маркетинга»); "" — the first one.
+pub fn find_team<'a>(teams: &'a [crate::settings::Team], name: &str) -> Option<&'a crate::settings::Team> {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return teams.first();
+    }
+    let stem = |s: &str| s.chars().take(5).collect::<String>();
+    teams.iter().find(|t| {
+        let n = t.name.trim().to_lowercase();
+        !n.is_empty() && (n == name || stem(&n) == stem(&name))
+    })
+}
+
+fn meeting(text: &str, now: i64, off: i64) -> String {
+    if !crate::calendar::google_on() {
+        return "Созвоны создаются в Google Календаре: подключите Google на странице колонки, раздел Планы".into();
+    }
+    let Some((what, team_name)) = meeting_phrase(text) else { return "Не поняла, какой созвон".into() };
+    let p = plan();
+    let Some(team) = find_team(&p.teams, &team_name).filter(|t| !t.emails.is_empty()).cloned() else {
+        return if team_name.is_empty() || p.teams.is_empty() {
+            "Команда не настроена: добавьте почты на странице колонки, Настройки, Планы".into()
+        } else {
+            format!("Не знаю команду «{team_name}»")
+        };
+    };
+    let Some(w) = parse_when_full(&what, now, off).filter(|w| w.has_time) else {
+        return "Во сколько созвон? Скажите, например: созвон в 12:00, пригласи всю команду".into();
+    };
+    let title = if w.title.trim().is_empty() { "Созвон".to_owned() } else { cap(w.title.trim()) };
+    let end = w.due + i64::from(p.meet_minutes.clamp(5, 480)) * 60;
+    let when = say_time(w.due, now, off);
+    match crate::calendar::add_meeting(&title, w.due, end, &team.emails) {
+        Err(e) => format!("Google не создал созвон: {e}"),
+        Ok((_, link)) => {
+            let n = team.emails.len();
+            let mut tg = String::new();
+            if team.tg_chat != 0 {
+                let msg = format!("📞 {title} — {when}\n{}", link.as_deref().unwrap_or("Ссылка — в приглашении Google Календаря"));
+                let sent = if p.meet_bot.is_empty() {
+                    crate::telegram::send_to_chat(team.tg_bot, team.tg_chat, &msg)
+                } else {
+                    crate::telegram::send_with(&p.meet_bot, team.tg_chat, &msg)
+                };
+                tg = match sent {
+                    Ok(()) => format!(", ссылку отправила в группу «{}»", team.tg_chat_name),
+                    Err(e) => {
+                        eprintln!("planner: meeting link to Telegram: {e}");
+                        ", а в Телеграм ссылка не отправилась".into()
+                    }
+                };
+            }
+            eprintln!("planner: meeting created, {n} invited, link: {}", link.is_some());
+            let nolink = if link.is_none() { ". Ссылку на Meet Google не дал, она будет в приглашении" } else { "" };
+            format!("{title} {when}: приглашения ушли {n} {}{tg}{nolink}", if n % 10 == 1 && n % 100 != 11 { "участнику" } else { "участникам" })
+        }
     }
 }
 
@@ -1030,6 +1302,9 @@ fn asked_day(text: &str, today: i64) -> i64 {
 /// Planner phrases (normalised text). Only asked when the planner is on.
 pub fn voice(text: &str) -> Option<Voice> {
     let text = text.trim();
+    if meeting_phrase(text).is_some() {
+        return Some(Voice::Meeting(text.to_owned()));
+    }
     for p in ["напомни мне ", "напомни ", "напоминай мне ", "напоминай ", "поставь напоминание ", "создай напоминание "] {
         if let Some(rest) = text.strip_prefix(p) {
             return (!rest.trim().is_empty()).then(|| Voice::Remind(rest.trim().to_owned()));
@@ -1045,6 +1320,26 @@ pub fn voice(text: &str) -> Option<Voice> {
             return (!rest.trim().is_empty()).then(|| Voice::AddEvent(format!("встреча {}", rest.trim())));
         }
     }
+    for p in [
+        "создай задачу в гугле ", "создай задачу в гугл ", "добавь задачу в гугл ", "добавь задачу в гугле ",
+        "опубликуй задачу в гугл ", "опубликуй задачу в гугле ", "опубликуй в гугл ", "опубликуй в гугле ",
+        "добавь в гугл задачи ", "запиши в гугл ",
+    ] {
+        if let Some(rest) = text.strip_prefix(p) {
+            return (!rest.trim().is_empty()).then(|| Voice::AddGoogle(rest.trim().to_owned()));
+        }
+    }
+    for p in ["добавь рабочую задачу ", "новая рабочая задача ", "рабочая задача ", "добавь задачу по работе "] {
+        if let Some(rest) = text.strip_prefix(p) {
+            return (!rest.trim().is_empty()).then(|| Voice::AddChecked(rest.trim().to_owned(), "work".into()));
+        }
+    }
+    if ["я работаю", "я на работе", "начинаю работать", "я начал работать", "я начала работать", "включи рабочий режим", "рабочий режим"].contains(&text) {
+        return Some(Voice::Work(true));
+    }
+    if ["я закончил работать", "я закончила работать", "закончил работу", "закончила работу", "рабочий день окончен", "выключи рабочий режим"].contains(&text) {
+        return Some(Voice::Work(false));
+    }
     for p in ["добавь задачу ", "добавь в список дел ", "добавь в планы ", "добавь в задачи ", "запиши задачу ", "новая задача ", "поставь задачу ", "создай задачу "] {
         if let Some(rest) = text.strip_prefix(p) {
             return (!rest.trim().is_empty()).then(|| Voice::AddTask(rest.trim().to_owned()));
@@ -1052,7 +1347,7 @@ pub fn voice(text: &str) -> Option<Voice> {
     }
     for p in ["добавь дедлайн ", "поставь дедлайн ", "дедлайн "] {
         if let Some(rest) = text.strip_prefix(p) {
-            return (!rest.trim().is_empty()).then(|| Voice::AddTask(rest.trim().to_owned()));
+            return (!rest.trim().is_empty()).then(|| Voice::AddChecked(rest.trim().to_owned(), String::new()));
         }
     }
     for p in ["отметь выполненной ", "отметь как выполненную ", "отметь выполненным ", "выполнено ", "я сделал ", "я сделала ", "задача выполнена ", "я выполнил ", "я выполнила ", "готово "] {
@@ -1064,6 +1359,9 @@ pub fn voice(text: &str) -> Option<Voice> {
         if let Some(rest) = text.strip_prefix(p) {
             return (!rest.trim().is_empty()).then(|| Voice::Delete(rest.trim().to_owned()));
         }
+    }
+    if plan().brief_phrase && ["доброе утро", "с добрым утром", "доброе утро алиса"].contains(&text) {
+        return Some(Voice::Ask(Ask::Brief));
     }
     let (today, _) = local(now(), offset());
     let day = asked_day(text, today);
@@ -1153,6 +1451,59 @@ pub fn handle(v: Voice) -> String {
     let (now, off) = (now(), offset());
     let google = crate::calendar::google_on();
     match v {
+        Voice::AddGoogle(rest) => {
+            if !google {
+                return "Google не подключён: подключите его на странице колонки, вкладка «Планы»".into();
+            }
+            let w = parse_when_full(&rest, now, off);
+            let title = cap(&w.as_ref().map_or(rest.clone(), |w| w.title.clone()));
+            let day = w.as_ref().map(|w| local(w.due, off).0);
+            let notes = w.as_ref().filter(|w| w.has_time).map(|w| format!("до {}", hm(w.due, off))).unwrap_or_default();
+            match crate::calendar::add_task(&title, day, &notes) {
+                Ok(list) => format!("Добавила в Google «{list}»: {title}"),
+                Err(e) => format!("Google не принял задачу: {e}"),
+            }
+        }
+        Voice::AddChecked(rest, profile) => {
+            // The simple mode has no work tasks: «добавь рабочую задачу» is an ordinary one with «сделали?».
+            let profile = if plan().work_mode { profile } else { String::new() };
+            let Some(w) = parse_when_full(&rest, now, off) else {
+                return "Какой срок? Скажите, например: добавь дедлайн сдать отчёт завтра до 18:00".into();
+            };
+            let due = if w.has_time || plan().due_time >= 1440 { w.due } else { local(w.due, off).0 * 86_400 - off + i64::from(plan().due_time) * 60 };
+            let title = cap(&w.title);
+            let mut t = add(&title, Some(due), "", false, if profile == "work" { "работа" } else { "" }, "normal");
+            with(|l| {
+                if let Some(x) = l.iter_mut().find(|x| x.id == t.id) {
+                    x.profile = profile.clone();
+                    x.check = true;
+                    t = x.clone();
+                }
+            });
+            save();
+            let mut where_to = String::new();
+            if to_google(&plan().target, &profile, google, false) {
+                let notes = if w.has_time { format!("до {}", hm(due, off)) } else { String::new() };
+                match crate::calendar::add_task_linked(&title, Some(local(due, off).0), &notes) {
+                    Ok((name, list, gid)) => {
+                        link_google(t.id, &list, &gid);
+                        where_to = format!(" в Google «{name}»");
+                    }
+                    Err(e) => where_to = format!(" на колонке (Google не принял: {e})"),
+                }
+            }
+            let work = if profile == "work" { "рабочая задача, " } else { "" };
+            format!("Записала{where_to}: {work}{title}. {} спрошу, сделали ли", cap(&say_time(due, now, off)))
+        }
+        Voice::Work(_) if !plan().work_mode => {
+            "Сейчас обычный режим планировщика, без рабочих задач. Рабочий включается на странице колонки: Настройки, Планы".into()
+        }
+        Voice::Work(on) => {
+            *WORK.lock().unwrap() = Some((on, local(now, off).0));
+            if on { "Рабочий режим: буду спрашивать про рабочие задачи".into() } else { "Хорошо, до завтра про работу не спрашиваю".into() }
+        }
+        Voice::CheckAnswer(text) => check_answer(&text, now, off),
+        Voice::Meeting(text) => meeting(&text, now, off),
         Voice::Remind(rest) => match parse_when(&rest, now, off) {
             Some((due, repeat, title)) => {
                 add(&title, Some(due), &repeat, true, "", "normal");
@@ -1197,7 +1548,7 @@ pub fn handle(v: Voice) -> String {
                 let d = day_word(local(w.due, off).0, local(now, off).0);
                 if w.has_time { format!(", срок {d} до {}", hm(w.due, off)) } else { format!(", срок {d}") }
             });
-            if google && plan().target != "local" {
+            if to_google(&plan().target, "", google, false) {
                 let day = w.as_ref().map(|w| local(w.due, off).0);
                 let notes = w.as_ref().filter(|w| w.has_time).map(|w| format!("до {}", hm(w.due, off))).unwrap_or_default();
                 match crate::calendar::add_task(&title, day, &notes) {
@@ -1269,6 +1620,7 @@ pub fn run(dir: &Path) {
         if !on {
             continue;
         }
+        check_ins(now(), offset());
         let t = now();
         let due: Vec<(u64, String)> = with(|l| {
             l.iter()
@@ -1288,6 +1640,234 @@ pub fn run(dir: &Path) {
             set_done(id, true);
         }
     });
+}
+
+/// Links task `id` to its copy in Google Tasks.
+fn link_google(id: u64, list: &str, gid: &str) {
+    with(|l| {
+        if let Some(x) = l.iter_mut().find(|x| x.id == id) {
+            x.g_list = list.to_owned();
+            x.g_id = gid.to_owned();
+        }
+    });
+    save();
+}
+
+/// A task added on the page as a work task: «сделали?» at its deadline, and to Google
+/// when the mode says so. The answer is shown on the page.
+pub fn make_work(id: u64) -> String {
+    let google = crate::calendar::google_on();
+    let Some(t) = with(|l| {
+        let x = l.iter_mut().find(|x| x.id == id)?;
+        if plan().work_mode {
+            x.profile = "work".into();
+        }
+        x.check = x.due.is_some();
+        Some(x.clone())
+    }) else {
+        return "error: нет такой задачи".into();
+    };
+    save();
+    if !plan().work_mode {
+        return format!("OK: «{}» — к сроку спрошу, сделали ли", t.title);
+    }
+    if !to_google(&plan().target, "work", google, false) {
+        return format!("OK: рабочая задача «{}» на колонке", t.title);
+    }
+    let off = offset();
+    let notes = t.due.map(|d| format!("до {}", hm(d, off))).unwrap_or_default();
+    match crate::calendar::add_task_linked(&t.title, t.due.map(|d| local(d, off).0), &notes) {
+        Ok((name, list, gid)) => {
+            link_google(id, &list, &gid);
+            format!("OK: рабочая задача «{}» — в Google «{name}»", t.title)
+        }
+        Err(e) => format!("OK: рабочая задача «{}» на колонке; Google не принял: {e}", t.title),
+    }
+}
+
+// ---------------------------------------------------------------- «Сделали?»
+
+/// What was said back to «сделали?» / «через сколько уточнить?».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Yes,
+    No,
+    /// Ask again then (unix time).
+    At(i64),
+    Unknown,
+}
+
+pub fn answer(text: &str, now: i64, off: i64) -> Answer {
+    let t = text.trim();
+    const YES: [&str; 12] = ["да", "сделал", "сделала", "сделано", "готово", "выполнил", "выполнила", "да сделал", "да сделала", "уже сделал", "уже сделала", "да готово"];
+    const NO: [&str; 9] = ["нет", "не сделал", "не сделала", "еще нет", "пока нет", "не успел", "не успела", "нет еще", "не готово"];
+    if YES.contains(&t) {
+        return Answer::Yes;
+    }
+    if NO.contains(&t) {
+        return Answer::No;
+    }
+    // «нет, через полчаса» = when to ask again.
+    let t = ["нет ", "еще нет ", "пока нет "].iter().find_map(|p| t.strip_prefix(p)).unwrap_or(t).trim();
+    let t = t.strip_prefix("уточни ").or_else(|| t.strip_prefix("спроси ")).unwrap_or(t);
+    let phrase = if ["через ", "завтра", "сегодня", "послезавтра", "в "].iter().any(|p| t.starts_with(p)) { t.to_owned() } else { format!("через {t}") };
+    // Only a phrase that is all time: «напомни через 10 минут позвонить маме» or
+    // «завтра будет дождь?» are other requests, not the answer.
+    match parse_when_full(&format!("{phrase} спросить"), now, off) {
+        Some(w) if w.due > now && w.title.trim().to_lowercase() == "спросить" => Answer::At(w.due),
+        _ => Answer::Unknown,
+    }
+}
+
+/// «Сделали?» was not answered: again after `every` minutes, `times` times in all.
+pub fn after_silence(t: &mut Task, now: i64, every: u16, times: u8) {
+    t.asks = t.asks.saturating_add(1);
+    if t.asks >= times.max(1) {
+        t.check = false;
+        t.unanswered = true;
+        t.ask_at = None;
+    } else {
+        t.ask_at = Some(now + i64::from(every.max(1)) * 60);
+    }
+}
+
+/// Working time now: «я работаю» / «я закончил работать» said today, else the hours.
+pub fn work_active(now: i64, off: i64, p: &Plan, said: Option<(bool, i64)>) -> bool {
+    let (day, secs) = local(now, off);
+    if let Some((on, d)) = said {
+        if d == day {
+            return on;
+        }
+    }
+    let day_ok = p.work_days != "weekdays" || weekday(day) < 5;
+    let min = (secs / 60) as u16;
+    day_ok && p.work_from <= min && min < p.work_to
+}
+
+/// Is it time to ask about `t`?
+pub fn ask_now(t: &Task, now: i64, work: bool) -> bool {
+    t.check && !t.done && t.ask_at.or(t.due).is_some_and(|at| at <= now) && (t.profile != "work" || work)
+}
+
+/// «Я работаю» said today: (on, local day).
+static WORK: Mutex<Option<(bool, i64)>> = Mutex::new(None);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stage {
+    /// «Сделали?»
+    Done,
+    /// «Через сколько уточнить?»
+    When,
+}
+
+/// The question waiting for an answer: (task, stage, asked at).
+static PENDING: Mutex<Option<(u64, Stage, i64)>> = Mutex::new(None);
+/// How long an answer is taken as one («Алиса, нет» after the question).
+const ANSWER_WINDOW: i64 = 180;
+
+/// Is Alice waiting for «да» / «нет» / «через 2 часа»?
+pub fn awaiting() -> bool {
+    PENDING.lock().unwrap().is_some_and(|(_, _, at)| now() - at <= ANSWER_WINDOW)
+}
+
+fn check_ins(now: i64, off: i64) {
+    let pending = *PENDING.lock().unwrap();
+    if let Some((id, _, at)) = pending {
+        if now - at <= ANSWER_WINDOW {
+            return;
+        }
+        *PENDING.lock().unwrap() = None;
+        let p = plan();
+        with(|l| {
+            if let Some(t) = l.iter_mut().find(|t| t.id == id) {
+                after_silence(t, now, p.check_every, p.check_times);
+            }
+        });
+        save();
+    }
+    // The simple mode has no working hours: every task is asked about at its time.
+    let work = !plan().work_mode || work_active(now, off, &plan(), *WORK.lock().unwrap());
+    // Closed in Google meanwhile (on the phone, on the page): no more «сделали?».
+    if crate::calendar::google_on() {
+        let closed = with(|l| {
+            let mut n = 0;
+            for t in l.iter_mut().filter(|t| t.check && !t.done && !t.g_id.is_empty()) {
+                if !crate::calendar::task_open(&t.g_list, &t.g_id) {
+                    t.done = true;
+                    n += 1;
+                }
+            }
+            n
+        });
+        if closed > 0 {
+            save();
+        }
+    }
+    let next = with(|l| l.iter().find(|t| ask_now(t, now, work)).map(|t| (t.id, t.title.clone())));
+    if let Some((id, title)) = next {
+        *PENDING.lock().unwrap() = Some((id, Stage::Done, now));
+        eprintln!("planner: asking about task {id}");
+        crate::display::notify("rem");
+        crate::alice::say(format!("Задача «{title}»: сделали? Скажите: Алиса, да. Или: Алиса, нет"));
+    }
+}
+
+fn check_answer(text: &str, now: i64, off: i64) -> String {
+    let Some((id, stage, _)) = *PENDING.lock().unwrap() else {
+        return "Я сейчас ни о чём не спрашивала".into();
+    };
+    let title = with(|l| l.iter().find(|t| t.id == id).map(|t| t.title.clone())).unwrap_or_default();
+    let set = |f: &dyn Fn(&mut Task)| {
+        with(|l| {
+            if let Some(t) = l.iter_mut().find(|t| t.id == id) {
+                f(t);
+            }
+        });
+        save();
+    };
+    match (stage, answer(text, now, off)) {
+        (_, Answer::Yes) => {
+            *PENDING.lock().unwrap() = None;
+            set_done(id, true);
+            let linked = with(|l| l.iter().find(|t| t.id == id && !t.g_id.is_empty()).cloned());
+            if let Some(t) = linked {
+                // A repeating task moved on to its next date: Google's copy moves too.
+                // Closing it would make the speaker close this task for good.
+                let r = if t.done {
+                    crate::calendar::complete_task(&t.g_list, &t.g_id)
+                } else {
+                    let notes = t.due.map(|d| format!("до {}", hm(d, off))).unwrap_or_default();
+                    crate::calendar::update_task(&t.g_list, &t.g_id, &t.title, t.due.map(|d| local(d, off).0), &notes)
+                };
+                if let Err(e) = r {
+                    eprintln!("planner: Google task {} not updated: {e}", t.g_id);
+                }
+            }
+            format!("Отлично, отметила: {title}")
+        }
+        (_, Answer::At(at)) => {
+            *PENDING.lock().unwrap() = None;
+            set(&|t| {
+                t.ask_at = Some(at);
+                t.asks = 0;
+            });
+            format!("Хорошо, спрошу {}", say_time(at, now, off))
+        }
+        (Stage::Done, Answer::No) => {
+            *PENDING.lock().unwrap() = Some((id, Stage::When, now));
+            "Через сколько уточнить? Скажите, например: Алиса, через 2 часа".into()
+        }
+        (Stage::When, Answer::No) => {
+            *PENDING.lock().unwrap() = None;
+            let every = plan().check_every;
+            set(&|t| t.ask_at = Some(now + i64::from(every.max(1)) * 60));
+            format!("Хорошо, спрошу через {}", in_minutes(i64::from(every)))
+        }
+        (_, Answer::Unknown) => {
+            *PENDING.lock().unwrap() = Some((id, stage, now));
+            "Не поняла. Скажите: Алиса, да. Или: Алиса, через 2 часа".into()
+        }
+    }
 }
 
 /// Deadlines already warned about: (source:id, deadline).
@@ -1363,6 +1943,240 @@ fn morning_brief(file: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn work_tasks_go_to_google_personal_ones_stay() {
+        // «Рабочие — в Google, личные — на колонке» (plan_target "work").
+        assert!(to_google("work", "work", true, false));
+        assert!(!to_google("work", "", true, false));
+        // «Создай задачу в гугле …»: Google whatever the mode.
+        assert!(to_google("work", "", true, true));
+        assert!(to_google("local", "", true, true));
+        // The old modes as they were.
+        assert!(to_google("google", "", true, false) && to_google("google", "work", true, false));
+        assert!(!to_google("local", "work", true, false));
+        // No Google: nowhere but the speaker.
+        assert!(!to_google("work", "work", false, false) && !to_google("google", "", false, true));
+    }
+
+    #[test]
+    fn google_phrases() {
+        assert_eq!(voice("создай задачу в гугле созвон с отделом"), Some(Voice::AddGoogle("созвон с отделом".into())));
+        assert_eq!(voice("опубликуй в гугл отчет до пятницы"), Some(Voice::AddGoogle("отчет до пятницы".into())));
+        assert_eq!(voice("добавь задачу в гугл купить бумагу"), Some(Voice::AddGoogle("купить бумагу".into())));
+        assert_eq!(voice("добавь задачу купить хлеб"), Some(Voice::AddTask("купить хлеб".into())));
+    }
+
+    #[test]
+    fn a_work_task_mirrored_in_google_is_listed_once() {
+        let mut t = task(Some(100), "work");
+        assert!(listed(&t));
+        t.g_id = "abc".into();
+        t.g_list = "L".into();
+        assert!(!listed(&t), "the Google copy is the one shown");
+    }
+
+    #[test]
+    fn good_morning_gives_the_brief_when_asked_for() {
+        // «Утренняя сводка по фразе»: off — the phrase stays Alice's.
+        configure_plan(Plan::default());
+        assert_eq!(voice("доброе утро"), None);
+        configure_plan(Plan { brief_phrase: true, ..Plan::default() });
+        assert_eq!(voice("доброе утро"), Some(Voice::Ask(Ask::Brief)));
+        assert_eq!(voice("с добрым утром"), Some(Voice::Ask(Ask::Brief)));
+        configure_plan(Plan::default());
+    }
+
+    #[test]
+    fn a_task_edited_from_the_page_is_asked_about_anew() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut t = task(Some(100), "work");
+        t.id = 777_001;
+        t.asks = 2;
+        t.unanswered = true;
+        t.ask_at = Some(500);
+        with(|l| l.push(t.clone()));
+        let e = edit(t.id, "  Сдать отчёт  ", Some(9_000), "weekly", "high").unwrap();
+        assert_eq!((e.title.as_str(), e.due, e.repeat.as_str(), e.priority.as_str()), ("Сдать отчёт", Some(9_000), "weekly", "high"));
+        assert_eq!((e.asks, e.unanswered, e.ask_at, e.check), (0, false, None, true));
+        // Without a date: no repeat, no «сделали?».
+        let e = edit(t.id, "Сдать отчёт", None, "weekly", "zzz").unwrap();
+        assert_eq!((e.repeat.as_str(), e.priority.as_str(), e.check), ("", "normal", false));
+        assert!(edit(t.id, "   ", None, "", "").is_none());
+        assert!(edit(987_654, "x", None, "", "").is_none());
+        with(|l| l.retain(|x| x.id != t.id));
+    }
+
+    #[test]
+    fn a_meeting_with_the_team() {
+        // The owner's own words.
+        let (what, team) = meeting_phrase("поставь задачу в гугл созвон 1200 пригласи всю команду").unwrap();
+        assert_eq!((what.as_str(), team.as_str()), ("созвон в 12:00", ""));
+        assert_eq!(voice("поставь задачу в гугл созвон 1200 пригласи всю команду"), Some(Voice::Meeting("поставь задачу в гугл созвон 1200 пригласи всю команду".into())));
+        let (what, team) = meeting_phrase("назначь встречу по проекту завтра в 15:30 и пригласи команду маркетинг").unwrap();
+        assert_eq!((what.as_str(), team.as_str()), ("встреча по проекту завтра в 15:30", "маркетинг"));
+        assert_eq!(meeting_phrase("созвон в 10 со всей командой").unwrap().1, "");
+        // No invitation or no call: an ordinary task / event as before.
+        assert_eq!(meeting_phrase("созвон с руководителем в 10 00"), None);
+        assert_eq!(meeting_phrase("пригласи маму на ужин"), None);
+        assert_eq!(voice("создай задачу в гугле созвон с отделом"), Some(Voice::AddGoogle("созвон с отделом".into())));
+
+        let (now, off) = (1_794_214_800, 3 * 3600);
+        let w = parse_when_full(&meeting_phrase("созвон 1200 пригласи всю команду").unwrap().0, now, off).unwrap();
+        assert!(w.has_time);
+        assert_eq!((w.title.as_str(), hm(w.due, off)), ("созвон", "12:00".to_owned()));
+
+        let team = |n: &str| crate::settings::Team { name: n.into(), emails: vec!["a@x.ru".into()], ..Default::default() };
+        let teams = vec![team("команда"), team("Маркетинг")];
+        assert_eq!(find_team(&teams, "").unwrap().name, "команда", "«всю команду» — the first");
+        assert_eq!(find_team(&teams, "маркетинга").unwrap().name, "Маркетинг");
+        assert!(find_team(&teams, "дизайн").is_none());
+        assert!(find_team(&[], "").is_none());
+    }
+
+    #[test]
+    fn minutes_said_apart_are_minutes() {
+        // Alice hears «в десять ноль ноль» as «в 10 00»: the «00» stayed in the title
+        // («Созвон с руководителем 00») and «10 30» lost its minutes.
+        let (now, off) = (1_794_214_800, 3 * 3600);
+        let w = parse_when_full("созвон с руководителем в 10 00", now, off).unwrap();
+        assert_eq!((w.title.as_str(), hm(w.due, off)), ("созвон с руководителем", "10:00".to_owned()));
+        let w = parse_when_full("созвон в 10 30 вечера", now, off).unwrap();
+        assert_eq!((w.title.as_str(), hm(w.due, off)), ("созвон", "22:30".to_owned()));
+        let w = parse_when_full("встреча завтра в 0 0", now, off).unwrap();
+        assert_eq!((w.title.as_str(), hm(w.due, off)), ("встреча", "0:00".to_owned()));
+        // A number after the hour that is not minutes stays in the title.
+        let w = parse_when_full("купить в 9 75 яиц", now, off).unwrap();
+        assert!(w.title.contains("75"), "{}", w.title);
+    }
+
+    fn task(due: Option<i64>, profile: &str) -> Task {
+        Task { id: 1, title: "Отчёт".into(), due, repeat: String::new(), category: String::new(), priority: "normal".into(),
+               done: false, remind: false, created: 0, profile: profile.into(), check: true, ask_at: None, asks: 0, unanswered: false,
+               g_list: String::new(), g_id: String::new() }
+    }
+
+    #[test]
+    fn review_2026_11_08_dates() {
+        // Monday 2026-11-09 12:00 MSK.
+        let off = 3 * 3600;
+        let now = 1_794_214_800;
+        let at = |text: &str| parse_when_full(text, now, off).map(|w| { let (d, s) = local(w.due, off); (civil(d), s / 3600, s % 3600 / 60, w.title) });
+        // A preposition before a date is not a clock time.
+        assert_eq!(at("к 5 мая сдать отчет"), Some(((2027, 5, 5), 9, 0, "сдать отчет".into())));
+        assert_eq!(at("до 8 марта купить цветы"), Some(((2027, 3, 8), 9, 0, "купить цветы".into())));
+        assert_eq!(at("в 12 марта стоматолог"), Some(((2027, 3, 12), 9, 0, "стоматолог".into())));
+        assert_eq!(at("12 марта в 10 стоматолог"), Some(((2027, 3, 12), 10, 0, "стоматолог".into())));
+        // «через неделю в 10»: that day at 10.
+        assert_eq!(at("через неделю в 10 отчет"), Some(((2026, 11, 16), 10, 0, "отчет".into())));
+        assert_eq!(at("через 2 дня в 10 отчет"), Some(((2026, 11, 11), 10, 0, "отчет".into())));
+        assert_eq!(at("через 2 часа отчет").map(|x| x.1), Some(14));
+        // «часов вечера».
+        assert_eq!(at("в 7 часов вечера ужин"), Some(((2026, 11, 9), 19, 0, "ужин".into())));
+        assert_eq!(at("в 3 часа дня звонок"), Some(((2026, 11, 9), 15, 0, "звонок".into())));
+        // Dates that do not exist.
+        assert_eq!(at("31 февраля отчет"), None);
+        assert_eq!(at("29 февраля отчет").map(|x| x.0), Some((2028, 2, 29)));
+        assert_eq!(at("31 апреля отчет"), None);
+        // No overflow.
+        assert!(parse_when_full("через 99999999999999 недель отчет", now, off).is_some());
+    }
+
+    #[test]
+    fn repeating_task_done_starts_afresh() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let off = offset();
+        let due = now() - 3600;
+        let t = add("review-test полить цветы", Some(due), "daily", true, "", "");
+        with(|l| {
+            let x = l.iter_mut().find(|x| x.id == t.id).unwrap();
+            x.ask_at = Some(due + 1800);
+            x.asks = 2;
+            x.unanswered = true;
+        });
+        assert!(set_done(t.id, true));
+        let x = with(|l| l.iter().find(|x| x.id == t.id).cloned()).unwrap();
+        assert!(!x.done, "a daily task moves on");
+        assert!(x.due.unwrap() > due, "to its next date");
+        assert_eq!((x.ask_at, x.asks, x.unanswered), (None, 0, false), "the old «спрошу в …» is not asked again at once");
+        let _ = off;
+        with(|l| l.retain(|x| x.id != t.id));
+    }
+
+    #[test]
+    fn ids_are_unique_under_parallel_adds() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let hs: Vec<_> = (0..8).map(|_| std::thread::spawn(|| add("review-test parallel", None, "", false, "", "").id)).collect();
+        let mut ids: Vec<u64> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        with(|l| l.retain(|x| x.title != "review-test parallel"));
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 8);
+    }
+
+    #[test]
+    fn did_you_do_it_answers() {
+        // Monday 2026-11-09 12:00 MSK.
+        let off = 3 * 3600;
+        let now = 1_794_214_800;
+        assert_eq!(answer("да", now, off), Answer::Yes);
+        assert_eq!(answer("сделала", now, off), Answer::Yes);
+        assert_eq!(answer("нет", now, off), Answer::No);
+        assert_eq!(answer("еще нет", now, off), Answer::No);
+        assert_eq!(answer("через 2 часа", now, off), Answer::At(now + 2 * 3600));
+        assert_eq!(answer("2 часа", now, off), Answer::At(now + 2 * 3600));
+        assert_eq!(answer("нет через 30 минут", now, off), Answer::At(now + 30 * 60));
+        assert!(matches!(answer("завтра в 10", now, off), Answer::At(t) if t > now));
+        assert_eq!(answer("включи музыку", now, off), Answer::Unknown);
+        assert_eq!(answer("напомни через 10 минут позвонить маме", now, off), Answer::Unknown);
+        assert_eq!(answer("завтра будет дождь", now, off), Answer::Unknown);
+        assert_eq!(answer("в 7 включи будильник", now, off), Answer::Unknown);
+        assert_eq!(answer("спроси через час", now, off), Answer::At(now + 3600));
+    }
+
+    #[test]
+    fn silence_asks_again_then_gives_up() {
+        let mut t = task(Some(100), "");
+        after_silence(&mut t, 1_000, 30, 3);
+        assert_eq!((t.asks, t.ask_at, t.check), (1, Some(1_000 + 1_800), true));
+        after_silence(&mut t, 3_000, 30, 3);
+        assert_eq!(t.asks, 2);
+        after_silence(&mut t, 5_000, 30, 3);
+        // The third time without an answer: no more questions, marked for the list.
+        assert_eq!((t.asks, t.check, t.unanswered, t.ask_at), (3, false, true, None));
+    }
+
+    #[test]
+    fn work_tasks_only_in_working_hours() {
+        let off = 3 * 3600;
+        let p = Plan::default();
+        let monday_noon = 1_794_214_800; // Mon 12:00 MSK
+        let monday_night = monday_noon + 10 * 3600; // 22:00
+        let saturday_noon = monday_noon + 5 * 86_400;
+        assert!(work_active(monday_noon, off, &p, None));
+        assert!(!work_active(monday_night, off, &p, None));
+        assert!(!work_active(saturday_noon, off, &p, None));
+        // «Я работаю» / «я закончил работать» for today wins over the hours.
+        let today = local(monday_night, off).0;
+        assert!(work_active(monday_night, off, &p, Some((true, today))));
+        assert!(!work_active(monday_noon, off, &p, Some((false, today))));
+        assert!(work_active(monday_noon, off, &p, Some((false, today - 1))), "yesterday's word is gone");
+        let work = task(Some(monday_noon - 60), "work");
+        assert!(ask_now(&work, monday_noon, true));
+        assert!(!ask_now(&work, monday_noon, false));
+        let mine = task(Some(monday_noon - 60), "");
+        assert!(ask_now(&mine, monday_noon, false));
+        let later = Task { ask_at: Some(monday_noon + 60), ..task(Some(monday_noon - 60), "") };
+        assert!(!ask_now(&later, monday_noon, true));
+    }
+
+    #[test]
+    fn work_and_deadline_phrases() {
+        assert_eq!(voice("я работаю"), Some(Voice::Work(true)));
+        assert_eq!(voice("я закончил работать"), Some(Voice::Work(false)));
+        assert_eq!(voice("добавь рабочую задачу отчет до 18:00"), Some(Voice::AddChecked("отчет до 18:00".into(), "work".into())));
+        assert_eq!(voice("добавь дедлайн сдать проект завтра в 12"), Some(Voice::AddChecked("сдать проект завтра в 12".into(), String::new())));
+    }
+
     use super::*;
 
     // 2026-11-06 12:00 UTC = 15:00 Moscow (+3), a Friday.
@@ -1428,7 +2242,7 @@ mod tests {
         assert_eq!(voice("добавь в календарь встречу с петей завтра в 15"), Some(Voice::AddEvent("встречу с петей завтра в 15".into())));
         assert_eq!(voice("добавь встречу с петей завтра в 15"), Some(Voice::AddEvent("встреча с петей завтра в 15".into())));
         assert_eq!(voice("запланируй стоматолог в пятницу в 10"), Some(Voice::AddEvent("стоматолог в пятницу в 10".into())));
-        assert_eq!(voice("дедлайн сдать отчет завтра в 18"), Some(Voice::AddTask("сдать отчет завтра в 18".into())));
+        assert_eq!(voice("дедлайн сдать отчет завтра в 18"), Some(Voice::AddChecked("сдать отчет завтра в 18".into(), String::new())));
         assert_eq!(voice("отметь выполненной купить молоко"), Some(Voice::Done("купить молоко".into())));
         assert!(voice("какие планы на завтра").unwrap().is_query());
         assert!(!voice("добавь задачу купить молоко").unwrap().is_query());

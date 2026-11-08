@@ -375,7 +375,7 @@ pub fn pick(dir: &std::path::Path, custom: &str, log: &dyn Fn(String)) -> Option
 }
 
 /// What «Подобрать автоматически» tries, in turn: zapret first (the user's own
-/// arguments, then the presets: they get through most often), then soundya's
+/// arguments, then the presets, the newest first: they get through most often), then soundya's
 /// own ClientHello tricks, and plain «напрямую» last.
 fn order(zapret: bool, custom: bool) -> Vec<String> {
     let mut ids = Vec::new();
@@ -383,7 +383,11 @@ fn order(zapret: bool, custom: bool) -> Vec<String> {
         if custom {
             ids.push(crate::zapret::CUSTOM.to_owned());
         }
-        ids.extend((0..crate::zapret::PRESETS.len()).map(crate::zapret::id_of));
+        // The newest preset first (it works where the older ones stopped), then
+        // the rest in their order. Ids stay positions: only the trying order moves.
+        let newest = crate::zapret::PRESETS.len() - 1;
+        ids.push(crate::zapret::id_of(newest));
+        ids.extend((0..newest).map(crate::zapret::id_of));
     }
     ids.extend(ALL.iter().map(|s| s.id().to_owned()));
     ids.push(Strategy::Direct.id().to_owned());
@@ -397,10 +401,80 @@ pub static CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 mod tests {
     use super::*;
 
+    /// The network as the Cut sees it: every write that would leave as its own
+    /// packet is kept; reads end at once (no server), so the handshake stops
+    /// right after the ClientHello.
+    #[derive(Debug, Default)]
+    struct Wire {
+        sent: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl Read for Wire {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for Wire {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.sent.lock().unwrap().push(buf.to_vec());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ureq::ReadWrite for Wire {
+        fn socket(&self) -> Option<&TcpStream> {
+            None
+        }
+    }
+
+    /// What the real rustls (the version in Cargo.lock) puts on the wire with `strategy`.
+    fn on_the_wire(strategy: Strategy) -> Vec<Vec<u8>> {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let wire = Wire { sent: sent.clone() };
+        let _ = ureq::TlsConnector::connect(&Connector::new(strategy), "api-v2.soundcloud.com", Box::new(wire))
+            .map(|mut s| s.write_all(b"GET / HTTP/1.1\r\n\r\n"));
+        let out = sent.lock().unwrap().clone();
+        out
+    }
+
+    fn contains(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn the_real_client_hello_is_cut() {
+        let name = b"api-v2.soundcloud.com";
+        for strategy in ALL {
+            let sent = on_the_wire(strategy);
+            assert!(!sent.is_empty(), "{strategy:?}: nothing was sent");
+            let all: Vec<u8> = sent.concat();
+            assert_eq!(all.first(), Some(&0x16), "{strategy:?}: not a TLS handshake");
+            if strategy == Strategy::Split1 {
+                assert_eq!(sent[0].len(), 1, "{strategy:?}: the first byte must leave alone: {:?}", sent.iter().map(Vec::len).collect::<Vec<_>>());
+            } else {
+                // The site name never leaves in one piece: no packet carries all of it.
+                assert!(
+                    sent.iter().all(|p| !contains(p, name)),
+                    "{strategy:?}: the name went out whole; packets: {:?}",
+                    sent.iter().map(Vec::len).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
     #[test]
     fn zapret_is_tried_first() {
         let ids = order(true, false);
-        assert_eq!(ids[0], "nfq1");
+        // The newest preset («general (ALT11)») first, then all the others from nfq1, each once.
+        assert_eq!(crate::zapret::PRESETS[crate::zapret::index_of(&ids[0]).unwrap()].0, "general (ALT11)");
+        assert_eq!(ids[1], "nfq1");
+        let zapret: Vec<&String> = ids.iter().filter(|i| crate::zapret::is_zapret(i)).collect();
+        assert_eq!(zapret.len(), crate::zapret::PRESETS.len());
+        assert!((1..=crate::zapret::PRESETS.len()).all(|n| ids.contains(&format!("nfq{n}"))));
         assert_eq!(ids.last().unwrap(), "direct");
         assert!(ids.iter().position(|i| i == "split1").unwrap() > ids.iter().position(|i| i == "nfq12").unwrap());
         assert_eq!(order(true, true)[0], crate::zapret::CUSTOM);

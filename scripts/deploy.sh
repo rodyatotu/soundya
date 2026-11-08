@@ -3,6 +3,7 @@
 #   sh scripts/deploy.sh soundya.local      (once soundya runs on it)
 #   sh scripts/deploy.sh 192.168.0.112      (first install, by IP)
 #   sh scripts/deploy.sh 192.168.0.112 --choose   (ask again what to set up)
+#   SOUNDYA_TAR=dist/soundya-armv7-dev.tar sh scripts/deploy.sh 192.168.0.112   (the developer build)
 #
 # On the first install it asks what to set up: SoundCloud, AirPlay, PC, TV,
 # bypass. Everything can be switched later on the settings page.
@@ -14,7 +15,7 @@ cd "$(dirname "$0")/.."
 . scripts/fresh.sh
 IP=${1:?usage: scripts/deploy.sh <speaker-ip>}
 DEV="$IP:5555"
-TAR=dist/soundya-armv7.tar
+TAR=${SOUNDYA_TAR:-dist/soundya-armv7.tar}
 [ -f "$TAR" ] || { echo "no $TAR: run sh scripts/build-mac.sh first" >&2; exit 1; }
 SIZE=$(wc -c < "$TAR" | tr -d ' ')
 

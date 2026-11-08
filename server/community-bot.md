@@ -1,5 +1,10 @@
 # Бот приёма в сообщество soundya — быстрый запуск
 
+**Проще всего — тем же ботом, что присылает баг-репорты:** в `/etc/soundya-stats.env` добавьте
+`SOUNDYA_COMMUNITY=1` (и `SOUNDYA_CHANNEL_INVITE`, `SOUNDYA_TARGET_CHAT`), обновите сервер
+(`sh scripts/deploy-server.sh root@<VPS>`). Отдельная служба ниже тогда не нужна — и **не запускайте
+обе сразу с одним токеном**: Telegram раздаст обновления двум процессам, и заявки не одобрятся.
+
 Бот даёт ссылку в сообщество только после того, как человек прочитал правила и
 нажал «Соглашаюсь». Работает автономно, нужен только Python 3 (внешних
 зависимостей нет).
@@ -31,6 +36,12 @@
 правила с кнопками **«Соглашаюсь»** / **«Не соглашаюсь»** → заявка одобряется
 или отклоняется. Отказ записывается в `declines.jsonl`.
 
+## 2в. Без «X вступил в группу»
+Бот сам удаляет служебные сообщения о вступлении, одобрении заявки и выходе. Для этого дайте ему
+право администратора **«Удаление сообщений»**. Оставить их: `SOUNDYA_HIDE_JOINS=0`.
+Список участников скрывает сам Telegram: «Управление группой» → «Участники» → «Скрыть участников»
+(появляется, когда в группе 100+ человек).
+
 ## 2б. Администраторы
 `SOUNDYA_ADMINS=123456789,987654321` — Telegram ID админов (узнать: @userinfobot).
 Команды в личке с ботом:
@@ -41,7 +52,7 @@
 ## 3. Запуск
 ```sh
 export SOUNDYA_BOT_TOKEN='123456:ABC-...'            # обязательно
-export SOUNDYA_CHANNEL_INVITE='https://t.me/+lvaSgqYWrXUwYzA0'   # ваша ссылка
+export SOUNDYA_CHANNEL_INVITE='https://t.me/+t9kgMTEpnQM3N2Vk'   # ваша ссылка
 # export SOUNDYA_TARGET_CHAT='-1001234567890'        # заявки, одноразовые ссылки, /ban
 # export SOUNDYA_ADMINS='123456789'                   # кто может /stats, /ban
 python3 server/community-bot.py
@@ -58,7 +69,7 @@ After=network-online.target
 
 [Service]
 Environment=SOUNDYA_BOT_TOKEN=123456:ABC-...
-Environment=SOUNDYA_CHANNEL_INVITE=https://t.me/+lvaSgqYWrXUwYzA0
+Environment=SOUNDYA_CHANNEL_INVITE=https://t.me/+t9kgMTEpnQM3N2Vk
 # Environment=SOUNDYA_TARGET_CHAT=-1001234567890
 WorkingDirectory=/opt/soundya-bot
 ExecStart=/usr/bin/python3 /opt/soundya-bot/community-bot.py

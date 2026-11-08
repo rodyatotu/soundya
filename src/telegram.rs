@@ -89,6 +89,34 @@ struct State {
     errors: HashMap<usize, String>,
     /// How many messages were said.
     count: u64,
+    /// Groups the bots are in (seen in updates): chat id → (title, bot), for the page's team setup.
+    groups: HashMap<i64, (String, usize)>,
+}
+
+/// For sending without a page request (the meeting link): the proxy lives in Shared.
+static SHARED: Mutex<Option<Arc<Shared>>> = Mutex::new(None);
+
+/// A group chat in an update (a message there, or the bot added to it): (id, title).
+pub fn group_of(u: &Value) -> Option<(i64, String)> {
+    let chat = u.get("message").or_else(|| u.get("my_chat_member")).map(|m| &m["chat"])?;
+    if !matches!(chat["type"].as_str(), Some("group" | "supergroup")) {
+        return None;
+    }
+    Some((chat["id"].as_i64()?, chat["title"].as_str().unwrap_or("группа").to_owned()))
+}
+
+/// Sends with a bot that soundya does not poll (the team's bot on a VPS): send-only.
+pub fn send_with(token: &str, chat: i64, text: &str) -> Result<(), String> {
+    let shared = SHARED.lock().unwrap().clone().ok_or("Telegram не настроен")?;
+    call(&shared, token.trim(), "sendMessage", json!({ "chat_id": chat, "text": text }), 15).map(|_| ())
+}
+
+/// Sends a message to a chat (a team's group) by bot number.
+pub fn send_to_chat(bot: usize, chat: i64, text: &str) -> Result<(), String> {
+    let shared = SHARED.lock().unwrap().clone().ok_or("Telegram не настроен")?;
+    let token = CONFIG.lock().unwrap().as_ref().and_then(|c| c.bots.get(bot).or(c.bots.first()).map(|b| b.token.clone()));
+    let token = token.ok_or("нет бота Telegram: добавьте его в настройках")?;
+    call(&shared, &token, "sendMessage", json!({ "chat_id": chat, "text": text }), 15).map(|_| ())
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -130,6 +158,7 @@ pub fn announcement(c: &Config, from_name: &str, text: &str) -> String {
 }
 
 pub fn configure(c: Config, shared: &Arc<Shared>) {
+    *SHARED.lock().unwrap() = Some(shared.clone());
     let changed = CONFIG.lock().unwrap().as_ref().is_none_or(|old| old.bots != c.bots || old.on != c.on);
     *CONFIG.lock().unwrap() = Some(c.clone());
     if !changed {
@@ -178,7 +207,7 @@ fn poll(index: usize, bot: Bot, gen: u64, shared: Arc<Shared>) {
     let mut first = true;
     eprintln!("telegram: bot {} on", index + 1);
     while GEN.load(Ordering::Acquire) == gen {
-        let res = call(&shared, &bot.token, "getUpdates", json!({ "offset": offset, "timeout": 25, "allowed_updates": ["message"] }), 40);
+        let res = call(&shared, &bot.token, "getUpdates", json!({ "offset": offset, "timeout": 25, "allowed_updates": ["message", "my_chat_member"] }), 40);
         let updates = match res {
             Ok(v) => {
                 st(|s| s.errors.remove(&index));
@@ -193,6 +222,9 @@ fn poll(index: usize, bot: Bot, gen: u64, shared: Arc<Shared>) {
         };
         for u in &updates {
             offset = offset.max(u["update_id"].as_i64().unwrap_or(0) + 1);
+            if let Some((id, title)) = group_of(u) {
+                st(|s| s.groups.insert(id, (title, index)));
+            }
             // What came before soundya started is not read out.
             if first {
                 continue;
@@ -214,14 +246,20 @@ fn on_message(bot: usize, m: &Value, shared: &Shared) {
     let tg_name = [m["from"]["first_name"].as_str(), m["from"]["last_name"].as_str()].iter().flatten().copied().collect::<Vec<_>>().join(" ");
     let allowed = c.allowed.iter().find(|a| a.id == from || a.id == chat).cloned();
     let Some(who) = allowed else {
+        let group = matches!(m["chat"]["type"].as_str(), Some("group" | "supergroup"));
+        let title = m["chat"]["title"].as_str().unwrap_or("группа").to_owned();
         st(|s| {
             if s.unknown.len() < 30 {
-                s.unknown.insert(from, (tg_name, text.chars().take(80).collect(), bot));
+                s.unknown.insert(from, (tg_name.clone(), text.chars().take(80).collect(), bot));
+            }
+            // A group too: «Разрешить» it and everything said there is read out.
+            if group && s.unknown.len() < 30 {
+                s.unknown.insert(chat, (format!("Группа «{title}» (все сообщения)"), text.chars().take(80).collect(), bot));
             }
         });
         return;
     };
-    let name = if who.name.trim().is_empty() { tg_name } else { who.name.clone() };
+    let name = said_name(&who, from, chat, &tg_name, m["chat"]["title"].as_str().unwrap_or(""));
     let repeat = st(|s| {
         s.said.retain(|_, at| at.elapsed() < Duration::from_secs(600));
         let key = (chat, text.clone());
@@ -238,6 +276,18 @@ fn on_message(bot: usize, m: &Value, shared: &Shared) {
         return;
     }
     say(shared, announcement(&c, &name, &text));
+}
+
+/// Who Alice says it is from: the name given to the person; for a whole group allowed,
+/// «Саша в «Работа»» (the sender, then the group's name given on the page or its title).
+pub fn said_name(who: &Sender, from: i64, chat: i64, tg_name: &str, title: &str) -> String {
+    let given = who.name.trim();
+    if who.id == chat && chat != from {
+        let place = if given.is_empty() { title.trim() } else { given };
+        let person = if tg_name.trim().is_empty() { "Кто-то" } else { tg_name.trim() };
+        return if place.is_empty() { person.to_owned() } else { format!("{person} в «{place}»") };
+    }
+    if given.is_empty() { tg_name.to_owned() } else { given.to_owned() }
 }
 
 fn say(_shared: &Shared, text: String) {
@@ -320,6 +370,7 @@ pub fn json() -> Value {
             "held": s.held.len(),
             "said": s.count,
             "last": s.last.as_ref().map(|l| l.2.clone()),
+            "groups": s.groups.iter().map(|(id, (t, b))| json!({ "id": id, "title": t, "bot": b })).collect::<Vec<_>>(),
         })
     })
 }
@@ -337,6 +388,27 @@ pub fn forget_unknown(id: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_whole_group_says_who_wrote_and_where() {
+        let group = Sender { id: -100500, name: "Работа".into() };
+        assert_eq!(said_name(&group, 7, -100500, "Саша Петров", "Отдел продаж"), "Саша Петров в «Работа»");
+        let untitled = Sender { id: -100500, name: String::new() };
+        assert_eq!(said_name(&untitled, 7, -100500, "Саша", "Отдел продаж"), "Саша в «Отдел продаж»");
+        let mom = Sender { id: 7, name: "Мама".into() };
+        assert_eq!(said_name(&mom, 7, 7, "Ирина", ""), "Мама", "a person keeps the name given");
+        assert_eq!(said_name(&mom, 7, -100500, "Ирина", "Семья"), "Мама", "allowed as a person: the same in any chat");
+    }
+
+    #[test]
+    fn groups_are_noticed_for_the_team_setup() {
+        let added = json!({"update_id": 1, "my_chat_member": {"chat": {"id": -100123, "type": "supergroup", "title": "Команда"}}});
+        assert_eq!(group_of(&added), Some((-100123, "Команда".into())));
+        let msg = json!({"update_id": 2, "message": {"chat": {"id": -42, "type": "group", "title": "Отдел"}, "text": "/start"}});
+        assert_eq!(group_of(&msg), Some((-42, "Отдел".into())));
+        let private = json!({"update_id": 3, "message": {"chat": {"id": 7, "type": "private"}, "text": "привет"}});
+        assert_eq!(group_of(&private), None);
+    }
 
     fn cfg() -> Config {
         Config { on: true, bots: vec![], allowed: vec![], read_text: true, max_len: 20, quiet: None, offset_min: 180 }

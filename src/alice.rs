@@ -65,8 +65,14 @@ pub enum Intent {
     Duck(DuckCmd),
     /// «Повтори адрес»: where the panel is (hello.rs).
     Address,
+    /// «Включи музыку в наушниках» (true) / «верни музыку на колонку» (false): Bluetooth output (bt.rs).
+    BtOut(bool),
     /// «Говори тише / громче»: only her voice (voice.rs), by this many %.
     VoiceLevel(i8),
+    /// «Да» / «нет» to an update sent from the app (update.rs: installed only after «да»).
+    UpdateConfirm(bool),
+    /// soundya's timer and pomodoro (timer.rs).
+    Timer(crate::timer::Voice),
     /// The planner (planner.rs), when switched on.
     Planner(crate::planner::Voice),
     /// «Ответь …» to the last Telegram message (telegram.rs), asked to confirm.
@@ -127,6 +133,16 @@ pub enum TvAction {
     OpenPackage(String),
     /// Close an app: spoken name or package.
     Close(String),
+    /// Press what is on the screen by its words: «нажми историю на проекторе».
+    Tap(String),
+    /// Open an app, then a section of it: «открой историю в смарт тьюб» → (app, section).
+    OpenIn(String, String),
+    /// Play the first video of the list on the screen: «включи последнее видео из истории».
+    PlayFirst,
+    /// Open an app and press its main button: «открой впн и включи его».
+    OpenAndStart(String),
+    /// «Режим пульта» on / off: every short command goes to the TV until «выключи режим пульта».
+    RemoteMode(bool),
 }
 
 /// Remote keys the macro editor offers: (name in a script, Android key code, label).
@@ -170,6 +186,187 @@ fn strip_tv(text: &str) -> Option<(String, bool)> {
     (kept.len() < words.len()).then(|| (kept.join(" "), true))
 }
 
+const UP: &str = "KEYCODE_DPAD_UP";
+const DOWN: &str = "KEYCODE_DPAD_DOWN";
+const LEFT: &str = "KEYCODE_DPAD_LEFT";
+const RIGHT: &str = "KEYCODE_DPAD_RIGHT";
+const CENTER: &str = "KEYCODE_DPAD_CENTER";
+
+/// «Выше», «ещё ниже», «наведись левее», «вниз на три»: (key, presses). Any other word: not this.
+fn nav_key(words: &[&str]) -> Option<(&'static str, u8)> {
+    const FILL: [&str; 25] = [
+        "наведись", "наведи", "перейди", "сдвинься", "сдвинь", "подвинь", "подвинься", "иди", "двигайся", "курсор", "фокус", "еще", "на",
+        "чуть", "немного", "раза", "раз", "повыше", "кнопку", "стрелка", "нажми", "жми", "стрелку", "клавишу", "листай",
+    ];
+    let mut code = None;
+    let mut n = 1u8;
+    for w in words {
+        match *w {
+            "выше" | "вверх" | "наверх" | "повыше" if code.is_none() => code = Some(UP),
+            "ниже" | "вниз" | "пониже" => code = Some(DOWN),
+            "левее" | "влево" | "налево" => code = Some(LEFT),
+            "правее" | "вправо" | "направо" => code = Some(RIGHT),
+            "два" | "2" | "дважды" => n = 2,
+            "три" | "3" | "трижды" => n = 3,
+            "четыре" | "4" => n = 4,
+            "пять" | "5" => n = 5,
+            w if FILL.contains(&w) => {}
+            _ => return None,
+        }
+    }
+    code.map(|c| (c, n))
+}
+
+/// The remote's OK, said.
+const OK_WORDS: [&str; 13] = ["ок", "окей", "ok", "нажми", "нажми ок", "выбери", "выбрать", "подтверди", "войди", "открой это", "жми", "выбери это", "нажми на это"];
+
+/// The TV's follow-up state: after a command, for a minute and a half, «ещё», «выше», «нажми …»
+/// without «на проекторе» are still the TV's (`session`: when, the last key for «ещё»);
+/// «режим пульта» (`remote`: on since / last used; ends by «выключи режим пульта» or 20 minutes unused).
+#[derive(Clone, Copy, Default)]
+struct TvState {
+    session: Option<(std::time::Instant, Option<&'static str>)>,
+    remote: Option<std::time::Instant>,
+    /// A TV is set up (settings): «подключи впн» is then the projector's, else the PC's.
+    set_up: bool,
+}
+const TV_SESSION_FOR: std::time::Duration = std::time::Duration::from_secs(90);
+const TV_REMOTE_FOR: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+#[cfg(not(test))]
+static TV_STATE: std::sync::Mutex<TvState> = std::sync::Mutex::new(TvState { session: None, remote: None, set_up: false });
+
+#[cfg(not(test))]
+fn tv_state<R>(f: impl FnOnce(&mut TvState) -> R) -> R {
+    f(&mut TV_STATE.lock().unwrap())
+}
+
+// Each test (its own thread) has its own: one test's «режим пульта» must not turn
+// another's «пауза» into the TV's.
+#[cfg(test)]
+thread_local! {
+    static TV_STATE: std::cell::RefCell<TvState> = std::cell::RefCell::new(TvState::default());
+}
+
+#[cfg(test)]
+fn tv_state<R>(f: impl FnOnce(&mut TvState) -> R) -> R {
+    TV_STATE.with(|s| f(&mut s.borrow_mut()))
+}
+
+/// A command for the TV went through: the follow-ups are its (`key`: what «ещё» repeats).
+pub fn tv_used(key: Option<&'static str>) {
+    tv_state(|s| {
+        if s.remote.is_some_and(|at| at.elapsed() < TV_REMOTE_FOR) {
+            s.remote = Some(std::time::Instant::now());
+        }
+        let key = key.or_else(|| s.session.and_then(|(_, k)| k));
+        s.session = Some((std::time::Instant::now(), key));
+    });
+}
+
+pub fn tv_remote(on: bool) {
+    tv_state(|s| s.remote = on.then(std::time::Instant::now));
+}
+
+fn remote_on() -> bool {
+    tv_state(|s| s.remote.is_some_and(|at| at.elapsed() < TV_REMOTE_FOR))
+}
+
+fn tv_session() -> Option<Option<&'static str>> {
+    let s = tv_state(|s| s.session);
+    if remote_on() {
+        return Some(s.and_then(|(_, k)| k));
+    }
+    s.filter(|(at, _)| at.elapsed() < TV_SESSION_FOR).map(|(_, k)| k)
+}
+
+/// «Режим пульта» / «выключи режим пульта».
+/// «пульт», «пульт ду», «открой пульт», «дай пульт телевизора», «режим пульта»…: a phrase
+/// made only of «пульт» and words around it. Anything else in it («включи песню пульт»)
+/// and it is not about the remote.
+fn remote_phrase(n: &str) -> Option<bool> {
+    const ON: [&str; 13] = ["включи", "открой", "дай", "покажи", "запусти", "давай", "режим", "переключись", "перейди", "стань", "сделай", "вруби", "активируй"];
+    const OFF: [&str; 9] = ["выключи", "выйди", "отключи", "закончи", "хватит", "стоп", "убери", "закрой", "из"];
+    const FILLER: [&str; 22] = [
+        "алиса", "пожалуйста", "ду", "д", "у", "дистанционного", "управления", "на", "в", "от", "для", "мне",
+        "телевизора", "телевизор", "телевизору", "тв", "проектора", "проектор", "телека", "телик", "телика", "мой",
+    ];
+    let words: Vec<&str> = n.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    if !words.iter().any(|w| w.starts_with("пульт")) {
+        return None;
+    }
+    let known = |w: &&str| w.starts_with("пульт") || ON.contains(w) || OFF.contains(w) || FILLER.contains(w);
+    if !words.iter().all(known) {
+        return None;
+    }
+    Some(!words.iter().any(|w| OFF.contains(w)))
+}
+
+pub fn set_tv(on: bool) {
+    tv_state(|s| s.set_up = on);
+}
+
+/// Phrases for the TV that do not name it: «ещё выше» right after a TV command;
+/// SmartTube (only the TV has it); «открой впн и включи его».
+fn tv_unnamed(n: &str) -> Option<TvAction> {
+    let as_tv = || tv(&format!("{n} на проекторе"));
+    if let Some(on) = remote_phrase(n) {
+        return Some(TvAction::RemoteMode(on));
+    }
+    // In the remote mode: «вправо», «ок», «пауза», «громче», «назад», «домой» — all the TV's.
+    if remote_on() {
+        if matches!(n, "еще" | "еще раз" | "снова" | "повтори") {
+            return tv_session().flatten().map(|k| TvAction::Key(k, 1));
+        }
+        match n {
+            "ок" | "окей" | "выбери" | "нажми" | "enter" => return Some(TvAction::Key(CENTER, 1)),
+            "назад" => return Some(TvAction::Key("KEYCODE_BACK", 1)),
+            "домой" => return Some(TvAction::Key("KEYCODE_HOME", 1)),
+            _ => {}
+        }
+        // «включи bonobo», «поставь таймер», «запусти помодоро» stay music, Alice and
+        // soundya's own: the remote mode took them all for «open an app» on the TV.
+        let verb = n.split_whitespace().next().unwrap_or("");
+        let not_an_app = ["включи", "поставь", "запусти", "играй", "сыграй", "напомни"].contains(&verb);
+        match as_tv() {
+            Some(TvAction::Open(_) | TvAction::YouTube(_)) if not_an_app => {}
+            Some(a) => return Some(a),
+            None => {}
+        }
+    }
+    if crate::tv::tv_only_app(n) {
+        return as_tv();
+    }
+    // The speaker has no screen: «нажми вверх», «наведись ниже», «влево» can only mean the TV's remote.
+    let words: Vec<&str> = n.split_whitespace().collect();
+    if let Some((code, k)) = nav_key(&words) {
+        return Some(TvAction::Key(code, k));
+    }
+    // «подключись к впн», «включи впн», «отключи впн»: the VPN app on the TV, its main button.
+    if (n.contains("впн") || n.contains("vpn")) && tv_state(|s| s.set_up) {
+        const VPN: [&str; 14] = [
+            "подключись к впн", "подключи впн", "подключись к vpn", "включи впн", "включи vpn", "запусти впн", "открой впн и включи",
+            "отключи впн", "выключи впн", "отключись от впн", "отключи vpn", "выключи vpn", "подключи vpn", "открой впн и подключи",
+        ];
+        if VPN.iter().any(|p| n.starts_with(p)) {
+            return Some(TvAction::OpenAndStart("впн".into()));
+        }
+    }
+    if (n.starts_with("открой ") || n.starts_with("запусти ")) && (n.contains(" и включи") || n.contains(" и подключи")) && n.contains("впн") {
+        return as_tv();
+    }
+    let last = tv_session()?;
+    if matches!(n, "еще" | "еще раз" | "снова" | "повтори" | "и еще" | "еще разок") {
+        return last.map(|k| TvAction::Key(k, 1));
+    }
+    // In the session only the remote-like ones: not «пауза» or «дальше» (music has those too).
+    match as_tv()? {
+        a @ (TvAction::Tap(_) | TvAction::PlayFirst | TvAction::OpenIn(..)) => Some(a),
+        a @ TvAction::Key(k, _) if [UP, DOWN, LEFT, RIGHT, CENTER, "KEYCODE_BACK"].contains(&k) => Some(a),
+        _ => None,
+    }
+}
+
 /// Commands for the Android TV. `None` when the phrase does not name it.
 fn tv(text: &str) -> Option<TvAction> {
     let (rest, as_object) = strip_tv(text)?;
@@ -187,6 +384,65 @@ fn tv(text: &str) -> Option<TvAction> {
         }
     }
     let key = |code: &'static str, n: u8| Some(TvAction::Key(code, n));
+    // Inside apps, like the remote: «наведись выше», «ещё ниже», «нажми ок».
+    if let Some((code, n)) = nav_key(&words) {
+        return key(code, n);
+    }
+    if OK_WORDS.contains(&all.as_str()) {
+        return key(CENTER, 1);
+    }
+    // «включи последнее видео (из истории)», «воспроизведи первое видео»
+    if matches!(first, "включи" | "воспроизведи" | "запусти" | "поставь" | "открой")
+        && words.iter().any(|w| w.starts_with("последн") || w.starts_with("перв") || w.starts_with("верхн"))
+        && words.iter().any(|w| w.starts_with("видео") || w.starts_with("ролик") || w.starts_with("серию"))
+    {
+        return Some(TvAction::PlayFirst);
+    }
+    // «открой впн и включи его»
+    if matches!(first, "открой" | "запусти") {
+        for sep in [" и включи", " и подключи", " и запусти"] {
+            if let Some((app, _)) = after(1).split_once(sep) {
+                if !app.trim().is_empty() {
+                    return Some(TvAction::OpenAndStart(app.trim().to_owned()));
+                }
+            }
+        }
+    }
+    // «включи впн»: a VPN is switched on by its button.
+    if matches!(first, "включи" | "подключи") && matches!(after(1).as_str(), "впн" | "vpn") {
+        return Some(TvAction::OpenAndStart("впн".into()));
+    }
+    // «нажми историю», «выбери настройки», «нажми на кнопку подписаться»
+    if matches!(first, "нажми" | "выбери" | "ткни" | "кликни" | "нажать") {
+        let mut q = after(1);
+        for p in ["на кнопку ", "кнопку ", "на пункт ", "пункт ", "на "] {
+            if let Some(r) = q.strip_prefix(p) {
+                q = r.to_owned();
+                break;
+            }
+        }
+        if !q.is_empty() {
+            return Some(TvAction::Tap(q));
+        }
+    }
+    // «открой историю просмотров в смарт тьюб», «открой раздел подписки»
+    if matches!(first, "открой" | "зайди" | "перейди") {
+        let rest = after(1);
+        let rest = rest.strip_prefix("в ").unwrap_or(&rest).to_owned();
+        for sep in [" в приложении ", " в приложение ", " в "] {
+            if let Some((section, app)) = rest.rsplit_once(sep) {
+                if crate::tv::app_named(app) && !section.trim().is_empty() {
+                    let section = section.trim_start_matches("раздел ").trim_start_matches("вкладку ").trim();
+                    return Some(TvAction::OpenIn(app.trim().to_owned(), section.to_owned()));
+                }
+            }
+        }
+        for p in ["раздел ", "вкладку ", "пункт ", "меню "] {
+            if let Some(r) = rest.strip_prefix(p) {
+                return (!r.trim().is_empty()).then(|| TvAction::Tap(r.trim().to_owned()));
+            }
+        }
+    }
     match all.as_str() {
         "пауза" | "поставь на паузу" | "останови" | "стоп" | "на паузу" | "поставь паузу" => return key("KEYCODE_MEDIA_PAUSE", 1),
         "продолжи" | "играй" | "воспроизведи" | "сними с паузы" | "продолжай" => return key("KEYCODE_MEDIA_PLAY", 1),
@@ -256,6 +512,10 @@ pub enum PcAction {
     Metrics,
     /// «Запущен ли стим на компьютере».
     Process(String),
+    /// A mouse click at screen pixels, from a scenario: "x,y" / "x,y,double" / "x,y,right" (pc::click_spec).
+    Click(String),
+    /// A key or a shortcut, from a scenario: "enter", "cmd+t", "ctrl+shift+esc" (pc::key_spec).
+    Key(String),
 }
 
 /// Questions about the PC's state: only with the PC named.
@@ -683,6 +943,20 @@ fn yandex_only(text: &str) -> Option<Intent> {
         .then_some(Intent::ToAlice)
 }
 
+/// «Включи музыку в наушниках», «переключи звук на наушники» / «верни музыку на колонку»:
+/// soundya's music to the Bluetooth device chosen on the page, or back.
+fn bt_out(n: &str) -> Option<bool> {
+    let verb = ["включи ", "переключи ", "переведи ", "выведи ", "пусти ", "верни "].iter().any(|v| n.starts_with(v));
+    let what = n.contains("музык") || n.contains("звук");
+    if !verb || !what {
+        return None;
+    }
+    if n.contains("наушник") || n.contains("блютуз колонк") || n.contains("bluetooth") {
+        return Some(!n.starts_with("верни "));
+    }
+    (n.starts_with("верни ") && (n.ends_with("на колонку") || n.ends_with("на станцию") || n.ends_with("с наушников"))).then_some(false)
+}
+
 /// Smart-home words: «включи свет» is never music.
 const HOME: [&str; 30] = [
     "свет", "освещение", "ламп", "люстр", "торшер", "ночник", "розетк", "телевизор", "тв",
@@ -695,8 +969,12 @@ const HOME: [&str; 30] = [
 const PLAY_VERBS: [&str; 5] = ["включи ", "поставь ", "запусти ", "сыграй ", "играй "];
 
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
+    // «Алиса, пульт» before all: «включи пульт телевизора» is the remote mode, not an app.
+    if let Some(on) = remote_phrase(&normalize(text)) {
+        return Some(Intent::Tv(TvAction::RemoteMode(on)));
+    }
     // The TV first: «перемотай вперёд на проекторе», «открой ютуб на проекторе».
-    if let Some(action) = tv(&normalize(text)) {
+    if let Some(action) = tv(&normalize(text)).or_else(|| tv_unnamed(&normalize(text))) {
         return Some(Intent::Tv(action));
     }
     if matches!(
@@ -705,6 +983,9 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
             | "какой адрес у саундя" | "адрес саундя" | "адрес панели саундя" | "повтори адрес панели"
     ) {
         return Some(Intent::Address);
+    }
+    if let Some(on) = bt_out(&normalize(text)) {
+        return Some(Intent::BtOut(on));
     }
     match normalize(text).as_str() {
         "говори тише" | "говори потише" | "сделай голос тише" | "сделай свой голос тише" | "говори тише пожалуйста" => {
@@ -732,7 +1013,24 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
             }
         }
     }
+    if crate::update::awaiting() {
+        match normalize(text).as_str() {
+            "да" | "установи" | "ставь" | "да установи" | "обнови" | "да обнови" => return Some(Intent::UpdateConfirm(true)),
+            "нет" | "отмена" | "не надо" | "не устанавливай" | "не ставь" => return Some(Intent::UpdateConfirm(false)),
+            _ => {}
+        }
+    }
+    if let Some(v) = crate::timer::voice(&normalize(text), crate::timer::current().is_some()) {
+        return Some(Intent::Timer(v));
+    }
     if crate::planner::ENABLED.load(std::sync::atomic::Ordering::Acquire) {
+        // The answer to «сделали?» / «через сколько уточнить?» asked a moment ago.
+        if crate::planner::awaiting() {
+            let n = normalize(text);
+            if crate::planner::answer(&n, crate::planner::now(), crate::planner::offset()) != crate::planner::Answer::Unknown {
+                return Some(Intent::Planner(crate::planner::Voice::CheckAnswer(n)));
+            }
+        }
         if let Some(v) = crate::planner::voice(&normalize(text)) {
             return Some(Intent::Planner(v));
         }
@@ -1101,11 +1399,20 @@ pub fn cancel_alice() {
 pub fn say(text: String) {
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(600));
+        let since = since_heard();
+        let start = std::time::Instant::now();
         match speak(&text) {
-            Ok(()) => eprintln!("say: {text:?}"),
-            Err(e) => eprintln!("say: {text:?}: {e}"),
+            Ok(()) => eprintln!("say: {text:?} (from the phrase: {since}, speaking: {} ms)", start.elapsed().as_millis()),
+            Err(e) => eprintln!("say: {text:?}: {e} ({since})"),
         }
     });
+}
+
+/// When the last phrase soundya took over was recognized: the log says how long answers take.
+static HEARD_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+pub fn since_heard() -> String {
+    HEARD_AT.lock().unwrap().map_or("?".into(), |t| format!("{} ms", t.elapsed().as_millis()))
 }
 
 /// Subscribes to Alice's events and asks her to speak on the same connection,
@@ -1229,6 +1536,11 @@ fn read_frames(
             cancel_alice();
             last_cancel = std::time::Instant::now();
         }
+        // Dev build: what Alice's alarm looks like on the wire (for «сводка вместе с будильником»).
+        #[cfg(feature = "dev")]
+        if let Some(seen) = alarm_trace(&data) {
+            eprintln!("dev: alarm frame: {seen}");
+        }
         if let Some((request, text)) = recognized(&data) {
             if seen.contains(&request) {
                 continue;
@@ -1238,6 +1550,8 @@ fn read_frames(
                 seen.pop_front();
             }
             crate::volume::heard(&text);
+            // For programs on the PC (Ditoo Plus), if allowed («share_heard»).
+            shared.set_heard(&text);
             // A user macro whose phrase is heard wins over built-in handling —
             // the whole phrase, not a part of it (a macro «свет» must not take
             // «включи свет на кухне» from Alice).
@@ -1274,7 +1588,7 @@ fn read_frames(
             // messages are ours; all music stays Alice's.
             let music = !matches!(
                 intent,
-                Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
+                Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::BtOut(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
             );
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
@@ -1286,6 +1600,7 @@ fn read_frames(
                 continue;
             }
             eprintln!("voice: {text:?} -> {intent:?}");
+            *HEARD_AT.lock().unwrap() = Some(std::time::Instant::now());
             cancel_alice();
             suppress_until = Some(std::time::Instant::now() + Duration::from_secs(6));
             let _ = tx.send(Cmd::Voice(intent));
@@ -1294,6 +1609,21 @@ fn read_frames(
             data = Vec::with_capacity(4096);
         }
     }
+}
+
+/// The printable runs (ASCII, ≥ 4 chars) of a frame that mentions an alarm, None for any other frame.
+#[cfg(any(feature = "dev", test))]
+fn alarm_trace(data: &[u8]) -> Option<String> {
+    let lower = data.to_ascii_lowercase();
+    if !lower.windows(5).any(|w| w == b"alarm") {
+        return None;
+    }
+    let runs: Vec<String> = data
+        .split(|b| !(0x20..0x7f).contains(b))
+        .filter(|r| r.len() >= 4)
+        .map(|r| String::from_utf8_lossy(r).into_owned())
+        .collect();
+    Some(runs.join(" | ").chars().take(400).collect())
 }
 
 /// Who has the speaker right now, as far as soundya knows.
@@ -1358,7 +1688,7 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
-        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::VoiceLevel(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
+        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
         Intent::Pc(_) => w.pc,
@@ -1437,6 +1767,11 @@ mod tests {
         let rows: &[(&str, bool, &str)] = &[
             ("открой ютуб на телевизоре", false, "Tv"),
             ("повтори адрес", false, "Address"),
+            ("включи музыку в наушниках", false, "BtOut(true)"),
+            ("переключи звук на наушники", true, "BtOut(true)"),
+            ("верни музыку на колонку", false, "BtOut(false)"),
+            ("верни звук с наушников", false, "BtOut(false)"),
+            ("включи блютуз", false, "Alice"),
             ("говори тише", false, "VoiceLevel"),
             ("приглуши музыку", false, "Duck"),
             ("перемотай вперед на 30 секунд", false, "Seek"),
@@ -1480,10 +1815,15 @@ mod tests {
         assert!(starts_music("включи песни в яндекс музыке"));
         assert!(!starts_music("включи свет на кухне"));
         assert!(!starts_music("поставь будильник на 7"));
+        assert_eq!(alarm_trace(b"\x08\x01AliceCapability\x12\x05xx\x1aAlarmRinging\x00"), Some("AliceCapability | AlarmRinging".into()));
+        assert_eq!(alarm_trace(b"\x08\x01AliceCapability state"), None);
         assert!(!starts_music("какая погода"));
     }
 
     use super::*;
+
+    /// The TV switch (set_tv) is shared: the tests that read it take turns.
+    static TV_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn seek_commands() {
@@ -1515,6 +1855,8 @@ mod tests {
 
     #[test]
     fn pc_commands() {
+        let _one_at_a_time = TV_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        set_tv(false);
         let pc = |t: &str| intent(t, false);
         let cmd = |t: &str| Some(Intent::Pc(PcAction::Command(t.into())));
         assert_eq!(pc("Алиса, включи компьютер"), Some(Intent::Pc(PcAction::Wake)));
@@ -1560,12 +1902,82 @@ mod tests {
     }
 
     #[test]
+    fn the_projector_is_followed_without_naming_it() {
+        let t = |s: &str| match intent(s, false) {
+            Some(Intent::Tv(a)) => Some(a),
+            _ => None,
+        };
+        let _one_at_a_time = TV_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        tv_state(|s| s.session = None);
+        set_tv(true);
+        // The owner's words: no «на проекторе», no command before.
+        assert_eq!(t("Алиса, нажми вверх"), Some(TvAction::Key(UP, 1)));
+        assert_eq!(t("наведись ниже"), Some(TvAction::Key(DOWN, 1)));
+        assert_eq!(t("Алиса, подключись к впн"), Some(TvAction::OpenAndStart("впн".into())));
+        assert_eq!(t("отключи впн"), Some(TvAction::OpenAndStart("впн".into())));
+        assert_eq!(t("еще"), None, "a bare «ещё» only right after a TV command");
+        // «Режим пульта»: everything short is the TV's until it is switched off.
+        assert_eq!(t("Алиса, режим пульта"), Some(TvAction::RemoteMode(true)));
+        // The owner's words: «Алиса, пульт» and the like (before, most got «Я не нашла»).
+        for p in ["Алиса, пульт", "пульт ду", "включи пульт ду", "открой пульт", "пульт телевизора", "пульт от телевизора",
+                  "дай пульт", "покажи пульт", "режим пульт ду", "пульт пожалуйста", "открой пульт ду", "переключись на пульт",
+                  "включи пульт телевизора", "пульт дистанционного управления"] {
+            assert_eq!(t(p), Some(TvAction::RemoteMode(true)), "{p}");
+        }
+        for p in ["выключи пульт", "закрой пульт", "выйди из пульта", "хватит пульт"] {
+            assert_eq!(t(p), Some(TvAction::RemoteMode(false)), "{p}");
+        }
+        assert!(!matches!(t("включи песню пульт управления любовью"), Some(TvAction::RemoteMode(_))), "a song title stays music");
+        tv_remote(true);
+        assert_eq!(t("вправо"), Some(TvAction::Key(RIGHT, 1)));
+        assert_eq!(t("ок"), Some(TvAction::Key(CENTER, 1)));
+        assert_eq!(t("пауза"), Some(TvAction::Key("KEYCODE_MEDIA_PAUSE", 1)), "the TV's pause in the remote mode");
+        assert_eq!(t("громче"), Some(TvAction::Key("KEYCODE_VOLUME_UP", 3)));
+        assert_eq!(t("назад"), Some(TvAction::Key("KEYCODE_BACK", 1)));
+        // Music, timers and plans are not «open an app» on the TV even in the remote mode.
+        for p in ["включи bonobo", "поставь таймер на 5 минут", "запусти помодоро", "включи музыку"] {
+            assert!(!matches!(t(p), Some(TvAction::Open(_) | TvAction::YouTube(_))), "{p}");
+        }
+        assert!(matches!(intent("запусти помодоро", false), Some(Intent::Timer(_))), "the pomodoro is soundya's");
+        assert_eq!(t("открой ютуб"), Some(TvAction::Open("ютуб".into())), "«открой» still opens on the TV");
+        assert_eq!(t("выключи режим пульта"), Some(TvAction::RemoteMode(false)));
+        tv_remote(false);
+        assert_eq!(t("пауза"), None, "after it, music words are music's again");
+        tv_used(Some(UP));
+        assert_eq!(t("еще выше"), Some(TvAction::Key(UP, 1)));
+        assert_eq!(t("Алиса, ещё"), Some(TvAction::Key(UP, 1)), "«ещё» repeats the last key");
+        assert_eq!(t("ниже"), Some(TvAction::Key(DOWN, 1)));
+        assert_eq!(t("выбери"), Some(TvAction::Key(CENTER, 1)));
+        assert_eq!(t("воспроизведи последнее видео из истории"), Some(TvAction::PlayFirst));
+        assert_eq!(t("пауза"), None, "music words stay music's");
+        tv_used(None);
+        assert_eq!(t("еще"), Some(TvAction::Key(UP, 1)), "a tap keeps the last key");
+        tv_state(|s| s.session = Some((std::time::Instant::now() - TV_SESSION_FOR, Some(UP))));
+        assert_eq!(t("еще"), None, "a minute and a half later: «ещё» is not the TV's any more");
+        assert_eq!(t("выбери"), None);
+        tv_state(|s| s.session = None);
+        set_tv(false);
+    }
+
+    #[test]
     fn tv_commands() {
         let t = |s: &str| match intent(s, false) {
             Some(Intent::Tv(a)) => Some(a),
             _ => None,
         };
         assert_eq!(t("Алиса, включи проектор"), Some(TvAction::Wake));
+        // Inside apps, like the remote.
+        assert_eq!(t("Алиса, наведись выше на проекторе"), Some(TvAction::Key(UP, 1)));
+        assert_eq!(t("ниже на три на проекторе"), Some(TvAction::Key(DOWN, 3)));
+        assert_eq!(t("нажми ок на проекторе"), Some(TvAction::Key(CENTER, 1)));
+        assert_eq!(t("нажми историю на проекторе"), Some(TvAction::Tap("историю".into())));
+        assert_eq!(t("нажми на кнопку подписаться на телевизоре"), Some(TvAction::Tap("подписаться".into())));
+        assert_eq!(t("открой раздел подписки на проекторе"), Some(TvAction::Tap("подписки".into())));
+        // The owner's phrases, without naming the projector.
+        assert_eq!(t("Алиса, открой историю просмотров в приложении смарт тьюб"),
+            Some(TvAction::OpenIn("смарт тьюб".into(), "историю просмотров".into())));
+        assert_eq!(t("открой впн и включи его"), Some(TvAction::OpenAndStart("впн".into())));
+        assert_eq!(t("открой ютуб на проекторе"), Some(TvAction::Open("ютуб".into())), "a plain app as before");
         assert_eq!(t("выключи телевизор"), Some(TvAction::Sleep));
         assert_eq!(t("открой ютуб на проекторе"), Some(TvAction::Open("ютуб".into())));
         assert_eq!(t("запусти кинопоиск на телевизоре"), Some(TvAction::Open("кинопоиск".into())));
@@ -1784,3 +2196,4 @@ mod tests {
         );
     }
 }
+

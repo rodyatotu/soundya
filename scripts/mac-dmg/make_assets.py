@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Pictures for the Mac disk image: the window's background (drag soundya to
-Applications, in the app's own look) and the app icon (.icns from docs/logo.png).
+Applications, in the app's own look) and the app icon (.icns from docs/icon.png).
 
     python3 scripts/mac-dmg/make_assets.py <out dir>
 
@@ -9,6 +9,7 @@ build-dmg.sh puts the icons at APP_AT and APPS_AT.
 """
 import io
 import os
+import re
 import struct
 import sys
 
@@ -21,17 +22,32 @@ S = 2  # pixels per point
 
 
 def font(names, size):
+    """The first font found; «file:Style» picks a style of a variable font (SF on a Mac)."""
     for n in names:
+        n, _, style = n.partition(":")
         for d in ("/usr/share/fonts/opentype/inter", "/usr/share/fonts/truetype/dejavu", "/Library/Fonts", "/System/Library/Fonts"):
             p = os.path.join(d, n)
             if os.path.exists(p):
-                return ImageFont.truetype(p, size * S)
-    return ImageFont.load_default()
+                f = ImageFont.truetype(p, size * S)
+                if style:
+                    f.set_variation_by_name(style)
+                return f
+    raise SystemExit("no font with Cyrillic found (Inter, DejaVu or SF)")
 
 
-BOLD = ["InterDisplay-ExtraBold.otf", "Inter-ExtraBold.otf", "DejaVuSans-Bold.ttf"]
-SEMI = ["Inter-SemiBold.otf", "DejaVuSans-Bold.ttf"]
-REG = ["Inter-Medium.otf", "Inter-Regular.otf", "DejaVuSans.ttf"]
+BOLD = ["InterDisplay-ExtraBold.otf", "Inter-ExtraBold.otf", "DejaVuSans-Bold.ttf", "SFNS.ttf:Heavy"]
+SEMI = ["Inter-SemiBold.otf", "DejaVuSans-Bold.ttf", "SFNS.ttf:Semibold"]
+REG = ["Inter-Medium.otf", "Inter-Regular.otf", "DejaVuSans.ttf", "SFNS.ttf:Medium"]
+
+
+def display_version():
+    """«0.5.0» from Cargo.toml is shown as «0.5.00», as on the pages; «0.4.41» stays."""
+    text = open(os.path.join(ROOT, "Cargo.toml"), encoding="utf-8").read()
+    v = re.search(r'^version = "([^"]+)"', text, re.M).group(1)
+    parts = v.split(".")
+    if len(parts) == 3 and len(parts[2]) == 1:
+        parts[2] += "0"
+    return ".".join(parts)
 
 
 def gradient(size, c1, c2, horizontal=True):
@@ -72,7 +88,7 @@ def background(out):
     mask = Image.new("L", (ya_w, ya_h), 0)
     ImageDraw.Draw(mask).text((0, 0), "ya", font=f, fill=255)
     img.paste(gradient((ya_w, ya_h), (255, 122, 26, 255), (255, 61, 90, 255)), (int(x0 + wsound), y0), mask)
-    img = soft_text(img, (W * S - 36 * S, 38 * S), "установка", font(REG, 12), 120, "ra")
+    img = party(img, f"{display_version()} · Больше 100 устройств с soundya")
     d = ImageDraw.Draw(img)
 
     # Glass cards under the two icons (labels stay readable in light and dark Finder).
@@ -103,9 +119,33 @@ def background(out):
     m = Image.new("L", (tw, th), 0)
     ImageDraw.Draw(m).text((0, 0), t, font=f2, fill=255)
     img.paste(gradient((tw, th), (255, 150, 60, 255), (255, 90, 160, 255)), (W * S // 2 - tw // 2, 348 * S), m)
-    img = soft_text(img, (W * S // 2, 384 * S), "Первый запуск: правый клик по soundya → «Открыть». Затем разрешите доступ к локальной сети.",
-                    font(REG, 10.5), 140, "ma")
+    # macOS 15 blocks the first launch of an app without a Developer ID; this is the way through.
+    img = soft_text(img, (W * S // 2, 384 * S), "Первый запуск: Системные настройки → Конфиденциальность и безопасность → «Открыть всё равно»",
+                    font(REG, 10), 140, "ma")
     img.convert("RGB").save(out, dpi=(144, 144))
+
+
+def party(img, text):
+    """The festive pill, top right: the panel's «Нас уже 100+» banner (orange → pink → violet)."""
+    f = font(SEMI, 11.5)
+    d = ImageDraw.Draw(img)
+    tw = int(d.textlength(text, font=f))
+    pad, h = 14 * S, 26 * S
+    x1, y0 = W * S - 30 * S, 27 * S
+    x0 = x1 - tw - 2 * pad
+    shape = Image.new("L", img.size, 0)
+    ImageDraw.Draw(shape).rounded_rectangle([x0, y0, x1, y0 + h], radius=h // 2, fill=255)
+    glow = Image.new("RGBA", img.size, (255, 60, 80, 0))
+    glow.putalpha(shape.filter(ImageFilter.GaussianBlur(10 * S)).point(lambda a: a * 70 // 255))
+    img = Image.alpha_composite(img, glow)
+    pill = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    half = (x1 - x0) // 2
+    pill.paste(gradient((half, h), (255, 85, 0, 255), (255, 47, 109, 255)), (x0, y0))
+    pill.paste(gradient((x1 - x0 - half, h), (255, 47, 109, 255), (123, 59, 255, 255)), (x0 + half, y0))
+    pill.putalpha(shape)
+    img = Image.alpha_composite(img, pill)
+    ImageDraw.Draw(img).text(((x0 + x1) // 2, y0 + h // 2), text, font=f, fill=(255, 255, 255, 255), anchor="mm")
+    return img
 
 
 def soft_text(img, xy, text, f, alpha, anchor):
@@ -117,11 +157,8 @@ def soft_text(img, xy, text, f, alpha, anchor):
 
 def icns(out):
     """Apple icon file: PNG entries for 16…512 pt at 1× and 2×."""
-    src = Image.open(os.path.join(ROOT, "docs", "logo.png")).convert("RGBA")
-    # A little margin, as macOS icons have.
-    canvas = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
-    big = src.resize((880, 880), Image.LANCZOS)
-    canvas.paste(big, (72, 72), big)
+    # docs/icon.png (scripts/mac-dmg/make_icon.py) already has macOS's margin and corners.
+    canvas = Image.open(os.path.join(ROOT, "docs", "icon.png")).convert("RGBA").resize((1024, 1024), Image.LANCZOS)
     entries = [("icp4", 16), ("icp5", 32), ("icp6", 64), ("ic07", 128), ("ic08", 256), ("ic09", 512), ("ic10", 1024),
                ("ic11", 32), ("ic12", 64), ("ic13", 256), ("ic14", 512)]
     body = b""

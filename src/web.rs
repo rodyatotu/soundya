@@ -33,6 +33,76 @@ mod listen_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refusal_reaches_a_client_sending_an_archive() {
+        use std::io::{Read as _, Write as _};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let len = 3 << 20;
+        let client = std::thread::spawn(move || {
+            let mut c = std::net::TcpStream::connect(addr).unwrap();
+            let body = vec![b'x'; len];
+            let _ = c.write_all(&body);
+            let mut out = String::new();
+            c.read_to_string(&mut out).map(|_| out)
+        });
+        let (conn, _) = l.accept().unwrap();
+        let mut r = super::BufReader::new(&conn);
+        super::reply_unread(&conn, &mut r, len, "401 Unauthorized", "error: нужен PIN панели").unwrap();
+        drop(r);
+        drop(conn);
+        let got = client.join().unwrap().expect("the answer, not a connection reset");
+        assert!(got.starts_with("HTTP/1.1 401") && got.contains("нужен PIN"), "{got}");
+    }
+
+    #[test]
+    fn head_lines_are_limited() {
+        use std::io::Write as _;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let w = std::thread::spawn(move || {
+            let mut c = std::net::TcpStream::connect(addr).unwrap();
+            let _ = c.write_all(b"GET / HTTP/1.1\r\n");
+            let _ = c.write_all(&vec![b'a'; 3 * super::MAX_LINE as usize]);
+        });
+        let (conn, _) = l.accept().unwrap();
+        let mut r = super::BufReader::new(&conn);
+        let mut line = String::new();
+        assert!(super::read_line_limited(&mut r, &mut line).unwrap());
+        assert_eq!(line, "GET / HTTP/1.1\r\n");
+        let mut long = String::new();
+        assert!(!super::read_line_limited(&mut r, &mut long).unwrap(), "an endless line is refused");
+        assert_eq!(long.len() as u64, super::MAX_LINE);
+        w.join().unwrap();
+    }
+
+    #[test]
+    fn only_soundcloud_covers_are_fetched() {
+        assert_eq!(super::art_url("/art/i1/artworks-abc_D-t300x300.jpg").as_deref(), Some("https://i1.sndcdn.com/artworks-abc_D-t300x300.jpg"));
+        assert_eq!(super::art_url("/art/i9/avatars-x-large.png").as_deref(), Some("https://i9.sndcdn.com/avatars-x-large.png"));
+        for bad in ["/art/i1/", "/art/x1/a.jpg", "/art/i10/a.jpg", "/art/i1/a.jpg?x=1", "/art/i1/../a.jpg", "/art/i1/a/b.jpg",
+                    "/art/i1/a.html", "/art/i1/a%2F.jpg", "/art/i1@evil.com/a.jpg", "/art/i1"] {
+            assert!(super::art_url(bad).is_none(), "{bad}");
+        }
+    }
+
+
+    #[test]
+    fn developer_notes_live_on_the_speaker() {
+        // In the browser only, they were lost on another address or browser (34 notes once).
+        let dir = std::env::temp_dir().join(format!("soundya-dev-notes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(super::dev_notes("GET", "", &dir).2, "{}");
+        let notes = r#"{"notes":[{"id":1,"text":"уменьшить кнопку"}],"goal":"цель"}"#;
+        assert_eq!(super::dev_notes("POST", notes, &dir).0, "200 OK");
+        assert_eq!(super::dev_notes("GET", "", &dir).2, notes);
+        assert_eq!(super::dev_notes("POST", "[1]", &dir).0, "400 Bad Request");
+        assert_eq!(super::dev_notes("POST", "не json", &dir).0, "400 Bad Request");
+        assert_eq!(super::dev_notes("GET", "", &dir).2, notes, "a bad request keeps what was there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::allowed;
 
     #[test]
@@ -51,6 +121,52 @@ mod tests {
 }
 
 const PAGE: &str = include_str!("web.html");
+
+/// The panel; in the developer build with the feedback mode (src/devpage.rs).
+#[cfg(not(feature = "dev"))]
+fn page() -> &'static str {
+    PAGE
+}
+
+#[cfg(feature = "dev")]
+fn page() -> &'static str {
+    static PAGE_DEV: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PAGE_DEV.get_or_init(|| {
+        crate::devpage::inject(
+            PAGE,
+            &serde_json::json!({
+                "app": "panel",
+                "title": "панель колонки",
+                "version": crate::VERSION,
+                "device": crate::stats::model(),
+                "log": "/api/dev/log",
+                // On the speaker, not in the browser: the same notes from any browser and address.
+                "store": "/api/dev/notes",
+                "h2c": "/dev/html2canvas.js",
+            }),
+        )
+    })
+}
+
+/// The developer build's feedback notes, kept on the speaker (dev-notes.json in its
+/// folder): GET gives them («{}» when none), POST replaces them with a JSON object.
+#[cfg(any(feature = "dev", test))]
+fn dev_notes(method: &str, body: &str, dir: &std::path::Path) -> (&'static str, &'static str, String) {
+    let file = dir.join("dev-notes.json");
+    if method == "GET" {
+        return ("200 OK", "application/json", crate::fsx::read_string(&file).unwrap_or_else(|| "{}".into()));
+    }
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) if v.is_object() => {
+            let tmp = dir.join("dev-notes.json.tmp");
+            match crate::settings::write_synced(&tmp, body.as_bytes()).and_then(|()| std::fs::rename(&tmp, &file)) {
+                Ok(()) => ("200 OK", "text/plain; charset=utf-8", "ok".into()),
+                Err(e) => ("500 Internal Server Error", "text/plain; charset=utf-8", format!("error: {e}")),
+            }
+        }
+        _ => ("400 Bad Request", "text/plain; charset=utf-8", "error: ожидается объект JSON".into()),
+    }
+}
 
 pub fn serve(port: u16, tx: Sender<Cmd>, shared: Arc<Shared>, client: Client) {
     let listener = match TcpListener::bind(("0.0.0.0", port)) {
@@ -130,11 +246,43 @@ fn ask(tx: &Sender<Cmd>, make: impl FnOnce(Sender<String>) -> Cmd, wait: u64) ->
         .unwrap_or_else(|_| "error: timeout".into())
 }
 
+const MAX_LINE: u64 = 8 * 1024;
+const MAX_HEADERS: usize = 64;
+
+/// One line of the request head, at most MAX_LINE bytes. False: the line is longer.
+fn read_line_limited(reader: &mut BufReader<&TcpStream>, line: &mut String) -> std::io::Result<bool> {
+    let n = reader.by_ref().take(MAX_LINE).read_line(line)?;
+    Ok(!(n as u64 == MAX_LINE && !line.ends_with('\n')))
+}
+
+/// A refusal before the body was read. Small bodies are read away first: closing
+/// with unread data sends a reset, and the app would show «связь оборвалась»
+/// instead of the reason (for example «нужен PIN»).
+/// Read away into nothing (no memory), up to an update archive, for at most 20 s.
+fn reply_unread(conn: &TcpStream, reader: &mut BufReader<&TcpStream>, length: usize, status: &str, text: &str) -> std::io::Result<()> {
+    if length <= crate::update::UPLOAD_MAX {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut left = length as u64;
+        let mut chunk = [0u8; 16 * 1024];
+        while left > 0 && std::time::Instant::now() < deadline {
+            match reader.read(&mut chunk[..left.min(16 * 1024) as usize]) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => left -= n as u64,
+            }
+        }
+    }
+    reply(conn, status, "text/plain; charset=utf-8", text)
+}
+
 fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -> std::io::Result<()> {
     conn.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut reader = BufReader::new(&conn);
+    // Lines and their number are limited: a line without an end must not fill the
+    // speaker's memory (48 connections × unlimited before).
     let mut request = String::new();
-    reader.read_line(&mut request)?;
+    if !read_line_limited(&mut reader, &mut request)? {
+        return reply(&conn, "431 Request Header Fields Too Large", "text/plain; charset=utf-8", "error: слишком длинный запрос");
+    }
     let mut parts = request.split_whitespace();
     let method = parts.next().unwrap_or("").to_owned();
     let path = parts.next().unwrap_or("/").to_owned();
@@ -142,9 +290,14 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
     let mut host = String::new();
     let mut origin = String::new();
     let mut cookie = String::new();
+    let mut headers = 0;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
+        headers += 1;
+        if headers > MAX_HEADERS || !read_line_limited(&mut reader, &mut line)? {
+            return reply(&conn, "431 Request Header Fields Too Large", "text/plain; charset=utf-8", "error: слишком длинный запрос");
+        }
+        if line.is_empty() || line == "\r\n" || line == "\n" {
             break;
         }
         if let Some((k, v)) = line.split_once(':') {
@@ -160,7 +313,16 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         }
     }
     // Bug reports carry a screenshot; everything else is small.
-    let limit = if path.starts_with("/api/report") { 6 << 20 } else { 64 * 1024 };
+    // Developer notes carry screenshots too (only the developer build answers that path).
+    let limit = if path.starts_with("/api/report") {
+        6 << 20
+    } else if cfg!(feature = "dev") && path == "/api/dev/notes" {
+        8 << 20
+    } else if path == "/api/update/upload" {
+        crate::update::UPLOAD_MAX
+    } else {
+        64 * 1024
+    };
     if length > limit {
         return reply(&conn, "413 Payload Too Large", "text/plain; charset=utf-8", "error: слишком большой запрос");
     }
@@ -169,8 +331,52 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
     if method != "GET" {
         if let Err(why) = allowed(&host, &origin) {
             eprintln!("web: refused {method} {path}: {why}");
-            return reply(&conn, "403 Forbidden", "text/plain; charset=utf-8", &format!("error: {why}"));
+            return reply_unread(&conn, &mut reader, length, "403 Forbidden", &format!("error: {why}"));
         }
+    } else if !local_host(&host) {
+        // Reading too: a DNS-rebinding name would let any site read /api/status
+        // (the PC's address, Telegram ids, team emails).
+        eprintln!("web: refused GET {path}: host {host}");
+        return reply(&conn, "403 Forbidden", "text/plain; charset=utf-8", &format!("error: адрес «{host}» не похож на адрес колонки в домашней сети"));
+    }
+    // Without the PIN's session the body is not even read (a 6 MB report from anyone).
+    if method != "GET" && path != "/api/login" && path != "/api/duck" && crate::auth::enabled() && !crate::auth::session_ok(&cookie) {
+        return reply_unread(&conn, &mut reader, length, "401 Unauthorized", "error: нужен PIN панели");
+    }
+    // An update archive from the Mac/Windows app (its «Обновить» when the speaker's ADB
+    // is closed): a few MB straight to a file; installed only after «Алиса, да» at the speaker.
+    if method == "POST" && path == "/api/update/upload" {
+        if length == 0 || length > crate::update::UPLOAD_MAX {
+            return reply(&conn, "413 Payload Too Large", "text/plain; charset=utf-8", "error: архив пустой или слишком большой");
+        }
+        if let Err(why) = crate::update::begin_upload() {
+            return reply_unread(&conn, &mut reader, length, "409 Conflict", &format!("error: {why}"));
+        }
+        struct Slot;
+        impl Drop for Slot {
+            fn drop(&mut self) {
+                crate::update::end_upload();
+            }
+        }
+        let _slot = Slot;
+        conn.set_read_timeout(Some(Duration::from_secs(30)))?;
+        let saved = (|| -> std::io::Result<()> {
+            let mut f = std::fs::File::create(crate::update::UPLOAD)?;
+            let n = std::io::copy(&mut (&mut reader).take(length as u64), &mut f)?;
+            if n as usize != length {
+                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, format!("пришло {n} из {length} байт")));
+            }
+            f.sync_all()
+        })();
+        if let Err(e) = saved {
+            let _ = std::fs::remove_file(crate::update::UPLOAD);
+            return reply(&conn, "400 Bad Request", "text/plain; charset=utf-8", &format!("error: архив дошёл не целиком: {e}"));
+        }
+        eprintln!("web: update archive received ({length} bytes), asking at the speaker");
+        return match shared.updates.offer_uploaded() {
+            Ok(text) => reply(&conn, "200 OK", "text/plain; charset=utf-8", &format!("OK: {text}")),
+            Err(e) => reply(&conn, "400 Bad Request", "text/plain; charset=utf-8", &format!("error: {e}")),
+        };
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
@@ -189,9 +395,6 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             }
             Err(e) => reply(&conn, "403 Forbidden", "text/plain; charset=utf-8", &format!("error: {e}")),
         };
-    }
-    if method != "GET" && path != "/api/duck" && crate::auth::enabled() && !crate::auth::session_ok(&cookie) {
-        return reply(&conn, "401 Unauthorized", "text/plain; charset=utf-8", "error: нужен PIN панели");
     }
 
     // The cover of the playing track, fetched by the speaker (bypass/proxy).
@@ -213,12 +416,34 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             }
         };
     }
+    // Covers of playlists and recent tracks: /art/i1/artworks-…-t300x300.jpg is
+    // https://i1.sndcdn.com/artworks-…-t300x300.jpg, fetched by the speaker (bypass/proxy).
+    if method == "GET" && path.starts_with("/art/") {
+        let mut out = &conn;
+        let found = art_url(&path).and_then(|url| art(shared, &url));
+        return match found {
+            Some((kind, bytes)) => {
+                write!(
+                    out,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: max-age=604800\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                )?;
+                out.write_all(&bytes)?;
+                out.flush()
+            }
+            None => {
+                write!(out, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")?;
+                out.flush()
+            }
+        };
+    }
     // «Слушать здесь»: the playing track piped to the browser through the
     // speaker (it plays even where SoundCloud is blocked for the browser's
     // network). `id` must be the track playing now; `t` (ms) starts it there:
-    // MP3 and ADTS streams resync on frame headers, so the bytes before are
-    // skipped (by the bitrate SoundCloud uses: 128 / 160 kbit/s); MP4 starts
-    // from the beginning (the page knows from `stream_seekable`).
+    // an HLS stream from the segment holding `t` (nothing before it is
+    // downloaded); MP3 and ADTS then resync on frame headers, so the bytes up to
+    // `t` are skipped (by the bitrate SoundCloud uses: 128 / 160 kbit/s); MP4
+    // starts at the segment (a progressive MP4 file at 0: `stream_seekable`).
     if method == "GET" && (path == "/api/stream" || path.starts_with("/api/stream?")) {
         let mut out = &conn;
         let query = path.split_once('?').map_or("", |(_, q)| q);
@@ -241,22 +466,24 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             }
         }
         let _release = Release;
-        match client.open(&track) {
-            Ok((mut src, kind)) => {
+        // Not past the end (the whole track would be read just to be thrown away),
+        // and no overflow in the byte count below.
+        let t: u64 = param("t").parse::<u64>().unwrap_or(0).min(track.duration.unwrap_or(4 * 3600 * 1000));
+        match client.open_from(&track, t) {
+            Ok((mut src, kind, started)) => {
                 let (mime, bytes_per_ms) = match kind {
                     Kind::Mp4 => ("audio/mp4", 0),
                     Kind::Adts => ("audio/aac", 20),
                     _ => ("audio/mpeg", 16),
                 };
-                let t: u64 = param("t").parse().unwrap_or(0);
-                let skip = t * bytes_per_ms;
+                let skip = t.saturating_sub(started).saturating_mul(bytes_per_ms);
                 if skip > 0 {
                     let _ = std::io::copy(&mut (&mut src).take(skip), &mut std::io::sink());
                 }
+                let offset = if bytes_per_ms > 0 { t } else { started };
                 write!(
                     out,
-                    "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nX-Soundya-Offset: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-                    if bytes_per_ms > 0 { t } else { 0 }
+                    "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nX-Soundya-Offset: {offset}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
                 )?;
                 let mut buf = [0u8; 16 * 1024];
                 loop {
@@ -275,7 +502,21 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         }
     }
     let (status, kind, reply) = match (method.as_str(), path.as_str()) {
-        ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", PAGE.to_owned()),
+        ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", page().to_owned()),
+        // The developer build: its scripts and the end of the log (secrets cut out;
+        // POST, so only the panel itself and, with a PIN, only after it).
+        #[cfg(feature = "dev")]
+        ("GET", p) if crate::devpage::script(p).is_some() => {
+            ("200 OK", "text/javascript; charset=utf-8", crate::devpage::script(p).unwrap_or_default().to_owned())
+        }
+        #[cfg(feature = "dev")]
+        (m @ ("GET" | "POST"), "/api/dev/notes") => dev_notes(m, &body, &crate::state_dir()),
+        #[cfg(feature = "dev")]
+        ("POST", "/api/dev/log") => (
+            "200 OK",
+            "text/plain; charset=utf-8",
+            crate::report::log_tail(&crate::state_dir(), body.trim().parse().unwrap_or(80).clamp(1, 400)),
+        ),
         ("GET", "/api/status") => {
             let cached = shared.status_json.lock().unwrap().clone();
             let json = if cached.is_empty() {
@@ -438,6 +679,59 @@ pub fn prefetch_cover(shared: Arc<Shared>) {
     }
 }
 
+/// /art/<i0…i9>/<file>.jpg|png → the image on SoundCloud's CDN; anything else is refused
+/// (the speaker fetches only covers, never an address given by the page).
+fn art_url(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/art/")?;
+    let (host, file) = rest.split_once('/')?;
+    let host_ok = host.len() == 2 && host.starts_with('i') && host.as_bytes()[1].is_ascii_digit();
+    let file_ok = !file.is_empty()
+        && file.len() <= 160
+        && file.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        && !file.contains("..")
+        && (file.ends_with(".jpg") || file.ends_with(".png"));
+    (host_ok && file_ok).then(|| format!("https://{host}.sndcdn.com/{file}"))
+}
+
+/// Covers fetched lately (address, type, bytes), newest last; at most ~3 MB.
+static ARTS: std::sync::Mutex<Vec<(String, String, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+
+/// One agent for the covers (kept while the proxy setting is the same): its connections
+/// to the CDN are reused, a shelf of covers no longer makes a TLS handshake per picture.
+fn art_agent(shared: &Shared) -> Option<ureq::Agent> {
+    // Keyed by the bypass strategy too: switching it changes the agent but not the proxy.
+    type Kept = Option<(String, Option<crate::bypass::Strategy>, ureq::Agent)>;
+    static AGENT: std::sync::Mutex<Kept> = std::sync::Mutex::new(None);
+    let proxy = shared.proxy.lock().unwrap().clone();
+    let strategy = crate::bypass::active();
+    let mut g = AGENT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((p, st, a)) = &*g {
+        if *p == proxy && *st == strategy {
+            return Some(a.clone());
+        }
+    }
+    let a = crate::sc::build_agent(&proxy).ok()?;
+    *g = Some((proxy, strategy, a.clone()));
+    Some(a)
+}
+
+fn art(shared: &Shared, url: &str) -> Option<(String, Vec<u8>)> {
+    if let Some((_, kind, bytes)) = ARTS.lock().unwrap().iter().find(|a| a.0 == url) {
+        return Some((kind.clone(), bytes.clone()));
+    }
+    let agent = art_agent(shared)?;
+    let resp = crate::sc::get_retry(&agent, url, Duration::from_secs(15)).map_err(|e| eprintln!("web: art: {e}")).ok()?;
+    let kind = resp.header("Content-Type").filter(|k| k.starts_with("image/"))?.to_owned();
+    let mut bytes = Vec::new();
+    resp.into_reader().take(512 << 10).read_to_end(&mut bytes).ok()?;
+    let mut arts = ARTS.lock().unwrap();
+    arts.push((url.to_owned(), kind.clone(), bytes.clone()));
+    while arts.iter().map(|a| a.2.len()).sum::<usize>() > 3 << 20 {
+        arts.remove(0);
+    }
+    Some((kind, bytes))
+}
+
 /// The last cover fetched: (its SoundCloud address, type, bytes).
 static COVER: std::sync::Mutex<Option<(String, String, Vec<u8>)>> = std::sync::Mutex::new(None);
 
@@ -452,7 +746,7 @@ fn cover(shared: &Shared) -> Option<(String, Vec<u8>)> {
     }
     let proxy = shared.proxy.lock().unwrap().clone();
     let agent = crate::sc::build_agent(&proxy).ok()?;
-    let resp = match agent.get(&url).timeout(Duration::from_secs(15)).call() {
+    let resp = match crate::sc::get_retry(&agent, &url, Duration::from_secs(15)) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("web: cover: {e}");

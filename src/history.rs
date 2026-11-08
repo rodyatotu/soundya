@@ -23,6 +23,16 @@ pub struct Entry {
     pub cmd: String,
     /// Unix time, seconds.
     pub at: u64,
+    /// The track's cover on SoundCloud's CDN, "" if none (older entries too).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub art: String,
+    /// SoundCloud's track id (0: a set, or an entry from before ids).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub id: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -60,15 +70,21 @@ impl History {
         History { path, data, dirty: false, saved: Instant::now() }
     }
 
-    pub fn track(&mut self, name: String, link: Option<&str>) {
+    pub fn track(&mut self, name: String, link: Option<&str>, art: Option<String>, id: u64) {
         let Some(link) = link.filter(|l| l.starts_with("https://")) else { return };
-        push(&mut self.data.tracks, Entry { name, cmd: format!("replay {link}"), at: now() }, TRACKS);
+        let art = art.unwrap_or_default();
+        push(&mut self.data.tracks, Entry { name, cmd: format!("replay {link}"), at: now(), art, id }, TRACKS);
         self.dirty = true;
     }
 
     pub fn set(&mut self, name: String, cmd: String) {
-        push(&mut self.data.sets, Entry { name, cmd, at: now() }, SETS);
+        push(&mut self.data.sets, Entry { name, cmd, at: now(), art: String::new(), id: 0 }, SETS);
         self.dirty = true;
+    }
+
+    /// «Недавно играло» to play again: the ids of the recent tracks, newest first.
+    pub fn recent_ids(&self, max: usize) -> Vec<u64> {
+        self.data.tracks.iter().map(|e| e.id).filter(|id| *id != 0).take(max).collect()
     }
 
     pub fn clear(&mut self) {
@@ -104,7 +120,7 @@ mod tests {
     #[test]
     fn newest_first_without_repeats() {
         let mut list = VecDeque::new();
-        let e = |n: &str| Entry { name: n.into(), cmd: format!("play {n}"), at: 0 };
+        let e = |n: &str| Entry { name: n.into(), cmd: format!("play {n}"), at: 0, art: String::new(), id: 0 };
         push(&mut list, e("a"), 3);
         push(&mut list, e("b"), 3);
         push(&mut list, e("a"), 3);
@@ -119,13 +135,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("soundya-history-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut h = History::load(&dir);
-        h.track("Bonobo — Kerala".into(), Some("https://soundcloud.com/bonobo/kerala"));
-        h.track("no link".into(), None);
+        h.track("Bonobo — Kerala".into(), Some("https://soundcloud.com/bonobo/kerala"), Some("https://i1.sndcdn.com/artworks-x-t300x300.jpg".into()), 42);
+        h.track("no link".into(), None, None, 7);
         h.set("Плейлист: chill".into(), "playlist chill".into());
         h.flush(true);
         let h = History::load(&dir);
         assert_eq!(h.data.tracks.len(), 1);
         assert_eq!(h.data.tracks[0].cmd, "replay https://soundcloud.com/bonobo/kerala");
+        assert_eq!(h.data.tracks[0].art, "https://i1.sndcdn.com/artworks-x-t300x300.jpg");
+        // A file from before covers: entries load with none.
+        let old: Saved = serde_json::from_str(r#"{"tracks":[{"name":"a","cmd":"replay https://x","at":1}]}"#).unwrap();
+        assert_eq!((old.tracks[0].art.as_str(), old.tracks[0].id), ("", 0));
+        assert_eq!(h.recent_ids(10), [42]);
         assert_eq!(h.data.sets[0].cmd, "playlist chill");
         std::fs::remove_dir_all(&dir).unwrap();
     }
