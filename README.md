@@ -25,7 +25,7 @@
 **soundya** — небольшая программа, которая живёт прямо на рутованной Яндекс Станции и играет музыку из SoundCloud. Говорите «Алиса, включи Bonobo» — и колонка сама находит трек и включает его. Управлять можно и с телефона: у колонки появляется своя веб-страница.
 
 <p align="center">
-  <img src="docs/showcase.png" alt="Веб-панель soundya: плеер и очередь, Ambilight, моя музыка и история" width="100%">
+  <img src="docs/showcase.jpg" alt="Новая веб-панель soundya: главная с погодой и планами, ваша музыка с обложками, пульт для телевизора" width="100%">
 </p>
 
 ## Что нового в 0.5.00
@@ -293,7 +293,7 @@ adb shell "cd /tmp && tar -xf soundya-armv7.tar && sh /tmp/soundya/install.sh"
 
 ### 5. Настройте
 
-<p align="center"><img src="docs/banner-web.jpg" alt="Пульт в телефоне" width="100%"></p>
+<p align="center"><img src="docs/banner-web.jpg" alt="Пульт в телефоне: новая панель soundya на телефоне" width="100%"></p>
 
 
 Откройте **http://soundya.local:8765** (или `http://<IP-колонки>:8765`) → **Настройки**:

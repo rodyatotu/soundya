@@ -36,6 +36,7 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -80,6 +81,12 @@ TG_TOKEN = os.environ.get("SOUNDYA_TG_TOKEN", "").strip()
 TG_CHAT = os.environ.get("SOUNDYA_TG_CHAT", "").strip()
 # Only for tests (a fake Telegram); the real one by default.
 TG_API = os.environ.get("SOUNDYA_TG_API", "https://api.telegram.org").rstrip("/")
+# SOUNDYA_REPORT_RELAY=http://<other server>:8787/report: this server cannot reach Telegram,
+# so bug reports go on to that one (it sends them to the bot). Feedback and stats stay here.
+REPORT_RELAY = os.environ.get("SOUNDYA_REPORT_RELAY", "").strip()
+# On the receiving server: the relaying servers' addresses, whose X-Forwarded-For is trusted
+# (else every relayed report would count as one sender: one per 20 s for all speakers).
+RELAY_FROM = {a.strip() for a in os.environ.get("SOUNDYA_RELAY_FROM", "").split(",") if a.strip()}
 REPORT_MAX = 8 << 20  # bytes of JSON (a screenshot of up to 3 MB in base64, logs)
 REPORT_FILES = {"system.log", "error.log", "diagnostics.json", "screenshot.png", "screenshot.jpg"}
 REPORT_ID_RE = re.compile(r"^SY-[0-9A-F]{8}$")
@@ -111,6 +118,7 @@ def open_db(path):
             version TEXT, model TEXT, airplay INTEGER, pc INTEGER);
         CREATE TABLE IF NOT EXISTS days (day TEXT, id TEXT, PRIMARY KEY (day, id));
         CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, received TEXT, message_id INTEGER);
+        CREATE INDEX IF NOT EXISTS speakers_last_seen ON speakers (last_seen);
         """
     )
     return con
@@ -163,7 +171,24 @@ def collapse(rows):
     return sorted(out, key=lambda x: -x["count"])
 
 
+_stats_cache = {"at": 0.0, "value": None}
+
+
+def invalidate_stats():
+    _stats_cache["at"] = 0.0
+
+
 def stats():
+    """Cached for a minute: the page and stats.json no longer scan the tables on every visit."""
+    t = time.monotonic()
+    if _stats_cache["value"] is not None and t - _stats_cache["at"] < 60:
+        return _stats_cache["value"]
+    value = _stats()
+    _stats_cache.update(at=t, value=value)
+    return value
+
+
+def _stats():
     since = (now() - dt.timedelta(days=ACTIVE_DAYS)).isoformat()
     with db_lock:
         total = db.execute("SELECT COUNT(*) FROM speakers").fetchone()[0]
@@ -177,12 +202,14 @@ def stats():
         airplay = db.execute("SELECT COUNT(*) FROM speakers WHERE last_seen >= ? AND airplay", (since,)).fetchone()[0]
         pc = db.execute("SELECT COUNT(*) FROM speakers WHERE last_seen >= ? AND pc", (since,)).fetchone()[0]
         days = db.execute("SELECT day, COUNT(*) FROM days GROUP BY day ORDER BY day DESC LIMIT 60").fetchall()
+    # The page shows the top 30: a flood of made-up models and versions once made it
+    # half a million rows long, and it never finished building.
     return {
         "active": active,
         "active_days": ACTIVE_DAYS,
         "ever": total,
-        "models": collapse(raw_models),
-        "versions": [{"version": v or "?", "count": c} for v, c in versions],
+        "models": collapse(raw_models)[:30],
+        "versions": [{"version": v or "?", "count": c} for v, c in versions[:30]],
         "airplay": airplay,
         "pc": pc,
         "days": [{"day": d, "count": c} for d, c in days],
@@ -264,7 +291,8 @@ def sender_key(handler):
     """Who is sending, for the rate limit only (memory, never stored). Behind
     Caddy every request comes from 127.0.0.1: then its X-Forwarded-For counts."""
     ip = handler.client_address[0] if handler.client_address else "?"
-    if ip in ("127.0.0.1", "::1"):
+    # Caddy on this machine, or a server that relays reports here (SOUNDYA_RELAY_FROM).
+    if ip in ("127.0.0.1", "::1") or ip in RELAY_FROM:
         fwd = handler.headers.get("X-Forwarded-For", "").split(",")[0].strip()
         if fwd:
             return fwd
@@ -337,6 +365,35 @@ def accept_feedback(ip, record=True):
     return True
 
 
+# /ping flood guard (memory only, nothing about senders is stored). A speaker pings once a
+# day; new installation ids are rare. A flood of random ids made the counter show 470 000
+# «speakers» and the page unusable.
+PING_NEW_PER_IP_DAY = 3        # new ids one address may add per day (a home has 1–3 speakers)
+PING_NEW_PER_HOUR = 120        # new ids per hour from everyone together
+_ping_lock = threading.Lock()
+_ping_ip = {}                  # sender -> (day, new ids that day)
+_ping_hour = collections.deque()
+
+
+def allow_new_speaker(key):
+    """May this sender add one more new id now? Counts it if so."""
+    today = dt.date.today().isoformat()
+    t = time.monotonic()
+    with _ping_lock:
+        while _ping_hour and t - _ping_hour[0] > 3600:
+            _ping_hour.popleft()
+        day, n = _ping_ip.get(key, (today, 0))
+        if day != today:
+            n = 0
+        if n >= PING_NEW_PER_IP_DAY or len(_ping_hour) >= PING_NEW_PER_HOUR:
+            return False
+        _ping_ip[key] = (today, n + 1)
+        _ping_hour.append(t)
+        if len(_ping_ip) > 100_000:  # a new day, or a huge spread of addresses: start over
+            _ping_ip.clear()
+        return True
+
+
 def note_feedback(ip):
     with _fb_lock:
         nowt = time.monotonic()
@@ -360,6 +417,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        # Any failure answers 500 with a line in the journal: an unhandled error used to close
+        # the connection with nothing (the browser's «ERR_EMPTY_RESPONSE»).
+        try:
+            self.get()
+        except Exception as e:
+            print(f"GET {self.path.split('?')[0]}: {type(e).__name__}: {e}", flush=True)
+            try:
+                self.send(500, "server error, see journalctl -u soundya-stats", "text/plain; charset=utf-8")
+            except Exception:
+                pass
+
+    def get(self):
         path = self.path.split("?")[0]
         if path == "/badge.svg":
             n = active_count()
@@ -393,6 +462,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, "bad ping", "text/plain")
             t = now()
             with db_lock:
+                known = db.execute("SELECT 1 FROM speakers WHERE id = ?", (sid,)).fetchone() is not None
+            # A known speaker always updates; a new id only within the limits.
+            if not known and not allow_new_speaker(sender_key(self)):
+                return self.send(429, "too many new speakers", "text/plain")
+            with db_lock:
                 db.execute(
                     """INSERT INTO speakers VALUES (?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen, version=excluded.version,
@@ -401,6 +475,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 db.execute("INSERT OR IGNORE INTO days VALUES (?, ?)", (t.date().isoformat(), sid))
                 db.commit()
+            if not known:
+                invalidate_stats()
             self.send(200, "ok", "text/plain")
         except (ValueError, json.JSONDecodeError):
             self.send(400, "bad ping", "text/plain")
@@ -434,11 +510,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def do_report(self):
-        if not TG_TOKEN or not TG_CHAT:
-            return self.send(503, "reports disabled", "text/plain")
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length > REPORT_MAX:
             return self.send(413, "too large", "text/plain")
+        # A server that cannot reach Telegram passes reports on to one that can.
+        if REPORT_RELAY:
+            return self.relay_report(length)
+        if not TG_TOKEN or not TG_CHAT:
+            return self.send(503, "reports disabled", "text/plain")
         try:
             p = json.loads(self.rfile.read(length) or b"{}")
         except (ValueError, json.JSONDecodeError):
@@ -453,6 +532,52 @@ class Handler(BaseHTTPRequestHandler):
         if code == 200 and not seen:
             note_feedback(key)
         self.send(code, text, "text/plain")
+
+
+    def relay_report(self, length):
+        body = self.rfile.read(length)
+        req = urllib.request.Request(REPORT_RELAY, data=body, method="POST",
+                                     headers={"Content-Type": "application/json", "X-Forwarded-For": sender_key(self)})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                code, text = r.status, r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            code, text = e.code, e.read().decode("utf-8", "replace")
+        except Exception as e:
+            print(f"report relay {REPORT_RELAY}: {e}", flush=True)
+            # 502: the speaker keeps the report and tries again later.
+            code, text = 502, "relay unreachable"
+        self.send(code, text[:500], "text/plain; charset=utf-8")
+
+
+def purge(since):
+    """Ids first seen on/after `since` that pinged on one day only: a real speaker pings every
+    day it is on, so it comes back by itself tomorrow if it was caught here. One pass over
+    each table (days has no index by id alone: a per-row count took hours on a flood)."""
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", since):
+        print("дата — в виде 2026-11-01")
+        return 2
+    with db_lock:
+        db.executescript(
+            """DROP TABLE IF EXISTS temp.dc; DROP TABLE IF EXISTS temp.junk;
+               CREATE TEMP TABLE dc (id TEXT PRIMARY KEY, c INTEGER);
+               INSERT INTO dc SELECT id, COUNT(*) FROM days GROUP BY id;
+               CREATE TEMP TABLE junk (id TEXT PRIMARY KEY);"""
+        )
+        db.execute(
+            """INSERT INTO junk SELECT s.id FROM speakers s LEFT JOIN dc ON dc.id = s.id
+               WHERE substr(s.first_seen, 1, 10) >= ? AND COALESCE(dc.c, 0) <= 1""",
+            (since,),
+        )
+        n = db.execute("SELECT COUNT(*) FROM junk").fetchone()[0]
+        db.execute("DELETE FROM days WHERE id IN (SELECT id FROM junk)")
+        db.execute("DELETE FROM speakers WHERE id IN (SELECT id FROM junk)")
+        db.commit()
+        db.executescript("DROP TABLE temp.dc; DROP TABLE temp.junk;")
+        db.execute("VACUUM")
+        left = db.execute("SELECT COUNT(*) FROM speakers").fetchone()[0]
+    print(f"удалено накрученных id: {n}; осталось колонок за всё время: {left}")
+    return 0
 
 
 def selftest():
@@ -513,8 +638,17 @@ def main():
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--db", default="stats.db")
     ap.add_argument("--selftest", action="store_true", help="send a test report to the bot and exit")
+    ap.add_argument("--flood-report", action="store_true", help="new ids per day (to see when a flood started) and exit")
+    ap.add_argument("--purge-since", metavar="YYYY-MM-DD",
+                    help="remove ids first seen on/after this day that pinged on one day only (a flood), and exit")
     a = ap.parse_args()
     db = open_db(a.db)
+    if a.flood_report:
+        for day, n in db.execute("SELECT substr(first_seen, 1, 10), COUNT(*) FROM speakers GROUP BY 1 ORDER BY 1 DESC LIMIT 30"):
+            print(f"{day}  новых id: {n}")
+        raise SystemExit(0)
+    if a.purge_since:
+        raise SystemExit(purge(a.purge_since))
     if a.selftest:
         if not TG_TOKEN or not TG_CHAT:
             print("selftest: set SOUNDYA_TG_TOKEN and SOUNDYA_TG_CHAT (or source /etc/soundya-stats.env)")

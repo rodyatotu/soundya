@@ -254,9 +254,70 @@ def telegram(out):
     img.convert("RGB").save(out, quality=93)
 
 
+def phone(shot, width, tilt=0.0):
+    """A screenshot in a phone frame: rounded glass body, a thin bezel, soft shadow, optional tilt."""
+    im = Image.open(os.path.join(ROOT, "docs", "screens", shot)).convert("RGB")
+    sw = width - 28
+    sh = int(im.height * sw / im.width)
+    sh = min(sh, int(sw * 2.05))  # a phone's proportions: cut long screenshots at the bottom
+    im = im.resize((sw, int(im.height * sw / im.width)), Image.LANCZOS).crop((0, 0, sw, sh))
+    W, H = width, sh + 28
+    body = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(body)
+    d.rounded_rectangle([0, 0, W - 1, H - 1], radius=int(W * 0.13), fill=(24, 18, 40, 255), outline=(150, 130, 220, 120), width=3)
+    m = Image.new("L", (sw, sh), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, sw - 1, sh - 1], radius=int(W * 0.11), fill=255)
+    body.paste(im, (14, 14), m)
+    if tilt:
+        body = body.rotate(tilt, resample=Image.BICUBIC, expand=True)
+    return body
+
+
+def drop(img, el, x, y, blur=40, alpha=150):
+    sh = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    a = el.split()[3].point(lambda v: v * alpha // 255)
+    sh.paste((10, 0, 30, 255), (x + 10, y + 30), a)
+    img.alpha_composite(sh.filter(ImageFilter.GaussianBlur(blur)))
+    img.alpha_composite(el, (x, y))
+
+
+def showcase(out):
+    """Three phones with the new panel, captions on top (replaces the 0.4 screenshots)."""
+    w, h = 1600, 900
+    img = background(w, h)
+    items = [("home.jpg", "Главная и погода"), ("music.jpg", "Ваша музыка"), ("remote.jpg", "Пульт для ТВ")]
+    pw = 370
+    gap = (w - 3 * pw) // 4
+    for i, (shot, title) in enumerate(items):
+        x = gap + i * (pw + gap)
+        neon_text(img, (x + pw // 2, 62), title, font(40, "Heavy"), colors=[(255, 255, 255), (230, 215, 255)], glow=0.35, anchor="mm")
+        ph = phone(shot, pw)
+        drop(img, ph, x, 110)
+    img.convert("RGB").save(out, quality=90)
+
+
+def web_banner(out):
+    """«Пульт в телефоне»: the README section banner, two tilted phones with the new panel."""
+    w, h = 1600, 500
+    img = background(w, h)
+    big = font(112, "Black", italic=True)
+    white = [(255, 255, 255), (240, 225, 255)]
+    neon_text(img, (90, 140), "Пульт", big, colors=white, glow=0.5, anchor="lm")
+    neon_text(img, (90, 262), "в телефоне", big, colors=white, glow=0.5, anchor="lm")
+    text(img, (96, 350), "плеер, музыка, пульт ТВ, планы и Ambilight", font(30, "Medium"), (215, 205, 240))
+    text(img, (96, 392), "на soundya.local:8765", font(30, "Medium"), (215, 205, 240))
+    p1 = phone("home.jpg", 330, tilt=8)
+    p2 = phone("remote.jpg", 330, tilt=-6)
+    drop(img, p1, 940, 40)
+    drop(img, p2, 1235, 10)
+    img.convert("RGB").save(out, quality=90)
+
+
 if __name__ == "__main__":
     os.makedirs(os.path.join(ROOT, "dist"), exist_ok=True)
     hero(os.path.join(ROOT, "docs", "banner-050.jpg"))
     whatsnew(os.path.join(ROOT, "docs", "banner-whatsnew.jpg"))
     telegram(os.path.join(ROOT, "dist", "telegram-050.jpg"))
+    showcase(os.path.join(ROOT, "docs", "showcase.jpg"))
+    web_banner(os.path.join(ROOT, "docs", "banner-web.jpg"))
     print("banners: docs/banner-050.jpg, docs/banner-whatsnew.jpg, dist/telegram-050.jpg")
