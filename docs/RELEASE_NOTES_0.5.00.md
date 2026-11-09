@@ -77,7 +77,7 @@
 ---
 
 <p align="center">
-  <b>💬 Сообщество в Telegram:</b> <a href="https://t.me/+t9kgMTEpnQM3N2Vk">t.me/+t9kgMTEpnQM3N2Vk</a><br>
+  <b>💬 Сообщество в Telegram:</b> <a href="https://t.me/+ftjTac-KQkgxY2E0">t.me/+ftjTac-KQkgxY2E0</a><br>
   Нашли баг — кнопка «Сообщить об ошибке» на странице колонки. Нравится — ⭐ репозиторию и расскажите другу.
 </p>
 

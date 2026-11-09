@@ -52,7 +52,7 @@
 ## 3. Запуск
 ```sh
 export SOUNDYA_BOT_TOKEN='123456:ABC-...'            # обязательно
-export SOUNDYA_CHANNEL_INVITE='https://t.me/+t9kgMTEpnQM3N2Vk'   # ваша ссылка
+export SOUNDYA_CHANNEL_INVITE='https://t.me/+ftjTac-KQkgxY2E0'   # ваша ссылка
 # export SOUNDYA_TARGET_CHAT='-1001234567890'        # заявки, одноразовые ссылки, /ban
 # export SOUNDYA_ADMINS='123456789'                   # кто может /stats, /ban
 python3 server/community-bot.py
@@ -69,7 +69,7 @@ After=network-online.target
 
 [Service]
 Environment=SOUNDYA_BOT_TOKEN=123456:ABC-...
-Environment=SOUNDYA_CHANNEL_INVITE=https://t.me/+t9kgMTEpnQM3N2Vk
+Environment=SOUNDYA_CHANNEL_INVITE=https://t.me/+ftjTac-KQkgxY2E0
 # Environment=SOUNDYA_TARGET_CHAT=-1001234567890
 WorkingDirectory=/opt/soundya-bot
 ExecStart=/usr/bin/python3 /opt/soundya-bot/community-bot.py

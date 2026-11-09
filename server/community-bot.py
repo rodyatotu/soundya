@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 
 # Свой бот или бот отчётов (stats.py): один и тот же токен можно использовать для обоих.
 TOKEN = (os.environ.get("SOUNDYA_BOT_TOKEN", "") or os.environ.get("SOUNDYA_TG_TOKEN", "")).strip()
-CHANNEL_INVITE = os.environ.get("SOUNDYA_CHANNEL_INVITE", "https://t.me/+t9kgMTEpnQM3N2Vk").strip()
+CHANNEL_INVITE = os.environ.get("SOUNDYA_CHANNEL_INVITE", "https://t.me/+ftjTac-KQkgxY2E0").strip()
 TARGET_CHAT = os.environ.get("SOUNDYA_TARGET_CHAT", "").strip()
 CONSENTS = os.environ.get("SOUNDYA_CONSENTS", "consents.jsonl")
 DECLINES = os.environ.get("SOUNDYA_DECLINES", "declines.jsonl")
