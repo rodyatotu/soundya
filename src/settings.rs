@@ -46,6 +46,21 @@ pub struct Settings {
     /// Telegram contacts for «напиши маме в телеграм …».
     #[serde(default)]
     pub pc_contacts: Vec<Contact>,
+    /// The name the computer above is called by («ноутбук»); "" = just «компьютер».
+    #[serde(default)]
+    pub pc_name: String,
+    /// More computers, each by its name: «усыпи ноутбук», «выключи компьютер в спальне».
+    #[serde(default)]
+    pub pcs_more: Vec<PcDevice>,
+    /// The name of the TV below («гостиная»); "" = just «телевизор».
+    #[serde(default)]
+    pub tv_name: String,
+    /// More TVs / projectors, each by its name.
+    #[serde(default)]
+    pub tvs_more: Vec<TvDevice>,
+    /// The TV the remote and the commands without a name go to: its name, "" = the first one.
+    #[serde(default)]
+    pub tv_active: String,
     /// AirPlay receiver on.
     #[serde(default = "yes")]
     pub airplay: bool,
@@ -341,6 +356,37 @@ pub struct Autostart {
     pub when: String,
 }
 
+/// One more TV or projector (the first is `tv_host` / `tv_name`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct TvDevice {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub host: String,
+}
+
+/// One more computer (the first is `pc_host` / `pc_token` / `pc_mac` / `pc_name`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PcDevice {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub mac: String,
+}
+
+/// A TV or computer as voice and the panel pick it: its name and where it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    pub name: String,
+    pub host: String,
+    pub token: String,
+    pub mac: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Contact {
     /// How it is said: "мама|маме|маму".
@@ -546,6 +592,11 @@ impl Default for Settings {
             pc_token: String::new(),
             pc_mac: String::new(),
             pc_contacts: Vec::new(),
+            pc_name: String::new(),
+            pcs_more: Vec::new(),
+            tv_name: String::new(),
+            tvs_more: Vec::new(),
+            tv_active: String::new(),
             airplay: true,
             bt_mac: String::new(),
             bt_name: String::new(),
@@ -804,6 +855,43 @@ impl Settings {
         mask(&self.pc_token)
     }
 
+    /// Every TV: the first (`tv_host`) and the others; only those with an address.
+    pub fn tvs(&self) -> Vec<Device> {
+        let first = Device { name: self.tv_name.trim().to_owned(), host: self.tv_host.trim().to_owned(), token: String::new(), mac: String::new() };
+        std::iter::once(first)
+            .chain(self.tvs_more.iter().map(|t| Device { name: t.name.trim().to_owned(), host: t.host.trim().to_owned(), token: String::new(), mac: String::new() }))
+            .filter(|d| !d.host.is_empty())
+            .collect()
+    }
+
+    /// Every computer: the first (`pc_*`) and the others; those with an address or a MAC.
+    pub fn pcs(&self) -> Vec<Device> {
+        let first = Device { name: self.pc_name.trim().to_owned(), host: self.pc_host.trim().to_owned(), token: self.pc_token.trim().to_owned(), mac: self.pc_mac.trim().to_owned() };
+        std::iter::once(first)
+            .chain(self.pcs_more.iter().map(|p| Device { name: p.name.trim().to_owned(), host: p.host.trim().to_owned(), token: p.token.trim().to_owned(), mac: p.mac.trim().to_owned() }))
+            .filter(|d| !d.host.is_empty() || !d.mac.is_empty())
+            .collect()
+    }
+
+    /// The TV the remote works with: the chosen one, else the first.
+    pub fn active_tv(&self) -> Option<Device> {
+        let tvs = self.tvs();
+        tvs.iter().find(|t| !self.tv_active.is_empty() && t.name == self.tv_active).cloned().or_else(|| tvs.into_iter().next())
+    }
+
+    /// The same settings aimed at another TV or computer: what `tv::run` / `pc::run` use.
+    pub fn with_tv(&self, d: &Device) -> Settings {
+        Settings { tv_host: d.host.clone(), tv_name: d.name.clone(), ..self.clone() }
+    }
+    pub fn with_pc(&self, d: &Device) -> Settings {
+        Settings { pc_host: d.host.clone(), pc_token: d.token.clone(), pc_mac: d.mac.clone(), pc_name: d.name.clone(), ..self.clone() }
+    }
+
+    /// The extra computers for the page: their keys masked like the first one's.
+    pub fn masked_pcs_more(&self) -> Vec<PcDevice> {
+        self.pcs_more.iter().map(|p| PcDevice { token: mask(&p.token), ..p.clone() }).collect()
+    }
+
     /// The proxy in use: "" when switched off.
     pub fn use_proxy(&self) -> &str {
         if self.proxy_on { &self.proxy } else { "" }
@@ -816,11 +904,11 @@ impl Settings {
 
     /// Commands can go to the PC (switching on needs only the MAC address).
     pub fn pc_configured(&self) -> bool {
-        self.pc_on && (!self.pc_host.trim().is_empty() || !self.pc_mac.trim().is_empty())
+        self.pc_on && !self.pcs().is_empty()
     }
 
     pub fn tv_configured(&self) -> bool {
-        self.tv_on && !self.tv_host.trim().is_empty()
+        self.tv_on && !self.tvs().is_empty()
     }
 
     /// The installer's choice (/data/opt/soundya/features, «airplay=0» per line),
@@ -1046,5 +1134,22 @@ mod tests {
         assert_eq!(s.masked_proxy(), "http://1.2.3.4:3128");
         let s = Settings { token: "2-123456-abcdEFGH".into(), ..Default::default() };
         assert_eq!(s.masked_token(), "••••••••EFGH");
+    }
+
+    #[test]
+    fn several_tvs_and_pcs() {
+        let mut s = Settings { tv_host: "10.0.0.2".into(), tv_name: "Гостиная".into(), pc_host: "10.0.0.5".into(), pc_token: "k1".into(), ..Default::default() };
+        s.tvs_more.push(TvDevice { name: "Спальня".into(), host: "10.0.0.3".into() });
+        s.pcs_more.push(PcDevice { name: "Ноутбук".into(), host: "10.0.0.6".into(), token: "secretkey9".into(), mac: String::new() });
+        assert_eq!(s.tvs().len(), 2);
+        assert_eq!(s.active_tv().unwrap().host, "10.0.0.2", "the first by default");
+        s.tv_active = "Спальня".into();
+        assert_eq!(s.active_tv().unwrap().host, "10.0.0.3");
+        let n = s.pcs()[1].clone();
+        assert_eq!((s.with_pc(&n).pc_host.as_str(), s.with_pc(&n).pc_token.as_str()), ("10.0.0.6", "secretkey9"));
+        assert_eq!(s.masked_pcs_more()[0].token, "••••••••key9");
+        // Settings from before: no names, one of each, as it was.
+        let old: Settings = serde_json::from_str(r#"{"tv_host":"1.2.3.4","pc_host":"1.2.3.5"}"#).unwrap();
+        assert_eq!((old.tvs().len(), old.pcs().len(), old.active_tv().unwrap().host.as_str()), (1, 1, "1.2.3.4"));
     }
 }

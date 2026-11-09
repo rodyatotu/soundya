@@ -128,6 +128,12 @@
   .contact input { min-width: 0; }
   .contact .who { flex: 1.3; }
   .contact .to { flex: 1; }
+  .devrow { flex-wrap: wrap; }
+  .devrow .dname, .devrow .dhost { flex: 1 1 140px; }
+  .devrow .dtoken, .devrow .dmac { flex: 1 1 120px; }
+  .devrow .dtest { width: auto; padding: 8px 12px; }
+  .tvpick { margin-left: auto; font: inherit; font-size: 13px; color: var(--ink); background: var(--field); border: 1px solid var(--glass-edge);
+    border-radius: 999px; padding: 4px 10px; max-width: 46%; }
   .contact button { flex: none; width: 40px; padding: 8px 0; }
   #autolist select { flex: 1 1 140px; min-width: 0; appearance: auto; }
   #autolist input { flex: none; width: 5.5em; }
@@ -964,7 +970,7 @@
 
   <section class="tab" id="tab-remote">
     <div class="widget bigremote" data-remote>
-      <div class="whead"><b>Пульт телевизора</b><button class="pill" onclick="openSettings('devices', 'tvsection')">Настройки</button></div>
+      <div class="whead"><b>Пульт телевизора</b><select class="tvpick" aria-label="Какой телевизор" hidden onchange="pickTv(this.value)"></select><button class="pill" onclick="openSettings('devices', 'tvsection')">Настройки</button></div>
       <div class="wremote">
         <div class="dpad">
           <button data-k="up" aria-label="Вверх"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
@@ -1172,7 +1178,7 @@
       <div id="wweather" class="wwx"><p class="hint">Загружаю…</p></div>
     </div>
     <div class="widget" data-w="remote">
-      <div class="whead"><b>Пульт ТВ</b><button class="pill" onclick="openSettings('devices')">Как голосом</button></div>
+      <div class="whead"><b>Пульт ТВ</b><select class="tvpick" aria-label="Какой телевизор" hidden onchange="pickTv(this.value)"></select><button class="pill" onclick="openSettings('devices')">Как голосом</button></div>
       <div class="wremote">
         <div class="dpad">
           <button data-k="up" aria-label="Вверх"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
@@ -1645,6 +1651,9 @@
       </div>
       <p class="hint">Или впишите данные вручную ниже (Windows: программа <code>pc/install.cmd</code> из репозитория покажет их).</p>
     </div>
+    <label class="field">Имя — как звать голосом (если компьютеров несколько)
+      <input type="text" id="pcname" placeholder="например: ноутбук" autocomplete="off">
+    </label>
     <label class="field">Адрес компьютера
       <input type="text" id="pchost" placeholder="192.168.1.50" autocomplete="off" spellcheck="false">
     </label>
@@ -1654,6 +1663,12 @@
     <label class="field">MAC-адрес — чтобы включать компьютер
       <input type="text" id="pcmac" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" spellcheck="false">
     </label>
+    <div class="field">Ещё компьютеры
+      <p class="hint">У каждого — своё имя: «Алиса, усыпи ноутбук», «выключи компьютер в спальне». Без имени — первый.
+        Ключ показывает приложение soundya на том компьютере.</p>
+      <div id="pcsmore"></div>
+      <button class="ghost" onclick="addDev('pc')">+ Добавить компьютер</button>
+    </div>
     <div class="field">Контакты Telegram
       <p class="hint">Для «напиши контакту в телеграм …». Слева — как вы называете человека, через запятую:
         <i>контакт, контакту, контакта</i>. Справа — <code>@ник</code> или номер телефона.</p>
@@ -1691,9 +1706,18 @@
       «включи на ютубе котиков на проекторе», «пауза на проекторе», «сделай громче на телевизоре».
       На телевизоре: «Настройки» → «Об устройстве» → 7 раз нажмите на «Сборка», затем в «Для разработчиков» включите
       «Отладку по USB» (и «Отладку по сети», если такой пункт есть). Адрес — в «Сеть» → ваша сеть.</p>
+    <label class="field">Имя — как звать голосом (если телевизоров несколько)
+      <input type="text" id="tvname" placeholder="например: гостиная" autocomplete="off">
+    </label>
     <label class="field">Адрес телевизора
       <input type="text" id="tvhost" placeholder="192.168.0.50" autocomplete="off" spellcheck="false">
     </label>
+    <div class="field">Ещё телевизоры и проекторы
+      <p class="hint">У каждого — своё имя: «Алиса, выключи телевизор в спальне», «открой ютуб на кухне»,
+        «Алиса, пульт спальня». Пульт на панели переключается вверху, рядом с его названием.</p>
+      <div id="tvsmore"></div>
+      <button class="ghost" onclick="addDev('tv')">+ Добавить телевизор</button>
+    </div>
     <div class="row">
       <button class="primary" onclick="testTv()" id="tvtestbtn">Сохранить и подключить</button>
     </div>
@@ -3040,8 +3064,8 @@ const WIDGETS = {
 // Shown only when there is something behind them.
 function widgetReady(k) {
   const st = settings || {};
-  if (k === 'remote') return !!(st.tv_on && st.tv_host);
-  if (k === 'pc') return !!(st.pc_on && (st.pc_host || st.pc_mac));
+  if (k === 'remote') return !!(st.tv_on && (st.tv_host || (st.tvs_more || []).length));
+  if (k === 'pc') return !!(st.pc_on && (st.pc_host || st.pc_mac || (st.pcs_more || []).length));
   if (k === 'scenes') return (st.macros || []).some(m => m.phrase && m.script);
   return true;
 }
@@ -3497,8 +3521,9 @@ function renderStatusRow(s) {
   ];
   // Green when the receiver is up (ready to take a phone), red on its error; «играет» while it plays.
   if (st.airplay) { const ap = s.airplay || {}; parts.push(pill('AirPlay', ap.error ? 'bad' : ap.active || ap.ready ? 'good' : 'slow', ap.active ? 'играет' : '')); }
-  if (st.pc_on && (st.pc_host || st.pc_mac)) parts.push(pill('ПК', 'good', ''));
-  if (st.tv_on && st.tv_host) parts.push(pill('ТВ', 'good', ''));
+  const nPc = (st.pc_host || st.pc_mac ? 1 : 0) + (st.pcs_more || []).length, nTv = (st.tv_host ? 1 : 0) + (st.tvs_more || []).length;
+  if (st.pc_on && nPc) parts.push(pill(nPc > 1 ? 'ПК ×' + nPc : 'ПК', 'good', ''));
+  if (st.tv_on && nTv) parts.push(pill(nTv > 1 ? 'ТВ ×' + nTv : 'ТВ', 'good', ''));
   if (s.update && s.update.available) parts.push(pill('Обновление', 'slow', esc(s.update.latest)));
   parts.push('<span class="spill more" aria-hidden="true">›</span>');
   const html = parts.join('');
@@ -4888,6 +4913,7 @@ async function refresh() {
 
   settings = s.settings;
   applyRemoteTab();
+  renderTvPick(settings);
   // «сохранено, проверяю вход…» was the save's answer: replaced once the check is done.
   for (const el of document.querySelectorAll('.msg')) {
     if (!/проверяю вход/.test(el.textContent)) continue;
@@ -4952,6 +4978,10 @@ async function refresh() {
     maybeWizard(settings);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';
+    $('pcname').value = settings.pc_name || '';
+    $('tvname').value = settings.tv_name || '';
+    renderDevs('pc', settings.pcs_more || []);
+    renderDevs('tv', settings.tvs_more || []);
     $('pctoken').value = settings.pc_token || '';
     $('pcmac').value = settings.pc_mac || '';
     renderContacts(settings.pc_contacts || []);
@@ -5071,6 +5101,7 @@ function settingsBody(extra) {
     light_speed: Number($('lightspeed').value), light_intensity: Number($('lightint').value),
     light_bass: $('lightbass').value, light_mid: $('lightmid').value, light_high: $('lighthigh').value,
     pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value,
+    pc_name: $('pcname').value, pcs_more: readDevs('pc'), tv_name: $('tvname').value, tvs_more: readDevs('tv'),
     pc_contacts: readContacts(),
     airplay: $('airplay').checked, airplay_name: $('airplayname').value, airplay_icon: $('airplayicon').value,
     stats: $('stats').checked, share_heard: $('shareheard').checked,
@@ -5262,6 +5293,78 @@ function contactRow(c) {
   row.append(who, to, del);
   return row;
 }
+// ---- several TVs and computers ----
+function devRow(kind, d) {
+  const row = document.createElement('div');
+  row.className = 'contact devrow'; row.dataset.kind = kind;
+  const field = (cls, ph, val, type) => {
+    const i = document.createElement('input');
+    i.className = cls; i.type = type || 'text'; i.placeholder = ph; i.value = val || '';
+    i.autocomplete = 'off'; i.spellcheck = false; return i;
+  };
+  const parts = [field('dname', 'имя: спальня', d.name), field('dhost', '192.168.0.51', d.host)];
+  if (kind === 'pc') parts.push(field('dtoken', 'ключ', d.token, 'password'), field('dmac', 'MAC (необязательно)', d.mac));
+  const test = document.createElement('button');
+  test.textContent = 'Проверить'; test.className = 'dtest';
+  test.onclick = async () => {
+    const name = row.querySelector('.dname').value.trim(), msg = $(kind === 'pc' ? 'pcmsg' : 'tvmsg');
+    if (!name) { show(msg, 'error: сначала дайте устройству имя'); return; }
+    busy(msg, 'Сохраняю и проверяю «' + name + '»…');
+    const saved = await post('/api/settings', settingsBody({}));
+    if (saved.startsWith('error')) { show(msg, saved); return; }
+    settingsLoaded = false;
+    show(msg, await post('/api/cmd', 'on ' + name + '\t' + (kind === 'pc' ? 'pc ping' : 'tv ping')));
+    refresh();
+  };
+  const del = document.createElement('button');
+  del.textContent = '×'; del.title = 'Удалить'; del.setAttribute('aria-label', 'Удалить устройство');
+  del.onclick = () => row.remove();
+  row.append(...parts, test, del);
+  return row;
+}
+function renderDevs(kind, list) {
+  const box = $(kind === 'pc' ? 'pcsmore' : 'tvsmore');
+  // Not while it is being filled in (the status comes back every few seconds).
+  if (box.contains(document.activeElement)) return;
+  box.innerHTML = '';
+  list.forEach(d => box.append(devRow(kind, d)));
+}
+function addDev(kind) {
+  const row = devRow(kind, {});
+  $(kind === 'pc' ? 'pcsmore' : 'tvsmore').append(row);
+  row.querySelector('input').focus();
+}
+function readDevs(kind) {
+  return [...document.querySelectorAll(`#${kind === 'pc' ? 'pcsmore' : 'tvsmore'} .devrow`)].map(r => {
+    const v = c => (r.querySelector(c) || {}).value || '';
+    return kind === 'pc' ? { name: v('.dname'), host: v('.dhost'), token: v('.dtoken'), mac: v('.dmac') } : { name: v('.dname'), host: v('.dhost') };
+  }).filter(d => d.host.trim() || (d.mac || '').trim());
+}
+// The remote's TV picker: shown when there is more than one.
+function renderTvPick(st) {
+  const tvs = [];
+  if ((st.tv_host || '').trim()) tvs.push({ name: st.tv_name || '', label: st.tv_name || 'Телевизор' });
+  for (const t of st.tvs_more || []) if ((t.host || '').trim()) tvs.push({ name: t.name, label: t.name });
+  const sig = JSON.stringify([tvs, st.tv_active, tvPicked && Date.now() - tvPicked.at < 6000]);
+  document.querySelectorAll('.tvpick').forEach(sel => {
+    sel.hidden = tvs.length < 2;
+    if (sel.dataset.sig === sig || document.activeElement === sel) return;
+    sel.dataset.sig = sig;
+    sel.replaceChildren(...tvs.map(t => { const o = document.createElement('option'); o.value = t.name; o.textContent = t.label; return o; }));
+    // The status may still be the one from before the pick for a moment.
+    const fresh = tvPicked && Date.now() - tvPicked.at < 6000;
+    sel.value = fresh ? tvPicked.name : st.tv_active || (tvs[0] ? tvs[0].name : '');
+  });
+}
+let tvPicked = null;
+async function pickTv(name) {
+  settings.tv_active = name;
+  tvPicked = { name, at: Date.now() };
+  const r = await post('/api/settings', JSON.stringify({ tv_active: name }));
+  if (r.startsWith('error')) alert(r.replace(/^error:\s*/, ''));
+  refresh();
+}
+
 function renderContacts(list) {
   const box = $('contacts');
   box.innerHTML = '';
@@ -5439,6 +5542,87 @@ setInterval(() => { if (!document.hidden) refresh(); }, 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 // A new release shows up as soon as the page is opened, not hours later.
 post('/api/cmd', 'update auto').then(refresh);
+</script>
+<script>
+// The alarm that cannot be slept through (src/alarm.rs), on the home tab.
+(() => {
+  const home = document.getElementById('tab-home');
+  if (!home) return;
+  const DAYS = { once: 'один раз', daily: 'каждый день', weekdays: 'по будням', weekend: 'по выходным' };
+  const STAGE = { Music: 'играет музыка', Alice: 'говорит Алиса', Check: 'спрашивает «Вы проснулись?»', Question: 'ждёт ответ на пример', Snoozed: 'отложен на 5 минут' };
+  const srcWord = s => !s ? 'ваша музыка' : s === 'likes' ? 'лайки' : s === 'recs' ? 'рекомендации'
+    : s.startsWith('playlist:') ? 'плейлист «' + s.slice(9) + '»' : s.startsWith('play:') ? '«' + s.slice(5) + '»' : s;
+  const send = (cmd) => fetch('/api/cmd', { method: 'POST', body: cmd }).then(r => r.text()).catch(e => 'error: ' + e);
+
+  const box = document.createElement('div');
+  box.className = 'widget';
+  box.dataset.w = 'alarm';
+  // The panel's own look: its fields, buttons and hints, nothing of its own.
+  const FIELD = 'font:inherit;color:var(--ink);background:var(--field);border:1px solid var(--glass-edge);border-radius:14px;padding:9px 11px;outline:none';
+  box.innerHTML = `
+    <div class="whead"><b>Будильник</b></div>
+    <div id="alring" hidden>
+      <p><b>Звонит</b> <span class="hint" id="alstage"></span></p>
+      <div class="row" style="gap:8px;flex-wrap:wrap"><button class="primary" id="alawake">Я проснулся</button><button id="alsnooze">Ещё 5 минут</button></div>
+      <div id="alq" hidden style="margin-top:10px"><p id="alqtext"></p>
+        <div class="row" style="gap:8px"><input type="text" id="alans" inputmode="numeric" autocomplete="off" placeholder="Ответ" style="${FIELD};width:110px"><button class="primary" id="alanswer">Ответить</button></div></div>
+    </div>
+    <ul class="list" id="allist"></ul>
+    <p class="hint" id="alempty">Будильников нет. Голосом: «Алиса, разбуди меня в 7 под мои лайки».</p>
+    <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:8px">
+      <input type="time" id="altime" value="07:00">
+      <select id="aldays" style="${FIELD}">${Object.entries(DAYS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+      <input type="text" id="alsrc" placeholder="Под что: лайки, рекомендации, плейлист утро" style="flex:1;min-width:180px">
+      <button class="primary" id="aladd">Поставить</button>
+    </div>
+    <p class="hint">Выключается только словами «Алиса, я проснулся» и ответом на пример. «Стоп», пауза и ▶‖ его не выключают.</p>
+    <div class="msg" id="almsg"></div>`;
+  home.insertBefore(box, home.firstElementChild ? home.firstElementChild.nextSibling : null);
+  const $ = id => box.querySelector('#' + id);
+  const show = t => { const m = $('almsg'); m.textContent = t.replace(/^OK:\s*/, ''); m.className = 'msg ' + (t.startsWith('error') ? 'err' : 'ok'); };
+
+  let lastQuestion = '';
+  async function load() {
+    let j; try { j = JSON.parse(await send('alarm json')); } catch (e) { return; }
+    const r = j.ringing;
+    $('alring').hidden = !r;
+    if (r) {
+      $('alstage').textContent = '· ' + (STAGE[r.stage] || r.stage) + ' · круг ' + r.round + (r.snoozes ? ' · отложен ' + r.snoozes + ' раз' : '');
+      $('alq').hidden = r.stage !== 'Question';
+      if (r.stage === 'Question' && r.question && !lastQuestion) $('alqtext').textContent = `Сколько будет ${r.question[0]} плюс ${r.question[1]}?`;
+    } else lastQuestion = '';
+    const list = $('allist'); list.innerHTML = '';
+    const on = (j.alarms || []).filter(a => a.on);
+    $('alempty').hidden = on.length > 0;
+    for (const a of on) {
+      const li = document.createElement('li');
+      const t = document.createElement('span'); t.textContent = `${a.hour}:${String(a.minute).padStart(2, '0')} · ${DAYS[a.days] || a.days} · ${srcWord(a.source)}`;
+      const del = document.createElement('button'); del.className = 'link'; del.textContent = '✕'; del.title = 'Удалить';
+      del.onclick = async () => { show(await send('alarm del ' + a.id)); load(); };
+      li.append(t, del); list.appendChild(li);
+    }
+  }
+  $('aladd').onclick = async () => {
+    const [h, m] = ($('altime').value || '07:00').split(':').map(Number);
+    show(await send('alarm add ' + JSON.stringify({ hour: h, minute: m, days: $('aldays').value, source: $('alsrc').value.trim() })));
+    load();
+  };
+  $('alawake').onclick = async () => {
+    const t = await send('alarm awake');
+    lastQuestion = t.replace(/^OK:\s*/, ''); $('alqtext').textContent = lastQuestion; $('alq').hidden = false; $('alans').focus(); load();
+  };
+  $('alans').onkeydown = e => { if (e.key === 'Enter') $('alanswer').click(); };
+  $('alanswer').onclick = async () => {
+    const t = await send('alarm answer ' + ($('alans').value || '').trim());
+    $('alans').value = ''; show(t);
+    lastQuestion = /Неверно/.test(t) ? t.replace(/^OK:\s*/, '') : '';
+    if (lastQuestion) $('alqtext').textContent = lastQuestion;
+    load();
+  };
+  $('alsnooze').onclick = async () => { show(await send('alarm snooze')); load(); };
+  load();
+  setInterval(load, 5000);
+})();
 </script>
 </body>
 </html>

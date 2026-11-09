@@ -8,8 +8,6 @@
 
 pub const FEEDBACK_JS: &str = include_str!("../dev/feedback.js");
 pub const HTML2CANVAS_JS: &str = include_str!("../dev/html2canvas.min.js");
-/// The alarm that cannot be slept through, on the panel's home tab (src/alarm.rs).
-pub const ALARM_JS: &str = include_str!("../dev/alarm.js");
 const ERRORS_JS: &str = include_str!("../dev/errors.js");
 
 /// The page with the feedback mode in it. `config` becomes `window.SOUNDYA_DEV`
@@ -18,7 +16,7 @@ pub fn inject(page: &str, config: &serde_json::Value) -> String {
     // «</script>» inside a string would end the script early.
     let config = config.to_string().replace("</", "<\\/");
     let head = format!("<head>\n<script data-sd>window.SOUNDYA_DEV={config};\n{ERRORS_JS}</script>");
-    let body = "<script data-sd src=\"/dev/feedback.js\"></script>\n<script data-sd src=\"/dev/alarm.js\"></script>\n</body>";
+    let body = "<script data-sd src=\"/dev/feedback.js\"></script>\n</body>";
     let page = page.replacen("<head>", &head, 1);
     match page.rfind("</body>") {
         Some(i) => format!("{}{body}{}", &page[..i], &page[i + "</body>".len()..]),
@@ -31,7 +29,6 @@ pub fn script(path: &str) -> Option<&'static str> {
     match path {
         "/dev/feedback.js" => Some(FEEDBACK_JS),
         "/dev/html2canvas.js" => Some(HTML2CANVAS_JS),
-        "/dev/alarm.js" => Some(ALARM_JS),
         _ => None,
     }
 }
@@ -53,8 +50,6 @@ mod tests {
         assert_eq!(out.matches("</body>").count(), 1);
         assert!(script("/dev/feedback.js").unwrap().contains("Собрать промпт"));
         assert!(script("/dev/html2canvas.js").unwrap().contains("html2canvas 1.4.1"));
-        assert!(script("/dev/alarm.js").unwrap().contains("не выключают"));
-        assert!(out.contains("src=\"/dev/alarm.js\""));
         assert!(script("/dev/other.js").is_none());
     }
 }

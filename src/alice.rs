@@ -79,9 +79,10 @@ pub enum Intent {
     TgReply(String),
     /// «Да» / «нет» to a Telegram reply waiting for it.
     TgConfirm(bool),
-    /// soundya's alarm that cannot be slept through (alarm.rs, developer build).
-    #[cfg(feature = "dev")]
+    /// soundya's alarm that cannot be slept through (alarm.rs).
     Alarm(crate::alarm::Voice),
+    /// A TV or PC command for the one with this name («выключи телевизор в спальне»).
+    On(String, Box<Intent>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -972,16 +973,86 @@ const HOME: [&str; 30] = [
 const PLAY_VERBS: [&str; 5] = ["включи ", "поставь ", "запусти ", "сыграй ", "играй "];
 
 /// The alarm's phrases are not music (they stay soundya's with SoundCloud switched off).
-fn is_alarm(_intent: &Intent) -> bool {
-    #[cfg(feature = "dev")]
-    return matches!(_intent, Intent::Alarm(_));
-    #[cfg(not(feature = "dev"))]
-    false
+fn is_alarm(intent: &Intent) -> bool {
+    matches!(intent, Intent::Alarm(_))
+}
+
+/// The names of the TVs (true) and computers (false) the user gave them, as said
+/// («спальня», «ноутбук»); set from the settings.
+static DEVICES: std::sync::Mutex<Vec<(String, bool)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_devices(names: Vec<(String, bool)>) {
+    *DEVICES.lock().unwrap() = names.into_iter().map(|(n, tv)| (normalize_phrase(&n), tv)).filter(|(n, _)| !n.is_empty()).collect();
+}
+
+/// A spoken word is this word of a name: the same, or the same stem in another case
+/// («спальня» / «спальне», «ноутбук» / «ноутбуке», «кухня» / «кухне»).
+fn same_word(said: &str, name: &str) -> bool {
+    if said == name {
+        return true;
+    }
+    let (s, n): (Vec<char>, Vec<char>) = (said.chars().collect(), name.chars().collect());
+    let stem = n.len().saturating_sub(2).max(3);
+    n.len() >= 4 && s.len() >= stem && s.len() <= n.len() + 2 && s[..stem] == n[..stem.min(n.len())]
+}
+
+/// The phrase with a device's name in it, made into one the TV / PC parsers know:
+/// «выключи телевизор в спальне» → «выключи телевизор», «включи ютуб в спальне» →
+/// «включи ютуб на телевизоре», «усыпи ноутбук» → «усыпи компьютер». (name, is TV, phrase)
+fn device_in(n: &str, devices: &[(String, bool)]) -> Option<(String, bool, String)> {
+    let words: Vec<&str> = n.split_whitespace().collect();
+    // Longer names first: «большая спальня» before «спальня».
+    let mut sorted: Vec<&(String, bool)> = devices.iter().collect();
+    sorted.sort_by_key(|(name, _)| std::cmp::Reverse(name.split_whitespace().count()));
+    for (name, tv) in sorted {
+        let parts: Vec<&str> = name.split_whitespace().collect();
+        if parts.is_empty() || parts.len() > words.len() {
+            continue;
+        }
+        let Some(at) = (0..=words.len() - parts.len()).find(|&i| parts.iter().enumerate().all(|(j, p)| same_word(words[i + j], p))) else {
+            continue;
+        };
+        let prep = at > 0 && matches!(words[at - 1], "в" | "во" | "на");
+        let start = if prep { at - 1 } else { at };
+        let before = words[..start].join(" ");
+        let after = words[at + parts.len()..].join(" ");
+        let rest = format!("{before} {after}").split_whitespace().collect::<Vec<_>>().join(" ");
+        let kind_named = if *tv { strip_tv(&rest).is_some() || remote_phrase(&rest).is_some() } else { pc(&rest).is_some() && rest.split_whitespace().any(|w| w.starts_with("комп") || w == "пк") };
+        // «Включи музыку на кухне» is about music in the kitchen, not the kitchen TV's app,
+        // unless the TV is said too («включи музыку на телевизоре на кухне»).
+        let music = rest.split_whitespace().any(|w| ["музык", "песн", "трек", "радио", "саундклауд", "плейлист", "альбом"].iter().any(|m| w.starts_with(m)));
+        if *tv && !kind_named && music {
+            continue;
+        }
+        let phrase = if kind_named {
+            rest
+        } else if prep {
+            format!("{rest} {}", if *tv { "на телевизоре" } else { "на компьютере" })
+        } else {
+            format!("{before} {} {after}", if *tv { "телевизор" } else { "компьютер" }).split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        return Some((name.clone(), *tv, phrase));
+    }
+    None
 }
 
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
+    // A TV or computer named by the user: its command, aimed at it.
+    let devices = DEVICES.lock().unwrap().clone();
+    if !devices.is_empty() {
+        if let Some((name, tv, phrase)) = device_in(&normalize(text), &devices) {
+            match intent_plain(&phrase, keyword_only) {
+                Some(i @ Intent::Tv(_)) if tv => return Some(Intent::On(name, Box::new(i))),
+                Some(i @ Intent::Pc(_)) if !tv => return Some(Intent::On(name, Box::new(i))),
+                _ => {}
+            }
+        }
+    }
+    intent_plain(text, keyword_only)
+}
+
+fn intent_plain(text: &str, keyword_only: bool) -> Option<Intent> {
     // A ringing alarm first: its «стоп», «я проснулся» and the answer to its sum.
-    #[cfg(feature = "dev")]
     if let Some(v) = crate::alarm::voice(&normalize(text), crate::alarm::ringing(), crate::planner::now(), crate::planner::offset()) {
         return Some(Intent::Alarm(v));
     }
@@ -1386,11 +1457,8 @@ fn recognized(data: &[u8]) -> Option<(String, String)> {
 }
 
 /// While the alarm waits for the answer to its sum: is this phrase a number?
-fn alarm_answer(_text: &str) -> bool {
-    #[cfg(feature = "dev")]
-    return crate::alarm::ringing() && matches!(crate::alarm::voice(&normalize(_text), true, 0, 0), Some(crate::alarm::Voice::Answer(_)));
-    #[cfg(not(feature = "dev"))]
-    false
+fn alarm_answer(text: &str) -> bool {
+    crate::alarm::ringing() && matches!(crate::alarm::voice(&normalize(text), true, 0, 0), Some(crate::alarm::Voice::Answer(_)))
 }
 
 fn put_var(out: &mut Vec<u8>, mut v: u64) {
@@ -1642,7 +1710,7 @@ fn read_frames(
             // messages are ours; all music stays Alice's.
             let music = !matches!(
                 intent,
-                Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::BtOut(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
+                Intent::Pc(_) | Intent::Tv(_) | Intent::On(..) | Intent::Address | Intent::BtOut(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
             ) && !is_alarm(&intent);
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
@@ -1743,12 +1811,12 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
         Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
-        #[cfg(feature = "dev")]
         Intent::Alarm(_) => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
         Intent::Pc(_) => w.pc,
         Intent::Tv(_) => w.tv,
+        Intent::On(_, inner) => owns(inner, w),
         // A paused SoundCloud track under Alice's music is not what «перемешай»,
         // «перемотай», «повтори» mean (0.4.40 took them and cut her off).
         Intent::Shuffle(_) | Intent::Repeat(_) => w.has_queue && (w.playing || !w.alice_music),
@@ -2250,6 +2318,26 @@ mod tests {
                 b'b', b'i', b'l', b'i', b't', b'y', 0x42, 2, 8, 3, 0xe8, 0x0f, 0xd2, 1
             ]
         );
+    }
+
+    #[test]
+    fn devices_by_their_names() {
+        let d = vec![("спальня".to_owned(), true), ("кухня".to_owned(), true), ("ноутбук".to_owned(), false), ("большой комп".to_owned(), false)];
+        let on = |t: &str| device_in(&normalize(t), &d).map(|(n, _, p)| (n, p));
+        assert_eq!(on("выключи телевизор в спальне"), Some(("спальня".into(), "выключи телевизор".into())));
+        assert_eq!(on("включи ютуб на кухне"), Some(("кухня".into(), "включи ютуб на телевизоре".into())));
+        assert_eq!(on("усыпи ноутбук"), Some(("ноутбук".into(), "усыпи компьютер".into())));
+        assert_eq!(on("пульт спальня"), Some(("спальня".into(), "пульт".into())));
+        assert_eq!(on("выключи большой комп").map(|x| x.0), Some("большой комп".into()));
+        assert_eq!(on("включи музыку"), None);
+        // Whole intents: aimed at the device, or left alone when it is not a TV / PC phrase.
+        set_devices(d.clone());
+        let tv_off = Some(Intent::On("спальня".into(), Box::new(Intent::Tv(TvAction::Sleep))));
+        assert_eq!(intent("Алиса, выключи телевизор в спальне", false), tv_off);
+        assert_eq!(intent("усыпи ноутбук", false), Some(Intent::On("ноутбук".into(), Box::new(Intent::Pc(PcAction::Sleep)))));
+        assert_eq!(intent("пульт спальня", false), Some(Intent::On("спальня".into(), Box::new(Intent::Tv(TvAction::RemoteMode(true))))));
+        assert!(!matches!(intent("включи музыку на кухне", false), Some(Intent::On(..))));
+        set_devices(Vec::new());
     }
 }
 

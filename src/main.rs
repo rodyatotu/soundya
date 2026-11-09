@@ -15,7 +15,6 @@ mod clock;
 mod display;
 mod dns;
 mod ducking;
-#[cfg(feature = "dev")]
 mod alarm;
 #[cfg(feature = "dev")]
 mod devpage;
@@ -458,6 +457,11 @@ impl Controller {
             "stats": self.settings.stats,
             "share_heard": self.settings.share_heard,
             "tv_host": self.settings.tv_host,
+            "tv_name": self.settings.tv_name,
+            "tvs_more": self.settings.tvs_more,
+            "tv_active": self.settings.active_tv().map(|t| t.name).unwrap_or_default(),
+            "pc_name": self.settings.pc_name,
+            "pcs_more": self.settings.masked_pcs_more(),
             "macros": self.settings.macros,
             "bypass": self.settings.bypass,
             "bypass_on": self.settings.bypass_on,
@@ -839,7 +843,6 @@ impl Controller {
         // Not only neighbours: «a, b, a» kept the second «a» (a widget shown twice).
         let mut seen = std::collections::HashSet::new();
         new.home_order.retain(|w| seen.insert(w.clone()));
-        alice::set_tv(new.tv_on && !new.tv_host.trim().is_empty());
         new.meet_minutes = new.meet_minutes.clamp(5, 480);
         // 0 would ask «сделали?» again every 10 s after «нет».
         new.plan_check_every = new.plan_check_every.clamp(1, 24 * 60);
@@ -891,6 +894,52 @@ impl Controller {
         }
         if !new.pc_mac.is_empty() && pc::parse_mac(&new.pc_mac).is_none() {
             return "error: MAC-адрес вида AA:BB:CC:DD:EE:FF".into();
+        }
+        // More computers and TVs: a masked key is the one kept (same place in the list, or
+        // the same address); rows with nothing in them are dropped.
+        let old_pcs = self.settings.pcs_more.clone();
+        for (i, p) in new.pcs_more.iter_mut().enumerate() {
+            p.name = p.name.trim().to_owned();
+            p.host = p.host.trim().to_owned();
+            p.mac = p.mac.trim().to_owned();
+            if p.token.contains('•') {
+                p.token = old_pcs.get(i).filter(|o| o.host == p.host || old_pcs.len() == 1).or_else(|| old_pcs.iter().find(|o| o.host == p.host)).map(|o| o.token.clone()).unwrap_or_default();
+            }
+            p.token = p.token.trim().to_owned();
+        }
+        new.pcs_more.retain(|p| !p.host.is_empty() || !p.mac.is_empty());
+        for p in &new.pcs_more {
+            if p.token.chars().any(|c| c.is_whitespace() || !c.is_ascii()) {
+                return format!("error: ключ компьютера «{}» — одно слово из латинских букв и цифр", p.name);
+            }
+            if !p.mac.is_empty() && pc::parse_mac(&p.mac).is_none() {
+                return format!("error: MAC-адрес компьютера «{}» вида AA:BB:CC:DD:EE:FF", p.name);
+            }
+        }
+        new.pc_name = new.pc_name.trim().to_owned();
+        new.tv_name = new.tv_name.trim().to_owned();
+        for t in new.tvs_more.iter_mut() {
+            t.name = t.name.trim().to_owned();
+            t.host = t.host.trim().to_owned();
+        }
+        new.tvs_more.retain(|t| !t.host.is_empty());
+        // Voice picks a device by its name: the extra ones need one, all different.
+        {
+            let mut names = std::collections::HashSet::new();
+            let extra = new.tvs_more.iter().map(|t| &t.name).chain(new.pcs_more.iter().map(|p| &p.name));
+            for n in extra {
+                if n.is_empty() {
+                    return "error: дайте имя каждому дополнительному телевизору и компьютеру — по нему их зовут голосом".into();
+                }
+            }
+            for n in new.tvs().iter().map(|d| d.name.clone()).chain(new.pcs().iter().map(|d| d.name.clone())).filter(|n| !n.is_empty()) {
+                if !names.insert(alice::normalize_phrase(&n)) {
+                    return format!("error: имя «{n}» уже занято — у каждого устройства своё");
+                }
+            }
+        }
+        if !new.tvs().iter().any(|t| t.name == new.tv_active) {
+            new.tv_active = String::new();
         }
         // «мама, маме, маму» -> "мама|маме|маму"; rows without a name or a target are dropped.
         new.pc_contacts = new
@@ -947,6 +996,8 @@ impl Controller {
         *self.shared.proxy.lock().unwrap() = new.use_proxy().to_owned();
         new.tv_host = new.tv_host.trim().to_owned();
         self.shared.tv.store(new.tv_configured(), Ordering::Release);
+        alice::set_tv(new.tv_configured());
+        alice::set_devices(device_names(&new));
         self.shared.soundcloud.store(new.soundcloud, Ordering::Release);
         let proxy_changed = new.use_proxy() != self.settings.use_proxy();
         // Only a save that passed all checks switches ADB (turning it off touches the device).
@@ -1578,7 +1629,6 @@ impl Controller {
                 self.set_paused(true);
                 respond(reply, "OK", None);
             }
-            #[cfg(feature = "dev")]
             Intent::Alarm(v) => {
                 let text = alarm::command(&v);
                 respond(reply, &format!("OK: {text}"), Some(text));
@@ -1634,7 +1684,28 @@ impl Controller {
                     Err(text) => respond(reply, &format!("error: {text}"), Some(text)),
                 });
             }
-            Intent::Tv(alice::TvAction::RemoteMode(true)) if self.settings.tv_host.trim().is_empty() => {
+            // «Выключи телевизор в спальне», «пульт кухня», «усыпи ноутбук»: that device.
+            Intent::On(name, inner) => {
+                let tv = matches!(*inner, Intent::Tv(_));
+                let list = if tv { self.settings.tvs() } else { self.settings.pcs() };
+                let Some(d) = list.into_iter().find(|d| alice::normalize_phrase(&d.name) == name) else {
+                    let text = format!("Не нашла устройство {name}. Проверьте имена в настройках, в разделе Устройства");
+                    respond(reply, &format!("error: {text}"), Some(text));
+                    return;
+                };
+                // The remote by name: that TV stays the remote's (and the panel's) from now on.
+                if tv && matches!(*inner, Intent::Tv(alice::TvAction::RemoteMode(true))) && self.settings.tv_active != d.name {
+                    self.settings.tv_active = d.name.clone();
+                    let _ = self.settings.save(&self.dir);
+                }
+                // TV and PC commands take their device from the settings when they start
+                // (and work on in their own threads): aimed at this one just for the call.
+                let saved = self.settings.clone();
+                self.settings = if tv { Settings { tv_active: d.name.clone(), ..saved.with_tv(&d) } } else { saved.with_pc(&d) };
+                self.intent(*inner, reply);
+                self.settings = saved;
+            }
+            Intent::Tv(alice::TvAction::RemoteMode(true)) if !self.settings.tv_configured() => {
                 let text = "Пульт работает с телевизором, а он ещё не добавлен. Добавьте его на странице колонки, в разделе Устройства";
                 respond(reply, &format!("error: {text}"), Some(text.into()));
             }
@@ -1649,7 +1720,7 @@ impl Controller {
                 respond(reply, &format!("OK: {text}"), Some(text.into()));
             }
             Intent::Tv(action) => {
-                let host = self.settings.tv_host.clone();
+                let host = self.settings.active_tv().map(|t| t.host).unwrap_or_default();
                 if host.is_empty() {
                     respond(reply, "error: адрес телевизора не задан в настройках", None);
                     return;
@@ -1994,6 +2065,23 @@ impl Controller {
             // tv ping | do <фраза> | wake | sleep | open <имя> | openpkg <пакет> |
             // close <имя|пакет> | key <home|back|ok…> [N] | apps | search <q> | youtube <q>
             // — from the settings page, the macro editor and the command line.
+            // «on <имя>\t<tv …|pc …>»: the panel's «Проверить» for one of several TVs / PCs.
+            "on" => {
+                let Some((name, line)) = arg.split_once('\t') else {
+                    send_to(&reply, "usage: on <имя устройства>\t<tv …|pc …>".into());
+                    return;
+                };
+                let tv = line.trim_start().starts_with("tv ");
+                let list = if tv { self.settings.tvs() } else { self.settings.pcs() };
+                let Some(d) = list.into_iter().find(|d| d.name == name.trim()) else {
+                    send_to(&reply, format!("error: нет устройства «{}» (сначала сохраните настройки)", name.trim()));
+                    return;
+                };
+                let saved = self.settings.clone();
+                self.settings = if tv { Settings { tv_active: d.name.clone(), ..saved.with_tv(&d) } } else { saved.with_pc(&d) };
+                self.control(line, reply);
+                self.settings = saved;
+            }
             "tv" => {
                 let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
                 let rest = rest.trim();
@@ -2158,7 +2246,6 @@ impl Controller {
                     send_to(&reply, r.map_or_else(|e| format!("error: Telegram: {e}"), |()| "OK: сообщение отправлено в группу".into()));
                 });
             }
-            #[cfg(feature = "dev")]
             "alarm" => send_to(&reply, alarm::panel(&arg)),
             "timer" => {
                 let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
@@ -2997,10 +3084,7 @@ fn device_info() -> serde_json::Value {
 
 /// An alarm's music stage is on (only the developer build has alarms).
 fn alarm_music_on() -> bool {
-    #[cfg(feature = "dev")]
-    return alarm::music_on();
-    #[cfg(not(feature = "dev"))]
-    false
+    alarm::music_on()
 }
 
 fn login_state(token: bool, refused: bool, confirmed: bool) -> &'static str {
@@ -3027,6 +3111,13 @@ fn client_with(settings: &Settings) -> Client {
 
 fn client() -> Client {
     client_with(&Settings::load(&state_dir()))
+}
+
+/// The TVs' (true) and computers' (false) names, for voice.
+fn device_names(settings: &Settings) -> Vec<(String, bool)> {
+    let tvs = settings.tvs().into_iter().map(|d| (d.name, true));
+    let pcs = settings.pcs().into_iter().map(|d| (d.name, false));
+    tvs.chain(pcs).filter(|(n, _)| !n.trim().is_empty()).collect()
 }
 
 /// Every name of every Telegram contact: "мама|маме" -> ["мама", "маме"].
@@ -3299,11 +3390,11 @@ fn daemon() {
     planner::configure(settings.planner_on, settings.tz_offset);
     planner::run(&dir);
     timer::run(&dir);
-    // The alarm that cannot be slept through (developer build for now).
-    #[cfg(feature = "dev")]
+    // The alarm that cannot be slept through.
     alarm::run(&dir, tx.clone());
     adbkeep::configure(settings.adb_keep);
-    alice::set_tv(settings.tv_on && !settings.tv_host.trim().is_empty());
+    alice::set_tv(settings.tv_configured());
+    alice::set_devices(device_names(&settings));
     adbkeep::run();
     calendar::configure(settings.cal_on, &settings.cal_url, settings.cal_remind);
     apply_planner(&settings);

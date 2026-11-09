@@ -65,7 +65,9 @@ pub fn address(ip: Option<&str>, port: u16) -> String {
 
 /// What to say at start: None when this version was already announced.
 pub fn phrase(last: Option<&str>, version: &str, ip: Option<&str>, port: u16) -> Option<String> {
-    let short = version.split('.').take(2).collect::<Vec<_>>().join(".");
+    // «0.5.0» is said «0.5», but «0.5.1» in full (it is not the same as 0.5).
+    let version = version.trim();
+    let short = version.strip_suffix(".0").unwrap_or(version);
     match last {
         None => Some(format!(
             "Привет! Саундя установлена. Чтобы всё настроить, {}. Если нужно повторить адрес, скажите: Алиса, повтори адрес.",
@@ -173,6 +175,7 @@ mod tests {
         assert!(phrase(None, "0.5.0", None, 8765).unwrap().contains("саундя точка локал"));
         assert_eq!(phrase(Some("0.4.41"), "0.5.0", None, 8765).unwrap(), "Саундя обновлена до версии 0.5.");
         assert_eq!(phrase(Some("0.5.0\n"), "0.5.0", None, 8765), None);
+        assert_eq!(phrase(Some("0.5.0"), "0.5.1", None, 8765).unwrap(), "Саундя обновлена до версии 0.5.1.");
     }
 
     #[test]
