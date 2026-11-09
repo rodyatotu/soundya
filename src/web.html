@@ -784,9 +784,13 @@
   .qpop { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
   .qpop ul.queue { max-height: none; overflow: visible; }
   .qpop .qhead { position: sticky; top: -10px; z-index: 1; padding: 10px 4px 6px; margin: -10px 0 6px; background: inherit; }
-  /* No scrollbars anywhere (asked for): wheel, trackpad and finger scroll as before. */
-  * { scrollbar-width: none; }
-  ::-webkit-scrollbar { display: none; width: 0; height: 0; }
+  /* The panel's own scrollbars everywhere: thin, in its colours, not the system's grey bars. */
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink) 28%, transparent) transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--ink) 26%, transparent); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--accent) 70%, transparent); }
+  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   /* Search inside the player: a small magnifier top right; the field and results open in place. */
   .psearchbtn { position: absolute; top: 12px; right: 12px; z-index: 2; width: 32px; height: 32px; padding: 0; border-radius: 50%;
     color: var(--muted); background: color-mix(in srgb, var(--ink) 6%, transparent); border: 0; }
@@ -863,7 +867,6 @@
     background: color-mix(in srgb, #2a8cff 10%, transparent); border: 1px solid color-mix(in srgb, #2a8cff 35%, transparent); }
   .btnow[hidden], #btactions[hidden] { display: none; }
   label.switch.mini { margin: 0; }
-  .widget.alarmoff { display: none !important; }
   .bticon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: #2a8cff; color: #fff; flex: none; }
   .bticon svg { width: 18px; height: 18px; }
   .bttext { flex: 1; min-width: 0; } .bttext small { display: block; color: var(--muted); font-size: 12px; }
@@ -1494,12 +1497,6 @@
       <button data-music="yandex" role="radio">Яндекс Музыка</button>
     </div>
     <p class="hint" id="musichint"></p>
-    <div class="field">Будильник</div>
-    <div class="seg" id="alarmkind" role="radiogroup">
-      <button data-alarm="own" role="radio">soundya</button>
-      <button data-alarm="alice" role="radio">Стандартный</button>
-    </div>
-    <p class="hint" id="alarmhint"></p>
     <input type="checkbox" id="keyword" hidden>
     <button class="link bugbtn" onclick="openReport('yandex_music')">Сообщить об ошибке</button>
     <label class="check">
@@ -1630,6 +1627,21 @@
     <ul class="hint probe" id="probelist"></ul>
     <details id="probedetails" hidden><summary class="hint">Подробно</summary><pre class="probe" id="probejson"></pre></details>
     <div class="msg" id="probemsg"></div>
+    <h2 class="section" style="margin-top:28px">🧩 Моды и дополнения</h2>
+    <p class="hint">Подключение независимых модулей (оформление Lumya Liquid Glass, матрица 88-LED Станции 2, ввод текста на ТВ и мониторинг железа). Модули можно включать и отключать отдельно на лету.</p>
+    <div id="modsContainer" style="background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 12px 0;">
+      <div id="modsList" style="display:flex; flex-direction:column; gap:8px;">
+        <div class="hint">Загрузка дополнений…</div>
+      </div>
+      <div style="margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <label class="btn sm" style="cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+          <span>+ Загрузить файл мода (.js / .css)</span>
+          <input type="file" id="modFileInput" accept=".js,.css" style="display:none;" onchange="uploadModFile(this)">
+        </label>
+        <button type="button" class="sm" onclick="loadMods(true)">Обновить список</button>
+      </div>
+      <div class="msg" id="modsMsg"></div>
+    </div>
 
     </div>
     <div class="sub" data-sub="light">
@@ -3597,8 +3609,6 @@ async function loadHome(force) {
   if (!force && Date.now() - homeLoaded < 60000) return;
   homeLoaded = Date.now();
   loadShelves(force);
-  // «Моя музыка» ahead, quietly: its covers are there before the tab is opened.
-  setTimeout(() => { if (settings.token && !$('mylists').children.length) library(); }, 2500);
   homeWidgets();
   renderScenes();
   loadWidgets(force);
@@ -4867,26 +4877,6 @@ function renderMusic(m) {
   $('musichint').textContent = MUSIC_HINT[m] || '';
   $('keyword').checked = m === 'yandex';
 }
-// «Будильник»: soundya's (music, «я проснулся», the sum) or Alice's stock one.
-const ALARM_HINT = {
-  own: '«Алиса, разбуди меня в 7 под мои лайки» — будильник soundya: музыка, потом Алиса; выключается только словами «Алиса, я проснулся» и ответом на пример. Виджет — на главной.',
-  alice: '«Алиса, разбуди меня в 7» ставит обычный будильник Алисы. Будильники soundya не звонят, виджета на главной нет.',
-};
-function renderAlarmKind(own) {
-  const k = own === false ? 'alice' : 'own';
-  document.querySelectorAll('#alarmkind button').forEach(b => {
-    b.classList.toggle('on', b.dataset.alarm === k); b.setAttribute('aria-checked', String(b.dataset.alarm === k));
-  });
-  $('alarmhint').textContent = ALARM_HINT[k];
-  const w = document.querySelector('.widget[data-w="alarm"]');
-  if (w) w.classList.toggle('alarmoff', k === 'alice');
-}
-document.querySelectorAll('#alarmkind button').forEach(b => b.onclick = async () => {
-  const own = b.dataset.alarm === 'own';
-  renderAlarmKind(own);
-  show($('spkmsg'), await post('/api/settings', JSON.stringify({ alarm_own: own })));
-  settingsLoaded = false; refresh();
-});
 document.querySelectorAll('#musicdefault button').forEach(b => b.onclick = async () => {
   renderMusic(b.dataset.music);
   show($('spkmsg'), await post('/api/settings', JSON.stringify({ music_default: b.dataset.music })));
@@ -5160,7 +5150,6 @@ async function refresh() {
     $('proxy').value = settings.proxy;
     $('keyword').checked = settings.keyword_only;
     renderMusic(settings.music_default || (settings.keyword_only ? 'yandex' : 'soundcloud'));
-    renderAlarmKind(settings.alarm_own);
     $('ring').checked = settings.ring !== false;
     renderLight(settings);
     renderLedOrder(settings.led_order, s.led);
@@ -5368,14 +5357,7 @@ async function recs() {
   refresh();
 }
 
-let libraryAsked = null;
 async function library() {
-  // One request at a time (the home page asks ahead; the tab may ask meanwhile).
-  if (libraryAsked) return libraryAsked;
-  libraryAsked = libraryNow().finally(() => { libraryAsked = null; });
-  return libraryAsked;
-}
-async function libraryNow() {
   busy($('minemsg'), 'Загружаю плейлисты…');
   const r = await postJSON('library');
   if (r.error) { show($('minemsg'), r.error, true); return; }
@@ -5769,6 +5751,160 @@ setInterval(() => { if (!document.hidden) refresh(); }, 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 // A new release shows up as soon as the page is opened, not hours later.
 post('/api/cmd', 'update auto').then(refresh);
+
+// ==================== Modular Extension Loader ====================
+const KNOWN_MOD_TITLES = {
+  'theme.css': { title: '🎨 Оформление Lumya Liquid Glass', desc: 'Стеклянный дизайн, адаптивный сайдбар и аккордеон подменю' },
+  'theme.js': { title: '📐 Навигация Lumya', desc: 'Сайдбар на десктопе, группировка подменю и мобильная шторка' },
+  'glow.js': { title: '✨ Матрица Станции 2 (88-LED Glow Engine)', desc: '33 эффекта, холст визуализации и замена старого Ambilight' },
+  'tv.js': { title: '📺 Ввод текста на ТВ (AdbIME)', desc: 'Клавиатурный ввод текста для пульта ТВ и проектора' },
+  'sysinfo.js': { title: '📊 Мониторинг ресурсов (SysInfo)', desc: 'Нагрузка процессора, температура, ОЗУ, ПЗУ и процессы' },
+};
+
+let activeMods = {};
+
+async function loadMods(forceRefresh = false) {
+  try {
+    const res = await fetch('/api/mods');
+    if (!res.ok) return;
+    const data = await res.json();
+    const installed = data.installed || [];
+    activeMods = data.active || {};
+
+    try {
+      const local = JSON.parse(localStorage.getItem('soundya_active_mods') || '{}');
+      activeMods = Object.assign({}, local, activeMods);
+    } catch (e) {}
+
+    const list = document.getElementById('modsList');
+    if (list) {
+      if (installed.length === 0) {
+        list.innerHTML = '<p class="hint" style="margin:4px 0;">В папке /data/opt/soundya/mods/ пока нет установленных файлов дополнений. Вы можете загрузить их через кнопку ниже.</p>';
+      } else {
+        list.innerHTML = installed.map(file => {
+          const meta = KNOWN_MOD_TITLES[file] || { title: file, desc: 'Пользовательский модуль' };
+          const isChecked = activeMods[file] ? 'checked' : '';
+          return `
+            <label class="check" style="display:flex; align-items:flex-start; margin-bottom:8px;">
+              <input type="checkbox" data-mod="${file}" ${isChecked} onchange="toggleMod('${file}', this.checked)">
+              <span>
+                <b>${meta.title}</b><br>
+                <span class="hint">${meta.desc} (${file})</span>
+              </span>
+            </label>
+          `;
+        }).join('');
+      }
+    }
+
+    for (const file of installed) {
+      if (activeMods[file]) {
+        attachMod(file);
+      } else {
+        detachMod(file);
+      }
+    }
+  } catch (e) {
+    console.warn('Error loading mods:', e);
+  }
+}
+
+function attachMod(file) {
+  if (file.endsWith('.css')) {
+    let link = document.getElementById('mod-css-' + file);
+    if (!link) {
+      link = document.createElement('link');
+      link.id = 'mod-css-' + file;
+      link.rel = 'stylesheet';
+      link.href = '/mods/' + file + '?v=' + Date.now();
+      document.head.appendChild(link);
+    }
+  } else if (file.endsWith('.js')) {
+    let script = document.getElementById('mod-js-' + file);
+    if (!script) {
+      script = document.createElement('script');
+      script.id = 'mod-js-' + file;
+      script.src = '/mods/' + file + '?v=' + Date.now();
+      document.body.appendChild(script);
+    }
+  }
+}
+
+function detachMod(file) {
+  if (file.endsWith('.css')) {
+    const link = document.getElementById('mod-css-' + file);
+    if (link) link.remove();
+  } else if (file.endsWith('.js')) {
+    const script = document.getElementById('mod-js-' + file);
+    if (script) {
+      const hookName = 'destroyMod_' + file.replace(/[^a-zA-Z0-9]/g, '_');
+      if (typeof window[hookName] === 'function') {
+        try { window[hookName](); } catch (e) {}
+      }
+      script.remove();
+    }
+  }
+}
+
+async function toggleMod(file, enable) {
+  activeMods[file] = !!enable;
+  try {
+    localStorage.setItem('soundya_active_mods', JSON.stringify(activeMods));
+    await fetch('/api/mods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(activeMods)
+    });
+  } catch (e) {}
+
+  if (enable) {
+    attachMod(file);
+  } else {
+    detachMod(file);
+  }
+
+  const msg = document.getElementById('modsMsg');
+  if (msg) {
+    msg.className = 'msg on';
+    msg.textContent = enable ? `Мод «${file}» включён` : `Мод «${file}» отключён`;
+    setTimeout(() => { if (msg) msg.className = 'msg'; }, 2500);
+  }
+}
+
+async function uploadModFile(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const msg = document.getElementById('modsMsg');
+  if (msg) {
+    msg.className = 'msg on';
+    msg.textContent = `Загрузка ${file.name}…`;
+  }
+  try {
+    const text = await file.text();
+    const res = await fetch('/api/mods/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: file.name, content: text })
+    });
+    if (res.ok) {
+      if (msg) msg.textContent = `Файл «${file.name}» успешно загружен!`;
+      input.value = '';
+      await loadMods(true);
+    } else {
+      const err = await res.text();
+      if (msg) msg.textContent = `Ошибка загрузки: ${err}`;
+    }
+  } catch (e) {
+    if (msg) msg.textContent = `Сбой сети: ${e.message}`;
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => loadMods());
+} else {
+  setTimeout(loadMods, 50);
+}
+
 </script>
 <script>
 // The alarm that cannot be slept through (src/alarm.rs), on the home tab.
@@ -5901,8 +6037,6 @@ post('/api/cmd', 'update auto').then(refresh);
     if (saved.startsWith('error')) { show(saved); return; }
     show(await send('morning test'));
   };
-  // «Стандартный» in «Колонка»: the widget is not shown (settings.alarm_own).
-  setInterval(() => box.classList.toggle('alarmoff', typeof settings === 'object' && settings && settings.alarm_own === false), 2000);
   // Developer build only for now.
   box.querySelector('#almorning').hidden = !window.SOUNDYA_DEV;
   box.querySelector('#almorning').addEventListener('toggle', fillMorning);
@@ -5910,6 +6044,160 @@ post('/api/cmd', 'update auto').then(refresh);
   load();
   setInterval(load, 5000);
 })();
+
+// ==================== Modular Extension Loader ====================
+const KNOWN_MOD_TITLES = {
+  'theme.css': { title: '🎨 Оформление Lumya Liquid Glass', desc: 'Стеклянный дизайн, адаптивный сайдбар и аккордеон подменю' },
+  'theme.js': { title: '📐 Навигация Lumya', desc: 'Сайдбар на десктопе, группировка подменю и мобильная шторка' },
+  'glow.js': { title: '✨ Матрица Станции 2 (88-LED Glow Engine)', desc: '33 эффекта, холст визуализации и замена старого Ambilight' },
+  'tv.js': { title: '📺 Ввод текста на ТВ (AdbIME)', desc: 'Клавиатурный ввод текста для пульта ТВ и проектора' },
+  'sysinfo.js': { title: '📊 Мониторинг ресурсов (SysInfo)', desc: 'Нагрузка процессора, температура, ОЗУ, ПЗУ и процессы' },
+};
+
+let activeMods = {};
+
+async function loadMods(forceRefresh = false) {
+  try {
+    const res = await fetch('/api/mods');
+    if (!res.ok) return;
+    const data = await res.json();
+    const installed = data.installed || [];
+    activeMods = data.active || {};
+
+    try {
+      const local = JSON.parse(localStorage.getItem('soundya_active_mods') || '{}');
+      activeMods = Object.assign({}, local, activeMods);
+    } catch (e) {}
+
+    const list = document.getElementById('modsList');
+    if (list) {
+      if (installed.length === 0) {
+        list.innerHTML = '<p class="hint" style="margin:4px 0;">В папке /data/opt/soundya/mods/ пока нет установленных файлов дополнений. Вы можете загрузить их через кнопку ниже.</p>';
+      } else {
+        list.innerHTML = installed.map(file => {
+          const meta = KNOWN_MOD_TITLES[file] || { title: file, desc: 'Пользовательский модуль' };
+          const isChecked = activeMods[file] ? 'checked' : '';
+          return `
+            <label class="check" style="display:flex; align-items:flex-start; margin-bottom:8px;">
+              <input type="checkbox" data-mod="${file}" ${isChecked} onchange="toggleMod('${file}', this.checked)">
+              <span>
+                <b>${meta.title}</b><br>
+                <span class="hint">${meta.desc} (${file})</span>
+              </span>
+            </label>
+          `;
+        }).join('');
+      }
+    }
+
+    for (const file of installed) {
+      if (activeMods[file]) {
+        attachMod(file);
+      } else {
+        detachMod(file);
+      }
+    }
+  } catch (e) {
+    console.warn('Error loading mods:', e);
+  }
+}
+
+function attachMod(file) {
+  if (file.endsWith('.css')) {
+    let link = document.getElementById('mod-css-' + file);
+    if (!link) {
+      link = document.createElement('link');
+      link.id = 'mod-css-' + file;
+      link.rel = 'stylesheet';
+      link.href = '/mods/' + file + '?v=' + Date.now();
+      document.head.appendChild(link);
+    }
+  } else if (file.endsWith('.js')) {
+    let script = document.getElementById('mod-js-' + file);
+    if (!script) {
+      script = document.createElement('script');
+      script.id = 'mod-js-' + file;
+      script.src = '/mods/' + file + '?v=' + Date.now();
+      document.body.appendChild(script);
+    }
+  }
+}
+
+function detachMod(file) {
+  if (file.endsWith('.css')) {
+    const link = document.getElementById('mod-css-' + file);
+    if (link) link.remove();
+  } else if (file.endsWith('.js')) {
+    const script = document.getElementById('mod-js-' + file);
+    if (script) {
+      const hookName = 'destroyMod_' + file.replace(/[^a-zA-Z0-9]/g, '_');
+      if (typeof window[hookName] === 'function') {
+        try { window[hookName](); } catch (e) {}
+      }
+      script.remove();
+    }
+  }
+}
+
+async function toggleMod(file, enable) {
+  activeMods[file] = !!enable;
+  try {
+    localStorage.setItem('soundya_active_mods', JSON.stringify(activeMods));
+    await fetch('/api/mods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(activeMods)
+    });
+  } catch (e) {}
+
+  if (enable) {
+    attachMod(file);
+  } else {
+    detachMod(file);
+  }
+
+  const msg = document.getElementById('modsMsg');
+  if (msg) {
+    msg.className = 'msg on';
+    msg.textContent = enable ? `Мод «${file}» включён` : `Мод «${file}» отключён`;
+    setTimeout(() => { if (msg) msg.className = 'msg'; }, 2500);
+  }
+}
+
+async function uploadModFile(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const msg = document.getElementById('modsMsg');
+  if (msg) {
+    msg.className = 'msg on';
+    msg.textContent = `Загрузка ${file.name}…`;
+  }
+  try {
+    const text = await file.text();
+    const res = await fetch('/api/mods/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: file.name, content: text })
+    });
+    if (res.ok) {
+      if (msg) msg.textContent = `Файл «${file.name}» успешно загружен!`;
+      input.value = '';
+      await loadMods(true);
+    } else {
+      const err = await res.text();
+      if (msg) msg.textContent = `Ошибка загрузки: ${err}`;
+    }
+  } catch (e) {
+    if (msg) msg.textContent = `Сбой сети: ${e.message}`;
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => loadMods());
+} else {
+  setTimeout(loadMods, 50);
+}
+
 </script>
 </body>
 </html>
