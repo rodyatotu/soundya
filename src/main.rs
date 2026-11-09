@@ -448,6 +448,9 @@ impl Controller {
             "keyword_only": self.settings.keyword_only,
             "ring": self.settings.ring,
             "token": self.settings.masked_token(),
+            "sc_refresh": self.settings.masked_sc_refresh(),
+            "token_exp": self.client.token_exp(),
+            "sc_renew_error": self.client.renew_error().map(|e| e.trim_start_matches("refused: ").to_owned()),
             "pc_host": self.settings.pc_host,
             "pc_token": self.settings.masked_pc_token(),
             "pc_mac": self.settings.pc_mac,
@@ -586,7 +589,7 @@ impl Controller {
             "settings": settings,
             "user": self.user,
             // none | ok | checking (saved, not confirmed yet) | refused (sign in again)
-            "login": login_state(self.client.has_token(), self.client.token_refused(), self.user.is_some()),
+            "login": login_state(self.client.has_token(), self.client.token_refused() || self.client.token_expired(), self.user.is_some()),
             "loading": self.loading.lock().unwrap().clone(),
             "airplay": self.shared.airplay.json(),
             "update": self.shared.updates.json(),
@@ -897,7 +900,15 @@ impl Controller {
         if new.token.contains('•') {
             new.token = self.settings.token.clone();
         }
-        new.token = new.token.trim().to_owned();
+        new.token = new.token.trim().trim_start_matches("OAuth ").trim().to_owned();
+        if new.sc_refresh.contains('•') {
+            new.sc_refresh = self.settings.sc_refresh.clone();
+        }
+        new.sc_refresh = new.sc_refresh.trim().to_owned();
+        // Logging out forgets the renewal too.
+        if new.token.is_empty() {
+            new.sc_refresh.clear();
+        }
         if new.pc_token.contains('•') {
             new.pc_token = self.settings.pc_token.clone();
         }
@@ -980,6 +991,7 @@ impl Controller {
         new.macros = self.settings.macros.clone();
         *self.shared.macros.lock().unwrap() = macro_list(&new);
         let token_changed = new.token != self.settings.token;
+        let refresh_changed = new.sc_refresh != self.settings.sc_refresh;
         new.proxy = self.real_proxy(&new.proxy);
         // Set only by «bypass auto/off», not by the settings form.
         new.bypass = self.settings.bypass.clone();
@@ -1029,7 +1041,10 @@ impl Controller {
             Ok(()) => "OK: сохранено".to_owned(),
             Err(e) => format!("применено, но не сохранено: {e}"),
         };
-        if token_changed || proxy_changed {
+        if refresh_changed {
+            self.client.set_refresh(&self.settings.sc_refresh);
+        }
+        if token_changed || proxy_changed || refresh_changed {
             self.client.set_token(&self.settings.token);
             if self.settings.token.is_empty() {
                 self.user = None;
@@ -2843,6 +2858,19 @@ impl Controller {
             // works (it was a passing 401), the login comes back by itself.
             // SoundCloud changes its site key (client_id) every day or two: read it ahead, not when a command fails.
             self.client.keep_fresh();
+            // SoundCloud's login lives a day now: renewed ahead, and the new pair saved at once
+            // (the old refresh token is spent the moment SoundCloud answers).
+            self.client.keep_token();
+            if let Some((token, refresh)) = self.client.take_renewed() {
+                self.settings.token = token;
+                self.settings.sc_refresh = refresh;
+                if let Err(e) = self.settings.save(&self.dir) {
+                    eprintln!("soundcloud: the renewed login is not saved: {e}");
+                }
+                if self.user.is_none() {
+                    self.check_login();
+                }
+            }
             if self.client.token_refused() && self.token_checked.is_none_or(|t| t.elapsed() > Duration::from_secs(600)) {
                 self.token_checked = Some(std::time::Instant::now());
                 self.check_login();
@@ -3169,6 +3197,7 @@ fn client_with(settings: &Settings) -> Client {
     let cache = fsx::is_dir(&dir).then(|| dir.join("client_id"));
     let client = Client::new(cache, settings.use_proxy());
     client.set_token(&settings.token);
+    client.set_refresh(&settings.sc_refresh);
     client
 }
 

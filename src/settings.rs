@@ -31,6 +31,9 @@ pub struct Settings {
     /// SoundCloud `oauth_token` cookie value; "" = not logged in.
     #[serde(default)]
     pub token: String,
+    /// SoundCloud `oauth_refresh_token` cookie: renews the day-long `token`; "" = none.
+    #[serde(default)]
+    pub sc_refresh: String,
     /// Orange ring light while SoundCloud plays.
     #[serde(default = "yes")]
     pub ring: bool,
@@ -630,6 +633,7 @@ impl Default for Settings {
             proxy: String::new(),
             keyword_only: false,
             token: String::new(),
+            sc_refresh: String::new(),
             ring: true,
             pc_host: String::new(),
             pc_token: String::new(),
@@ -902,6 +906,10 @@ impl Settings {
     /// Token hidden except its last 4 characters.
     pub fn masked_token(&self) -> String {
         mask(&self.token)
+    }
+
+    pub fn masked_sc_refresh(&self) -> String {
+        mask(&self.sc_refresh)
     }
 
     pub fn masked_pc_token(&self) -> String {

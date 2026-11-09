@@ -171,7 +171,7 @@ fn new_id() -> String {
 
 /// Values that must never leave the speaker, read from the settings.
 pub fn secrets(s: &crate::settings::Settings) -> Vec<String> {
-    let mut out = vec![s.token.clone(), s.pc_token.clone(), s.panel_pin.clone(), s.cal_url.clone(), s.g_client_secret.clone(), s.g_refresh.clone(), s.meet_bot_token.clone()];
+    let mut out = vec![s.token.clone(), s.sc_refresh.clone(), s.pc_token.clone(), s.panel_pin.clone(), s.cal_url.clone(), s.g_client_secret.clone(), s.g_refresh.clone(), s.meet_bot_token.clone()];
     out.extend(s.pcs_more.iter().map(|p| p.token.clone()));
     // The calendar's secret part alone too (…/private-<hex>/…), in case it is logged in pieces.
     if let Some(p) = s.cal_url.split('/').find(|p| p.starts_with("private-")) {
@@ -392,6 +392,7 @@ fn status_summary(shared: &Shared) -> Value {
             let set = |x: Option<&Value>| x.and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty());
             let facts = json!({
                 "token_set": set(s.get("token")),
+                "sc_refresh_set": set(s.get("sc_refresh")),
                 "proxy_set": set(s.get("proxy")),
                 "pc_host_set": set(s.get("pc_host")),
                 "pc_token_set": set(s.get("pc_token")),
@@ -401,7 +402,7 @@ fn status_summary(shared: &Shared) -> Value {
                 "tvs_more": s.get("tvs_more").and_then(Value::as_array).map_or(0, Vec::len),
                 "pcs_more": s.get("pcs_more").and_then(Value::as_array).map_or(0, Vec::len),
             });
-            for k in ["token", "proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "tvs_more", "pcs_more", "tv_name", "pc_name", "tv_active", "zapret_args", "airplay_name", "cal_url", "g_client_secret", "g_refresh", "g_client_id",
+            for k in ["token", "sc_refresh", "proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "tvs_more", "pcs_more", "tv_name", "pc_name", "tv_active", "zapret_args", "airplay_name", "cal_url", "g_client_secret", "g_refresh", "g_client_id",
                       // Personal: team emails, Telegram ids and names, the headphones, the city.
                       "teams", "tg_allowed", "tg_bots", "meet_bot_token", "bt_mac", "display_city", "panel_pin"] {
                 s.remove(k);

@@ -1019,7 +1019,7 @@
     <span id="apphinttext"></span>
     <button class="partyx" onclick="closeAppHint()" aria-label="Скрыть">×</button>
   </div>
-  <button class="updbanner on" id="loginwarn" hidden onclick="openSettings('account')">Вход в SoundCloud устарел — лайки и плейлисты недоступны. Обновить вход</button>
+  <button class="updbanner on" id="loginwarn" hidden onclick="openSettings('account')">Вход в SoundCloud устарел — лайки и плейлисты недоступны. Обновить вход один раз — дальше он продлевается сам</button>
   <button class="updbanner" id="updbanner" onclick="openSettings('speaker', 'updsection')"></button>
 
   <nav>
@@ -1418,10 +1418,17 @@
         <li>Откройте <b>soundcloud.com</b> на компьютере и войдите в аккаунт.</li>
         <li>Откройте инструменты разработчика: <b>Cmd+Option+I</b> (Mac) или <b>F12</b>.</li>
         <li>Вкладка <b>Application</b> (в Safari — <b>Storage</b>) → <b>Cookies</b> → <code>https://soundcloud.com</code>.</li>
-        <li>Найдите строку <code>oauth_token</code>, скопируйте значение (вида <code>2-123456-…</code>) и вставьте ниже.</li>
+        <li>Найдите строку <code>oauth_token</code>, скопируйте значение (длинное, начинается с <code>eyJ</code>) и вставьте в первое поле.</li>
+        <li>Там же строку <code>oauth_refresh_token</code> — во второе. С ней колонка сама продлевает вход каждый день:
+          SoundCloud теперь даёт <code>oauth_token</code> только на сутки.</li>
       </ol></div>
+      <p class="hint">Лучше войдите на soundcloud.com в <b>приватном окне</b>, скопируйте обе строки и закройте окно,
+        <b>не выходя</b> из аккаунта: продлевать вход тогда будет только колонка, и браузер её не перебьёт.</p>
       <div class="row">
         <input type="password" id="token" placeholder="oauth_token" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="row">
+        <input type="password" id="screfresh" placeholder="oauth_refresh_token" autocomplete="off" spellcheck="false">
       </div>
       <div class="row">
         <button class="primary" onclick="login()">Войти</button>
@@ -1433,11 +1440,19 @@
         <button onclick="logout()">Выйти</button>
       </div>
       <div class="notice warn" id="relogin" hidden>
-        <b>Вход в SoundCloud устарел.</b> SoundCloud больше не принимает сохранённый токен (вы вышли на сайте или он
-        истёк). Поиск и музыка работают, а лайки, плейлисты и рекомендации — нет. Возьмите новый <code>oauth_token</code>
-        так же, как в первый раз, и вставьте сюда — остальные настройки не изменятся.
+        <b>Вход в SoundCloud устарел.</b> <span id="reloginwhy"></span> Поиск и музыка работают, а лайки, плейлисты и
+        рекомендации — нет. Возьмите <code>oauth_token</code> и <code>oauth_refresh_token</code> так же, как в первый раз
+        (лучше из приватного окна), и вставьте сюда — остальные настройки не изменятся. Дальше колонка будет продлевать вход сама.
         <div class="row"><input type="password" id="token2" placeholder="новый oauth_token" autocomplete="off" spellcheck="false"></div>
+        <div class="row"><input type="password" id="screfresh2" placeholder="oauth_refresh_token" autocomplete="off" spellcheck="false"></div>
         <div class="row"><button class="primary" onclick="relogin()">Обновить вход</button></div>
+      </div>
+      <div class="notice" id="renewbox" hidden>
+        <span id="renewtext"></span>
+        <div id="renewform">
+          <div class="row"><input type="password" id="screfresh3" placeholder="oauth_refresh_token" autocomplete="off" spellcheck="false"></div>
+          <div class="row"><button class="primary" onclick="saveRefresh()">Продлевать сам</button></div>
+        </div>
       </div>
     </div>
     <div class="msg" id="loginmsg"></div>
@@ -4675,19 +4690,20 @@ async function duckCmd(c) { show($('duckmsg'), await post('/api/cmd', 'duck ' + 
 // this page with it in the #fragment (never sent to any server).
 (function () {
   const js = "(function(){if(location.hostname.indexOf('soundcloud.com')<0){alert('Откройте soundcloud.com и нажмите закладку там');return}"
-    + "var m=document.cookie.match(/(?:^|; )oauth_token=([^;]+)/);"
+    + "var m=document.cookie.match(/(?:^|; )oauth_token=([^;]+)/),r=document.cookie.match(/(?:^|; )oauth_refresh_token=([^;]+)/);"
     + "if(!m){alert('Не вижу вход SoundCloud: войдите на soundcloud.com в этом браузере или вставьте токен вручную (инструкция на странице колонки)');return}"
-    + "window.open('http://" + location.host + "/#sctoken='+encodeURIComponent(m[1]))})()";
+    + "window.open('http://" + location.host + "/#sctoken='+encodeURIComponent(m[1])+(r?'&screfresh='+encodeURIComponent(r[1]):''))})()";
   $('scbookmark').href = 'javascript:' + js;
 })();
 async function takeTokenFromHash() {
-  const m = location.hash.match(/^#sctoken=([^&]+)/);
+  const m = location.hash.match(/^#sctoken=([^&]+)(?:&screfresh=([^&]+))?/);
   if (!m) return;
   history.replaceState(null, '', location.pathname);
-  const t = decodeURIComponent(m[1]).trim();
-  if (!/^[\w-]{10,300}$/.test(t)) { alert('Это не похоже на вход SoundCloud.'); return; }
+  // Old tokens: 2-123456-…; since 2026 a JWT (eyJ….….…, ~900 characters).
+  const t = decodeURIComponent(m[1]).trim(), rf = m[2] ? decodeURIComponent(m[2]).trim() : '';
+  if (!/^[\w.-]{10,4000}$/.test(t)) { alert('Это не похоже на вход SoundCloud.'); return; }
   if (!confirm('Сохранить вход SoundCloud из браузера на колонке?')) return;
-  const r = await post('/api/settings', JSON.stringify({ token: t }));
+  const r = await post('/api/settings', JSON.stringify(Object.assign({ token: t }, /^[\w.-]{8,4000}$/.test(rf) ? { sc_refresh: rf } : {})));
   openSettings('account');
   show($('loginmsg'), r);
   settingsLoaded = false; refresh();
@@ -5071,6 +5087,7 @@ async function refresh() {
   $('username').textContent = s.user || (s.login === 'refused' ? 'токен больше не принимается'
     : logged ? 'токен сохранён, проверяю…' : '');
   $('relogin').hidden = s.login !== 'refused';
+  renderRenew(s);
   $('loginwarn').hidden = s.login !== 'refused';
   renderNet(s.net);
   renderDuckState(s.ducking);
@@ -5254,21 +5271,45 @@ function settingsBody(extra) {
 }
 
 async function login() {
-  const t = $('token').value.trim();
+  const t = $('token').value.trim(), r = $('screfresh').value.trim();
   if (!t) return;
   busy($('loginmsg'), 'Проверяю…');
-  show($('loginmsg'), await post('/api/settings', settingsBody({ token: t })));
-  $('token').value = '';
+  show($('loginmsg'), await post('/api/settings', settingsBody(Object.assign({ token: t }, r ? { sc_refresh: r } : {}))));
+  $('token').value = ''; $('screfresh').value = '';
   await refresh();
   if (settings.token) library();
 }
 
 async function relogin() {
-  const t = $('token2').value.trim();
+  const t = $('token2').value.trim(), r = $('screfresh2').value.trim();
   if (!t) { show($('loginmsg'), 'error: вставьте токен'); return; }
-  show($('loginmsg'), await post('/api/settings', JSON.stringify({ token: t })));
-  $('token2').value = '';
+  show($('loginmsg'), await post('/api/settings', JSON.stringify(Object.assign({ token: t }, r ? { sc_refresh: r } : {}))));
+  $('token2').value = ''; $('screfresh2').value = '';
   settingsLoaded = false; refresh();
+}
+async function saveRefresh() {
+  const r = $('screfresh3').value.trim();
+  if (!r) { show($('loginmsg'), 'error: вставьте oauth_refresh_token'); return; }
+  show($('loginmsg'), await post('/api/settings', JSON.stringify({ sc_refresh: r })));
+  $('screfresh3').value = '';
+  settingsLoaded = false; refresh();
+}
+// The day-long login: renewed by the speaker when it has the refresh token; otherwise said
+// when it runs out, so it is not a surprise.
+function renderRenew(s) {
+  const st = s.settings || {}, exp = st.token_exp, err = st.sc_renew_error;
+  const until = exp ? new Date(exp * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) : '';
+  $('reloginwhy').textContent = exp && exp * 1000 < Date.now()
+    ? (st.sc_refresh ? 'Колонка не смогла продлить вход' + (err ? ': ' + err : '') + '.' : 'Токен SoundCloud живёт сутки и истёк ' + until + ', а oauth_refresh_token для продления не сохранён.')
+    : 'SoundCloud больше не принимает сохранённый токен (вы вышли на сайте или он истёк).';
+  const show_ = s.login !== 'refused' && !!st.token && !!exp;
+  $('renewbox').hidden = !show_;
+  if (!show_) return;
+  $('renewbox').classList.toggle('warn', !st.sc_refresh || !!err);
+  $('renewform').hidden = !!st.sc_refresh && !err;
+  $('renewtext').textContent = st.sc_refresh && !err ? 'Вход продлевается сам: SoundCloud выдаёт его на сутки, колонка берёт новый заранее.'
+    : st.sc_refresh ? 'Не получилось продлить вход: ' + err + '. Вставьте свежий oauth_refresh_token (лучше из приватного окна).'
+    : 'Вход действует до ' + until + ': SoundCloud теперь выдаёт его на сутки. Добавьте oauth_refresh_token (там же, в куках soundcloud.com) — и колонка будет продлевать его сама.';
 }
 
 async function logout() {

@@ -21,6 +21,44 @@ const API: &str = "https://api-v2.soundcloud.com";
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 const SEC_CH_UA: &str = "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"";
 /// Re-reading soundcloud.com for a client_id at most this often.
+/// Where soundcloud.com renews its day-long login.
+const TOKEN_URL: &str = "https://secure.soundcloud.com/oauth/token";
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// One claim of a JWT token (its middle part, base64url JSON); None for the old, opaque tokens.
+pub fn jwt_claim(token: &str, key: &str) -> Option<Value> {
+    let mut parts = token.trim().trim_start_matches("OAuth ").split('.');
+    let (_, body, _) = (parts.next()?, parts.next()?, parts.next()?);
+    let bytes = base64url(body)?;
+    serde_json::from_slice::<Value>(&bytes).ok()?.get(key).cloned()
+}
+
+fn base64url(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.trim_end_matches('=').bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
 const SCRAPE_EVERY: Duration = Duration::from_secs(10 * 60);
 
 /// Adds the headers Chrome sends to SoundCloud's site, API and CDN.
@@ -277,6 +315,17 @@ pub struct Client {
     token: Arc<Mutex<Option<String>>>,
     /// SoundCloud refused the token: requests go without it until a new one is entered.
     token_bad: Arc<std::sync::atomic::AtomicBool>,
+    /// The site's `oauth_refresh_token` cookie: since 2026 `oauth_token` is a JWT that lives a
+    /// day, and this (single use) gets the next one. "" — none given.
+    refresh: Arc<Mutex<Option<String>>>,
+    /// A renewed (token, refresh token) pair the controller has yet to save: the old refresh
+    /// token no longer works, so it must reach the settings file at once.
+    renewed: Arc<Mutex<Option<(String, String)>>>,
+    /// Renewal in progress / last attempt / why the last one failed.
+    renewing: Arc<Mutex<Option<std::time::Instant>>>,
+    renew_error: Arc<Mutex<Option<String>>>,
+    /// Where tokens are renewed: secure.soundcloud.com; another server only in tests.
+    token_url: String,
     cache: Option<std::path::PathBuf>,
     /// Formats that answered 404 this session; tried last from then on.
     dead: Arc<Mutex<std::collections::HashSet<String>>>,
@@ -381,6 +430,11 @@ impl Client {
             site: "https://soundcloud.com/".to_owned(),
             token: Arc::new(Mutex::new(None)),
             token_bad: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            refresh: Arc::new(Mutex::new(None)),
+            renewed: Arc::new(Mutex::new(None)),
+            renewing: Arc::new(Mutex::new(None)),
+            renew_error: Arc::new(Mutex::new(None)),
+            token_url: TOKEN_URL.to_owned(),
             cache,
             dead: Arc::new(Mutex::new(std::collections::HashSet::new())),
             recs: Arc::new(Mutex::new(None)),
@@ -406,6 +460,123 @@ impl Client {
     /// SoundCloud stopped accepting the saved token (expired, logged out on the site).
     pub fn token_refused(&self) -> bool {
         self.has_token() && self.token_bad.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The `oauth_refresh_token` cookie; "" forgets it.
+    pub fn set_refresh(&self, refresh: &str) {
+        let r = refresh.trim();
+        *self.refresh.lock().unwrap() = (!r.is_empty()).then(|| r.to_owned());
+        *self.renew_error.lock().unwrap() = None;
+        *self.renewing.lock().unwrap() = None;
+    }
+
+    pub fn has_refresh(&self) -> bool {
+        self.refresh.lock().unwrap().is_some()
+    }
+
+    /// When the saved token stops working (unix seconds): only the new, JWT tokens say it.
+    pub fn token_exp(&self) -> Option<u64> {
+        self.token.lock().unwrap().as_deref().and_then(|t| jwt_claim(t, "exp")).and_then(|v| v.as_u64())
+    }
+
+    /// The saved token has run out (a JWT past its time).
+    pub fn token_expired(&self) -> bool {
+        self.token_exp().is_some_and(|exp| exp <= unix_now())
+    }
+
+    /// Why the last renewal failed, for the page («SoundCloud не принял…»).
+    pub fn renew_error(&self) -> Option<String> {
+        self.renew_error.lock().unwrap().clone()
+    }
+
+    /// A renewed (token, refresh token) to save, once.
+    pub fn take_renewed(&self) -> Option<(String, String)> {
+        self.renewed.lock().unwrap().take()
+    }
+
+    /// From the controller's loop: renews the token in the background 10 minutes before it
+    /// runs out (or at once if it already has), a minute between tries after a network error.
+    pub fn keep_token(&self) {
+        if !self.renew_due() {
+            return;
+        }
+        let me = self.clone();
+        thread::spawn(move || {
+            let _ = me.renew();
+        });
+    }
+
+    fn renew_due(&self) -> bool {
+        let Some(exp) = self.token_exp() else { return false };
+        if !self.has_refresh() || exp > unix_now() + 600 {
+            return false;
+        }
+        // A refused refresh token is not tried again until a new one is given.
+        if self.renew_error.lock().unwrap().as_deref().is_some_and(|e| e.starts_with("refused")) {
+            return false;
+        }
+        let mut last = self.renewing.lock().unwrap();
+        if last.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+            return false;
+        }
+        *last = Some(std::time::Instant::now());
+        true
+    }
+
+    /// Exchanges the refresh token for a new pair, as soundcloud.com does every day.
+    pub fn renew(&self) -> Result<(), String> {
+        let Some(refresh) = self.refresh.lock().unwrap().clone() else {
+            return Err("нет oauth_refresh_token".into());
+        };
+        // The site renews with the client the token was issued to.
+        let client_id = self
+            .token
+            .lock()
+            .unwrap()
+            .as_deref()
+            .and_then(|t| jwt_claim(t, "client_id"))
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .or_else(|| self.client_id.lock().unwrap().clone())
+            .unwrap_or_default();
+        let r = self.agent().post(&self.token_url).set("Accept", "application/json").send_form(&[
+            ("client_id", client_id.as_str()),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh.as_str()),
+        ]);
+        let v: Value = match r {
+            Ok(resp) => resp.into_json().map_err(|e| e.to_string())?,
+            Err(e) if matches!(status_of(&e), Some(400 | 401 | 403)) => {
+                let code = status_of(&e).unwrap_or(0);
+                eprintln!("soundcloud: the refresh token was refused ({code})");
+                *self.renew_error.lock().unwrap() = Some(format!("refused: SoundCloud не принял oauth_refresh_token ({code})"));
+                return Err(format!("SoundCloud не принял oauth_refresh_token ({code})"));
+            }
+            Err(ureq::Error::Status(code, _)) => {
+                let e = format!("HTTP {code} на secure.soundcloud.com");
+                eprintln!("soundcloud: renewing the token: {e}");
+                *self.renew_error.lock().unwrap() = Some(e.clone());
+                return Err(e);
+            }
+            Err(ureq::Error::Transport(t)) => {
+                let e = format!("secure.soundcloud.com: {}", t.message().unwrap_or(&t.kind().to_string()));
+                eprintln!("soundcloud: renewing the token: {e}");
+                *self.renew_error.lock().unwrap() = Some(e.clone());
+                return Err(e);
+            }
+        };
+        let Some(token) = v.get("access_token").and_then(Value::as_str).filter(|t| !t.is_empty()) else {
+            *self.renew_error.lock().unwrap() = Some("SoundCloud ответил без токена".into());
+            return Err("SoundCloud ответил без токена".into());
+        };
+        // Single use: the old refresh token is spent, the new one goes to the settings at once.
+        let next = v.get("refresh_token").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or(&refresh).to_owned();
+        *self.token.lock().unwrap() = Some(token.to_owned());
+        *self.refresh.lock().unwrap() = Some(next.clone());
+        *self.renewed.lock().unwrap() = Some((token.to_owned(), next));
+        *self.renew_error.lock().unwrap() = None;
+        self.token_bad.store(false, std::sync::atomic::Ordering::Release);
+        eprintln!("soundcloud: the token is renewed");
+        Ok(())
     }
 
     /// Switches all later requests (API and audio) to a new proxy; "" means direct.
@@ -527,8 +698,13 @@ impl Client {
         let mut refreshed = false;
         let mut retried = false;
         let bad = std::sync::atomic::Ordering::Acquire;
+        // A token that has run out: a new one first (from the refresh token), if there is one.
+        if self.has_token() && self.token_expired() && self.has_refresh() && self.renew_due() {
+            let _ = self.renew();
+        }
         // Without the token: it was refused (search and public pages work anonymously).
-        let mut anonymous = self.token_bad.load(bad);
+        // «/me» is only ever about the login, so it always goes with it.
+        let mut anonymous = self.token_bad.load(bad) && !url.ends_with("/me");
         loop {
             let id = self.client_id(refreshed)?;
             let mut req = self
@@ -630,6 +806,13 @@ impl Client {
     /// Some(false) refused (401/403), None — no answer (network). Clears the
     /// «refused» mark when it is good again.
     pub fn verify_token(&self) -> Option<bool> {
+        if self.token_expired() {
+            if self.has_refresh() && self.renew().is_ok() {
+                return Some(true);
+            }
+            self.token_bad.store(true, std::sync::atomic::Ordering::Release);
+            return Some(false);
+        }
         let token = self.token.lock().unwrap().clone()?;
         let id = self.client_id(false).ok()?;
         let r = self
@@ -1783,6 +1966,77 @@ mod tests {
         assert!(c.me().is_err());
         assert_eq!(c.verify_token(), Some(false));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn b64url(data: &[u8]) -> String {
+        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in data.chunks(3) {
+            let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+            for i in 0..=chunk.len() {
+                out.push(A[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            }
+        }
+        out
+    }
+
+    fn jwt(exp: u64, client_id: &str) -> String {
+        let body = serde_json::json!({ "exp": exp, "client_id": client_id, "iss": "https://secure.soundcloud.com" });
+        format!("{}.{}.sig", b64url(br#"{"alg":"RS256","typ":"JWT"}"#), b64url(body.to_string().as_bytes()))
+    }
+
+    #[test]
+    fn the_day_long_login_renews_itself() {
+        // Since 2026 soundcloud.com's oauth_token is a JWT that lives 24 hours; the site renews it
+        // with oauth_refresh_token. soundya kept the old one and said «вход устарел» every day.
+        use std::io::{Read as _, Write as _};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let fresh = jwt(unix_now() + 86400, "WEBCLIENT");
+        let fresh2 = fresh.clone();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen2 = seen.clone();
+        thread::spawn(move || {
+            for c in l.incoming().flatten() {
+                let mut c = c;
+                let mut buf = vec![0u8; 8192];
+                let k = c.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..k]).to_string();
+                let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
+                seen2.lock().unwrap().push(body.clone());
+                let (code, out) = if body.contains("refresh_token=R1") {
+                    ("200 OK", format!("{{\"access_token\":\"{fresh2}\",\"refresh_token\":\"R2\",\"expires_in\":86400}}"))
+                } else {
+                    ("400 Bad Request", "{\"error\":\"invalid_grant\"}".to_owned())
+                };
+                let _ = write!(c, "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}", out.len());
+            }
+        });
+        let mut c = Client::new(None, "");
+        c.token_url = format!("{base}/oauth/token");
+        // Old, opaque tokens never run out and are never renewed.
+        c.set_token("2-123456-789-abcdef");
+        assert_eq!((c.token_exp(), c.token_expired(), c.renew_due()), (None, false, false));
+        // A day-old JWT with its refresh token: due, renewed with the token's own client_id.
+        c.set_token(&jwt(unix_now() - 60, "WEBCLIENT"));
+        c.set_refresh("R1");
+        assert!(c.token_expired());
+        assert!(c.renew_due());
+        c.renew().expect("renewed");
+        assert!(seen.lock().unwrap()[0].contains("client_id=WEBCLIENT") && seen.lock().unwrap()[0].contains("grant_type=refresh_token"));
+        assert!(!c.token_expired());
+        assert_eq!(c.take_renewed(), Some((fresh.clone(), "R2".to_owned())));
+        assert_eq!(c.take_renewed(), None);
+        // Not due again until 10 minutes before the new one runs out.
+        assert!(!c.renew_due());
+        // A spent refresh token: said once, not hammered.
+        c.set_token(&jwt(unix_now() - 60, "WEBCLIENT"));
+        c.set_refresh("SPENT");
+        assert!(c.renew().is_err());
+        assert!(c.renew_error().unwrap().contains("400"));
+        assert!(!c.renew_due());
+        assert_eq!(c.verify_token(), Some(false));
+        assert!(c.token_refused());
     }
 
     #[test]
