@@ -2957,9 +2957,11 @@ function artSeen() {
 function coverImg(direct, proxied) {
   const img = document.createElement('img'); img.loading = 'lazy'; img.alt = '';
   let timer = null;
-  const viaSpeaker = () => { clearTimeout(timer); if (img.dataset.via === 'speaker') { img.remove(); return; } img.dataset.via = 'speaker'; img.src = proxied; };
+  const viaSpeaker = () => { clearTimeout(timer); if (img.dataset.via === 'speaker' || !proxied) { img.remove(); return; } img.dataset.via = 'speaker'; img.src = proxied; };
   img.onload = () => { clearTimeout(timer); if (img.dataset.via === 'direct') directArt = true; };
   img.onerror = () => { if (img.dataset.via === 'direct' && directArt === null) directArt = false; viaSpeaker(); };
+  // Generated covers (the daily mixes: al.sndcdn.com) the speaker does not relay: straight only.
+  if (!proxied) { img.dataset.via = 'only'; img.onerror = () => img.remove(); img.src = direct; return img; }
   if (directArt === false) { img.dataset.via = 'speaker'; img.src = proxied; return img; }
   img.dataset.via = 'direct'; img.src = direct;
   // A blocked CDN often does not refuse, it just hangs: give up on it after 1.5 s — counted
@@ -2973,7 +2975,7 @@ function card(art, title, sub, onclick, glyph) {
   const b = document.createElement('button'); b.className = 'card'; b.type = 'button'; b.onclick = onclick; b.title = title;
   const c = document.createElement('div'); c.className = 'cv';
   const src = artUrl(art);
-  if (src) c.appendChild(coverImg(art, src));
+  if (src || /^https:\/\/[a-z0-9]+\.sndcdn\.com\//.test(art || '')) c.appendChild(coverImg(art, src));
   else c.innerHTML = glyph || '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>';
   const t = document.createElement('b'); t.textContent = title;
   const sm = document.createElement('small'); sm.textContent = sub || '';
@@ -3466,6 +3468,7 @@ async function loadHome(force) {
   homeWidgets();
   renderScenes();
   loadWidgets(force);
+  loadShelves(force);
   const p = await postJSON('plan json');
   if (!p.error) {
     $('homeplantext').textContent = p.today || '';
@@ -3473,6 +3476,9 @@ async function loadHome(force) {
     $('homeplans').replaceChildren(...items.map(i => { const li = planRow(i); li.querySelectorAll('.del').forEach(b => b.remove()); return li; }));
   } else $('homeplantext').textContent = 'Планы недоступны: ' + p.error;
   loadHistory();
+}
+// The SoundCloud shelves do not wait for the plans (those can take seconds).
+async function loadShelves(force) {
   if (settings && settings.token && (force || Date.now() - shelvesLoaded > 15 * 60000)) {
     shelvesLoaded = Date.now();
     const h = await postJSON('home');
@@ -3489,7 +3495,8 @@ function renderStatusRow(s) {
     pill('SoundCloud', !st.soundcloud ? '' : s.login === 'refused' ? 'bad' : s.user ? 'good' : 'slow', ''),
     pill('Сеть', net.level === 'good' ? 'good' : net.level === 'slow' ? 'slow' : net.level === 'unknown' || !net.level ? '' : 'bad', ''),
   ];
-  if (st.airplay) parts.push(pill('AirPlay', s.airplay && s.airplay.active ? 'good' : '', s.airplay && s.airplay.active ? 'играет' : ''));
+  // Green when the receiver is up (ready to take a phone), red on its error; «играет» while it plays.
+  if (st.airplay) { const ap = s.airplay || {}; parts.push(pill('AirPlay', ap.error ? 'bad' : ap.active || ap.ready ? 'good' : 'slow', ap.active ? 'играет' : '')); }
   if (st.pc_on && (st.pc_host || st.pc_mac)) parts.push(pill('ПК', 'good', ''));
   if (st.tv_on && st.tv_host) parts.push(pill('ТВ', 'good', ''));
   if (s.update && s.update.available) parts.push(pill('Обновление', 'slow', esc(s.update.latest)));

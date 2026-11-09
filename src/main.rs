@@ -16,6 +16,8 @@ mod display;
 mod dns;
 mod ducking;
 #[cfg(feature = "dev")]
+mod alarm;
+#[cfg(feature = "dev")]
 mod devpage;
 mod eq;
 mod fsx;
@@ -106,6 +108,8 @@ pub enum Cmd {
         result: sc::Res<Vec<Track>>,
         reply: Option<Sender<String>>,
     },
+    /// Covers found for history entries saved without one: (link, cover, track id).
+    HistoryArt(Vec<(String, String, u64)>),
     /// Related tracks for the end of the queue; the number is the generation when asked.
     Related(u64, sc::Res<Vec<Track>>),
     /// Liked track ids after login.
@@ -1565,9 +1569,19 @@ impl Controller {
                 self.shuffle = true;
                 self.intent(*inner, reply);
             }
+            // An alarm's music: «пауза», ▶‖ and the panel's pause do not stop it (alarm.rs).
+            Intent::Pause if alarm_music_on() => {
+                let text = "Будильник так не выключается. Скажите: Алиса, я проснулся";
+                respond(reply, &format!("error: {text}"), Some(text.into()));
+            }
             Intent::Pause => {
                 self.set_paused(true);
                 respond(reply, "OK", None);
+            }
+            #[cfg(feature = "dev")]
+            Intent::Alarm(v) => {
+                let text = alarm::command(&v);
+                respond(reply, &format!("OK: {text}"), Some(text));
             }
             Intent::Resume if self.queue.is_empty() => {
                 // Nothing to go back to (soundya was restarted): same as «включи саундклауд».
@@ -1938,6 +1952,22 @@ impl Controller {
                     self.history.clear();
                 }
                 send_to(&reply, self.history.json().to_string());
+                // Entries from before covers were kept: look them up in the background, a few at a
+                // time; the page shows them on its next look at the history.
+                let links = self.history.missing_art(40);
+                if !links.is_empty() {
+                    let client = self.client.clone();
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        let found: Vec<_> = links
+                            .into_iter()
+                            .filter_map(|l| client.cover_of(&l).ok().filter(|(a, _)| !a.is_empty()).map(|(a, id)| (l, a, id)))
+                            .collect();
+                        if !found.is_empty() {
+                            let _ = tx.send(Cmd::HistoryArt(found));
+                        }
+                    });
+                }
             }
             "recs" => self.intent(Intent::Recommend, Some(reply)),
             // seek 95 | seek 1:35 (to that point) | seek +30 | seek -10 (by seconds)
@@ -2128,6 +2158,8 @@ impl Controller {
                     send_to(&reply, r.map_or_else(|e| format!("error: Telegram: {e}"), |()| "OK: сообщение отправлено в группу".into()));
                 });
             }
+            #[cfg(feature = "dev")]
+            "alarm" => send_to(&reply, alarm::panel(&arg)),
             "timer" => {
                 let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
                 let r = match what {
@@ -2742,7 +2774,7 @@ impl Controller {
                         "library" => {
                             let client = self.client.clone();
                             thread::spawn(move || {
-                                let r = match client.library() {
+                                let r = match client.library_with_covers() {
                                     Ok(lists) => serde_json::json!({"playlists": lists}).to_string(),
                                     Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
                                 };
@@ -2810,6 +2842,12 @@ impl Controller {
                 Cmd::Ended(..) => {}
                 Cmd::Loaded { what, result, reply } => self.on_loaded(what, result, reply),
                 Cmd::Related(token, result) => self.on_related(token, result),
+                Cmd::HistoryArt(found) => {
+                    for (link, art, id) in found {
+                        self.history.set_art(&link, art, id);
+                    }
+                    self.history.flush(false);
+                }
                 Cmd::Settings(patch, reply) => {
                     let r = match self.settings.merged(&patch) {
                         Ok(s) => self.apply_settings(s),
@@ -2955,6 +2993,14 @@ fn device_info() -> serde_json::Value {
         })
     })
     .clone()
+}
+
+/// An alarm's music stage is on (only the developer build has alarms).
+fn alarm_music_on() -> bool {
+    #[cfg(feature = "dev")]
+    return alarm::music_on();
+    #[cfg(not(feature = "dev"))]
+    false
 }
 
 fn login_state(token: bool, refused: bool, confirmed: bool) -> &'static str {
@@ -3253,6 +3299,9 @@ fn daemon() {
     planner::configure(settings.planner_on, settings.tz_offset);
     planner::run(&dir);
     timer::run(&dir);
+    // The alarm that cannot be slept through (developer build for now).
+    #[cfg(feature = "dev")]
+    alarm::run(&dir, tx.clone());
     adbkeep::configure(settings.adb_keep);
     alice::set_tv(settings.tv_on && !settings.tv_host.trim().is_empty());
     adbkeep::run();

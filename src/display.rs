@@ -26,6 +26,8 @@ pub struct Clock {
     paths: HashMap<String, PathBuf>,
     /// The «H» segment (a dot after the digit) exists on this board.
     dots: bool,
+    /// The segments' max_brightness.
+    max: u32,
 }
 
 /// Segments of one character on a seven-segment digit.
@@ -114,15 +116,18 @@ impl Clock {
     }
 
     fn detect_in(root: &Path) -> Option<Clock> {
-        // «plum:white:clockA0» → prefix «plum:white:clock».
-        let prefix = std::fs::read_dir(root).ok()?.flatten().find_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            name.strip_suffix("A0").filter(|p| p.ends_with(":clock")).map(str::to_owned)
-        })?;
+        // «plum:white:clockA0» → prefix «plum:white:clock»; the Mini 2 counts its digits
+        // from 1 («mini2:white:clockA1» … «D4», no A0): `first` is the left digit's number.
+        let names: Vec<String> = std::fs::read_dir(root).ok()?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let find = |suffix: &str| names.iter().find_map(|n| n.strip_suffix(suffix).filter(|p| p.ends_with(":clock")).map(str::to_owned));
+        let (prefix, first) = match find("A0") {
+            Some(p) => (p, 0),
+            None => (find("A1")?, 1),
+        };
         let mut paths = HashMap::new();
         for d in 0..DIGITS {
             for p in ["A", "B", "C", "D", "E", "F", "G", "H"] {
-                let path = root.join(format!("{prefix}{p}{d}")).join("brightness");
+                let path = root.join(format!("{prefix}{p}{}", d + first)).join("brightness");
                 if crate::fsx::exists(&path) {
                     paths.insert(format!("{p}{d}"), path);
                 }
@@ -137,7 +142,9 @@ impl Clock {
         // All seven segments of all four digits, or it is not a display we know.
         let complete = (0..DIGITS).all(|d| "ABCDEFG".chars().all(|p| paths.contains_key(&format!("{p}{d}"))));
         let dots = paths.contains_key("H0");
-        complete.then_some(Clock { paths, dots })
+        // Its brightest (the Mini 2's segments go to 170, not 255).
+        let max = paths.values().next().and_then(|p| crate::fsx::read_string(&p.with_file_name("max_brightness"))).and_then(|t| t.trim().parse().ok()).unwrap_or(255);
+        complete.then_some(Clock { paths, dots, max })
     }
 
     fn read(&self) -> HashMap<String, String> {
@@ -148,7 +155,7 @@ impl Clock {
     }
 
     fn show(&self, lit: &[String], colon: bool) {
-        let level = (255 * u32::from(BRIGHT.load(std::sync::atomic::Ordering::Acquire)) / 100).max(10).to_string();
+        let level = (self.max * u32::from(BRIGHT.load(std::sync::atomic::Ordering::Acquire)) / 100).max(10).to_string();
         for (name, path) in &self.paths {
             let on = lit.iter().any(|l| l == name) || (colon && (name == "DH" || name == "DL"));
             let _ = std::fs::write(path, if on { level.as_str() } else { "0" });
@@ -618,6 +625,29 @@ mod tests {
         c.restore(&saved);
         assert_eq!(std::fs::read_to_string(d.join("plum:white:clockA0/brightness")).unwrap(), "0");
         assert_eq!(std::fs::read_to_string(d.join("plum:white:clockDH/brightness")).unwrap(), "255", "colon back as it was");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn finds_the_mini2_clock_counted_from_one() {
+        let d = std::env::temp_dir().join(format!("soundya-clock-mini2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for n in 1..=4 {
+            for p in ["A", "B", "C", "D", "E", "F", "G"] {
+                let dir = d.join(format!("mini2:white:clock{p}{n}"));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("brightness"), "3").unwrap();
+                std::fs::write(dir.join("max_brightness"), "170").unwrap();
+            }
+        }
+        std::fs::create_dir_all(d.join("mini2:white:clockDEGREE")).unwrap();
+        std::fs::write(d.join("mini2:white:clockDEGREE/brightness"), "0").unwrap();
+        let c = Clock::detect_in(&d).expect("display found");
+        assert_eq!(c.max, 170);
+        c.show(&segments("1   "), false);
+        // «1» on the left digit: B and C of digit 1, at its own brightest.
+        assert_eq!(std::fs::read_to_string(d.join("mini2:white:clockB1/brightness")).unwrap(), "170");
+        assert_eq!(std::fs::read_to_string(d.join("mini2:white:clockA1/brightness")).unwrap(), "0");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

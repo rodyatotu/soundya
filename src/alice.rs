@@ -79,6 +79,9 @@ pub enum Intent {
     TgReply(String),
     /// «Да» / «нет» to a Telegram reply waiting for it.
     TgConfirm(bool),
+    /// soundya's alarm that cannot be slept through (alarm.rs, developer build).
+    #[cfg(feature = "dev")]
+    Alarm(crate::alarm::Voice),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -968,7 +971,20 @@ const HOME: [&str; 30] = [
 /// The verbs of a music request.
 const PLAY_VERBS: [&str; 5] = ["включи ", "поставь ", "запусти ", "сыграй ", "играй "];
 
+/// The alarm's phrases are not music (they stay soundya's with SoundCloud switched off).
+fn is_alarm(_intent: &Intent) -> bool {
+    #[cfg(feature = "dev")]
+    return matches!(_intent, Intent::Alarm(_));
+    #[cfg(not(feature = "dev"))]
+    false
+}
+
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
+    // A ringing alarm first: its «стоп», «я проснулся» and the answer to its sum.
+    #[cfg(feature = "dev")]
+    if let Some(v) = crate::alarm::voice(&normalize(text), crate::alarm::ringing(), crate::planner::now(), crate::planner::offset()) {
+        return Some(Intent::Alarm(v));
+    }
     // «Алиса, пульт» before all: «включи пульт телевизора» is the remote mode, not an app.
     if let Some(on) = remote_phrase(&normalize(text)) {
         return Some(Intent::Tv(TvAction::RemoteMode(on)));
@@ -1334,6 +1350,18 @@ fn recognized(data: &[u8]) -> Option<(String, String)> {
         return None;
     }
     let state = bytes(data, 252)?;
+    // Dev build, while the alarm rings: every recognition frame in the log — its answer to
+    // the sum («восемь») once never got through, and this shows what Alice sent instead.
+    #[cfg(feature = "dev")]
+    if crate::alarm::ringing() {
+        if let Some(r) = bytes(state, 15) {
+            let t = bytes(r, 1).map(String::from_utf8_lossy).unwrap_or_default();
+            let raw = bytes(state, 2).map(String::from_utf8_lossy).unwrap_or_default();
+            if !t.is_empty() || !raw.is_empty() {
+                eprintln!("dev: alarm heard: state {:?}, flags {:?}/{:?}, text {t:?}, raw {raw:?}", number(state, 1), number(r, 2), number(r, 4));
+            }
+        }
+    }
     if !matches!(number(state, 1), Some(1 | 3)) {
         return None;
     }
@@ -1342,7 +1370,12 @@ fn recognized(data: &[u8]) -> Option<(String, String)> {
         return None;
     }
     let text = std::str::from_utf8(bytes(result, 1)?).ok()?;
-    if text.is_empty() || text.len() > 512 || Some(text.as_bytes()) != bytes(state, 2) {
+    if text.is_empty() || text.len() > 512 {
+        return None;
+    }
+    // The final text is the same as the request's own; a number may be written differently
+    // there («восемь» / «8»), so an alarm answer passes either way.
+    if Some(text.as_bytes()) != bytes(state, 2) && !alarm_answer(text) {
         return None;
     }
     let request = std::str::from_utf8(bytes(state, 7)?).ok()?;
@@ -1350,6 +1383,14 @@ fn recognized(data: &[u8]) -> Option<(String, String)> {
         return None;
     }
     Some((request.to_owned(), text.to_owned()))
+}
+
+/// While the alarm waits for the answer to its sum: is this phrase a number?
+fn alarm_answer(_text: &str) -> bool {
+    #[cfg(feature = "dev")]
+    return crate::alarm::ringing() && matches!(crate::alarm::voice(&normalize(_text), true, 0, 0), Some(crate::alarm::Voice::Answer(_)));
+    #[cfg(not(feature = "dev"))]
+    false
 }
 
 fn put_var(out: &mut Vec<u8>, mut v: u64) {
@@ -1444,15 +1485,28 @@ fn speak(text: &str) -> io::Result<()> {
     let started = std::time::Instant::now();
     let mut speaking = false;
     let mut data = Vec::new();
+    // A read timeout (EAGAIN on Linux) is not a failure once she started speaking: some
+    // firmwares never send «completed». Before that it means she did not take the phrase.
+    let quiet = |e: io::Error, speaking: bool| -> io::Result<()> {
+        match e.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut if speaking => Ok(()),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Err(io::Error::other("Алиса не начала говорить за 15 с")),
+            _ => Err(e),
+        }
+    };
     while started.elapsed() < Duration::from_secs(30) {
         let mut len = [0u8; 4];
-        socket.read_exact(&mut len)?;
+        if let Err(e) = socket.read_exact(&mut len) {
+            return quiet(e, speaking);
+        }
         let size = u32::from_le_bytes(len) as usize;
         if size == 0 || size > MAX_FRAME {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "frame length"));
         }
         data.resize(size, 0);
-        socket.read_exact(&mut data)?;
+        if let Err(e) = socket.read_exact(&mut data) {
+            return quiet(e, speaking);
+        }
         if number(&data, 253) != Some(3) {
             continue;
         }
@@ -1589,7 +1643,7 @@ fn read_frames(
             let music = !matches!(
                 intent,
                 Intent::Pc(_) | Intent::Tv(_) | Intent::Address | Intent::BtOut(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
-            );
+            ) && !is_alarm(&intent);
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
                 continue;
@@ -1689,6 +1743,8 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
         Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
+        #[cfg(feature = "dev")]
+        Intent::Alarm(_) => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
         Intent::Pc(_) => w.pc,

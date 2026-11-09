@@ -5,7 +5,7 @@
 //! minute, not on every track.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::PathBuf,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -48,6 +48,8 @@ pub struct History {
     data: Saved,
     dirty: bool,
     saved: Instant,
+    /// Links already asked for a missing cover in this run (not asked again).
+    asked_art: HashSet<String>,
 }
 
 fn now() -> u64 {
@@ -67,7 +69,7 @@ impl History {
         let data = crate::fsx::read_string(&path)
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
-        History { path, data, dirty: false, saved: Instant::now() }
+        History { path, data, dirty: false, saved: Instant::now(), asked_art: HashSet::new() }
     }
 
     pub fn track(&mut self, name: String, link: Option<&str>, art: Option<String>, id: u64) {
@@ -85,6 +87,33 @@ impl History {
     /// «Недавно играло» to play again: the ids of the recent tracks, newest first.
     pub fn recent_ids(&self, max: usize) -> Vec<u64> {
         self.data.tracks.iter().map(|e| e.id).filter(|id| *id != 0).take(max).collect()
+    }
+
+    /// Links of tracks saved without a cover (older entries), newest first, each asked once a run.
+    pub fn missing_art(&mut self, max: usize) -> Vec<String> {
+        let links: Vec<String> = self
+            .data
+            .tracks
+            .iter()
+            .filter(|e| e.art.is_empty())
+            .filter_map(|e| e.cmd.strip_prefix("replay ").map(str::to_owned))
+            .filter(|l| !self.asked_art.contains(l))
+            .take(max)
+            .collect();
+        self.asked_art.extend(links.iter().cloned());
+        links
+    }
+
+    /// The cover (and id) found for a track saved without one.
+    pub fn set_art(&mut self, link: &str, art: String, id: u64) {
+        let cmd = format!("replay {link}");
+        for e in self.data.tracks.iter_mut().filter(|e| e.cmd == cmd && e.art.is_empty()) {
+            e.art = art.clone();
+            if e.id == 0 {
+                e.id = id;
+            }
+            self.dirty = true;
+        }
     }
 
     pub fn clear(&mut self) {
@@ -149,5 +178,21 @@ mod tests {
         assert_eq!(h.recent_ids(10), [42]);
         assert_eq!(h.data.sets[0].cmd, "playlist chill");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn covers_filled_in_for_old_entries() {
+        let dir = std::env::temp_dir().join(format!("soundya-history-art-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut h = History::load(&dir);
+        h.data = Saved::default();
+        h.track("a".into(), Some("https://soundcloud.com/x/a"), None, 0);
+        h.track("b".into(), Some("https://soundcloud.com/x/b"), Some("https://i1.sndcdn.com/b.jpg".into()), 2);
+        assert_eq!(h.missing_art(10), ["https://soundcloud.com/x/a"]);
+        assert!(h.missing_art(10).is_empty(), "asked once a run");
+        h.set_art("https://soundcloud.com/x/a", "https://i1.sndcdn.com/a.jpg".into(), 1);
+        assert_eq!((h.data.tracks[1].art.as_str(), h.data.tracks[1].id), ("https://i1.sndcdn.com/a.jpg", 1));
+        assert_eq!(h.recent_ids(10), [2, 1]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
