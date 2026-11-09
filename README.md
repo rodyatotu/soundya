@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/Rust-armv7-dea584?logo=rust&logoColor=white" alt="Rust, armv7">
   <img src="https://img.shields.io/badge/лицензия-MIT-blue" alt="MIT">
   <a href="http://195.209.211.30:8787/"><img src="http://195.209.211.30:8787/badge.svg" alt="Работает на колонках"></a>
-  <img src="https://img.shields.io/badge/версия-0.5.2-ff5500" alt="Версия 0.5.2">
+  <img src="https://img.shields.io/badge/версия-0.5.3-ff5500" alt="Версия 0.5.3">
   <a href="https://t.me/+ftjTac-KQkgxY2E0"><img src="https://img.shields.io/badge/Telegram-сообщество-229ED9?logo=telegram&logoColor=white" alt="Сообщество в Telegram"></a>
 </p>
 
