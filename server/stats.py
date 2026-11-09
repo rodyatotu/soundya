@@ -20,6 +20,9 @@ Pages:
     GET /badge.json  the same for shields.io (needs HTTPS)
     GET /            counts by model and version, speakers per day
     GET /stats.json  the same as JSON
+    GET /tg/<channel> the latest posts of an open Telegram channel (soundya 0.5.2+ morning news,
+                     src/morning.rs): only the posts' text blocks of t.me/s/<channel>, kept
+                     10 minutes. A server that cannot reach Telegram asks the relay's.
 
 Python 3.8+, standard library only. Run:  python3 stats.py --port 8787 --db /var/lib/soundya-stats/stats.db
 """
@@ -87,6 +90,15 @@ REPORT_RELAY = os.environ.get("SOUNDYA_REPORT_RELAY", "").strip()
 # On the receiving server: the relaying servers' addresses, whose X-Forwarded-For is trusted
 # (else every relayed report would count as one sender: one per 20 s for all speakers).
 RELAY_FROM = {a.strip() for a in os.environ.get("SOUNDYA_RELAY_FROM", "").split(",") if a.strip()}
+# The relay's /tg/: the same server as SOUNDYA_REPORT_RELAY, or SOUNDYA_TG_RELAY if set.
+TG_RELAY = os.environ.get("SOUNDYA_TG_RELAY", "").strip() or (REPORT_RELAY[: -len("/report")] if REPORT_RELAY.endswith("/report") else "")
+TG_WEB = os.environ.get("SOUNDYA_TG_WEB", "https://t.me/s").rstrip("/")  # tests point it elsewhere
+TG_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
+TG_TTL = 600            # seconds a channel's posts are kept
+TG_FETCHES = 120        # at most this many fetches from Telegram per 10 minutes, for everyone
+tg_cache = {}           # name -> (time, body)
+tg_fetched = collections.deque()
+tg_lock = threading.Lock()
 REPORT_MAX = 8 << 20  # bytes of JSON (a screenshot of up to 3 MB in base64, logs)
 REPORT_FILES = {"system.log", "error.log", "diagnostics.json", "screenshot.png", "screenshot.jpg"}
 REPORT_ID_RE = re.compile(r"^SY-[0-9A-F]{8}$")
@@ -441,6 +453,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, json.dumps(stats(), ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/":
             self.send(200, page(stats()), "text/html; charset=utf-8")
+        elif path.startswith("/tg/"):
+            code, body = tg_posts(path[4:])
+            self.send(code, body, "text/html; charset=utf-8" if code == 200 else "text/plain; charset=utf-8", "public, max-age=300")
         else:
             self.send(404, "not found", "text/plain")
 
@@ -548,6 +563,43 @@ class Handler(BaseHTTPRequestHandler):
             # 502: the speaker keeps the report and tries again later.
             code, text = 502, "relay unreachable"
         self.send(code, text[:500], "text/plain; charset=utf-8")
+
+
+TG_POST_RE = re.compile(r'<div class="tgme_widget_message_text js-message_text"[^>]*>.*?</div>', re.S)
+
+
+def tg_posts(name):
+    """(code, body): the text blocks of an open channel's last posts, as t.me/s/ has them."""
+    if not TG_NAME_RE.match(name):
+        return 400, "bad channel name"
+    now = time.time()
+    with tg_lock:
+        hit = tg_cache.get(name.lower())
+        if hit and now - hit[0] < TG_TTL:
+            return 200, hit[1]
+        while tg_fetched and now - tg_fetched[0] > TG_TTL:
+            tg_fetched.popleft()
+        if len(tg_fetched) >= TG_FETCHES:
+            return 429, "too many channels right now"
+        tg_fetched.append(now)
+    url = f"{TG_RELAY}/tg/{name}" if TG_RELAY else f"{TG_WEB}/{name}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (soundya news)"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            page = r.read(2 << 20).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return (e.code if e.code in (400, 404, 429) else 502), "telegram error"
+    except Exception as e:
+        print(f"tg {name}: {e}", flush=True)
+        return 502, "telegram unreachable"
+    body = page if TG_RELAY else "\n".join(TG_POST_RE.findall(page))
+    if not body.strip():
+        return 404, "no posts (the channel has no web page, or it is private)"
+    with tg_lock:
+        if len(tg_cache) > 500:
+            tg_cache.clear()
+        tg_cache[name.lower()] = (now, body)
+    return 200, body
 
 
 def purge(since):

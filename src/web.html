@@ -436,12 +436,15 @@
   html { background: var(--page); }
   body::before, body::after { display: none; }
   .bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
-  .bg i { position: absolute; border-radius: 50%; filter: blur(80px); opacity: var(--bg-int); will-change: transform;
+  /* No filter: blur() on the moving blobs — it made the browser re-blur them every frame and on a
+     long page (Chrome on a Mac) parts of it came up blank while scrolling. The radial gradients
+     are soft already; only their position moves, which the GPU does for free. */
+  .bg i { position: absolute; border-radius: 50%; opacity: var(--bg-int); will-change: transform;
     animation: float calc(28s / var(--bg-speed)) ease-in-out infinite alternate; }
-  .bg i:nth-child(1) { width: 55vmax; height: 55vmax; left: -15vmax; top: -18vmax; background: radial-gradient(circle, var(--b1), transparent 66%); }
-  .bg i:nth-child(2) { width: 50vmax; height: 50vmax; right: -18vmax; top: 10vh; background: radial-gradient(circle, var(--b2), transparent 66%); animation-delay: calc(-7s / var(--bg-speed)); animation-duration: calc(34s / var(--bg-speed)); }
-  .bg i:nth-child(3) { width: 60vmax; height: 60vmax; left: 10vw; bottom: -30vmax; background: radial-gradient(circle, var(--b3), transparent 66%); animation-delay: calc(-15s / var(--bg-speed)); animation-duration: calc(40s / var(--bg-speed)); }
-  .bg i:nth-child(4) { width: 34vmax; height: 34vmax; right: 8vw; bottom: 5vh; background: radial-gradient(circle, var(--b4), transparent 66%); animation-delay: calc(-21s / var(--bg-speed)); animation-duration: calc(31s / var(--bg-speed)); }
+  .bg i:nth-child(1) { width: 55vmax; height: 55vmax; left: -15vmax; top: -18vmax; background: radial-gradient(circle, var(--b1), color-mix(in srgb, var(--b1) 45%, transparent) 30%, transparent 70%); }
+  .bg i:nth-child(2) { width: 50vmax; height: 50vmax; right: -18vmax; top: 10vh; background: radial-gradient(circle, var(--b2), color-mix(in srgb, var(--b2) 45%, transparent) 30%, transparent 70%); animation-delay: calc(-7s / var(--bg-speed)); animation-duration: calc(34s / var(--bg-speed)); }
+  .bg i:nth-child(3) { width: 60vmax; height: 60vmax; left: 10vw; bottom: -30vmax; background: radial-gradient(circle, var(--b3), color-mix(in srgb, var(--b3) 45%, transparent) 30%, transparent 70%); animation-delay: calc(-15s / var(--bg-speed)); animation-duration: calc(40s / var(--bg-speed)); }
+  .bg i:nth-child(4) { width: 34vmax; height: 34vmax; right: 8vw; bottom: 5vh; background: radial-gradient(circle, var(--b4), color-mix(in srgb, var(--b4) 45%, transparent) 30%, transparent 70%); animation-delay: calc(-21s / var(--bg-speed)); animation-duration: calc(31s / var(--bg-speed)); }
   @keyframes float {
     0% { transform: translate(0, 0) scale(1); }
     50% { transform: translate(8vw, 6vh) scale(1.12); }
@@ -458,6 +461,17 @@
     border-radius: 26px;
   }
   html.glass-lite { --glass-blur: 12px; }
+  /* Blank rectangles on a fast scroll (Chrome and Safari on a Mac), worse the more sections
+     are open: the browser re-blurred everything under every card on every frame of the moving
+     background, and a tall card ran out of GPU before it was drawn. The page's cards do not
+     blur what is under them now (the background is soft already); they are a little more solid
+     instead. Only the small things floating above the page (queue, dialogs) still blur. */
+  section, nav { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  section, nav { background: linear-gradient(160deg, rgba(255,255,255,.16), rgba(255,255,255,.04) 40%), var(--card-solid); }
+  :root { --card-solid: rgba(255, 255, 255, .74); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --card-solid: rgba(30, 25, 40, .66); } }
+  html[data-theme="dark"] { --card-solid: rgba(30, 25, 40, .66); }
+  html, body { overscroll-behavior-y: none; }
   /* A soft reflection along the top edge. */
   /* Edge to edge in the card's own corners (an inset shape with other corners read as a crooked plate). */
   section::before, .modal-card::before {
@@ -655,6 +669,18 @@
   .daytext { font-size: 15px; line-height: 1.5; margin: 12px 2px; }
   #planview button, #addkind button { padding: 8px 4px; font-size: 14px; }
   #tab-plans [hidden] { display: none !important; }
+  /* «Выполненные на колонке»: a quiet line to open, without the browser's triangle. */
+  details.donelist > summary { list-style: none; display: inline-block; cursor: pointer; font-size: 13px; color: var(--muted);
+    padding: 4px 0; margin: 4px 0; }
+  details.donelist > summary::-webkit-details-marker, details.donelist > summary::marker { display: none; content: ''; }
+  details.donelist > summary:hover { color: var(--accent); }
+  details.donelist[open] > summary { color: var(--ink); }
+  /* Drop-downs: our own arrow, a little in from the rounded edge (the browser's sat on the border). */
+  select:not([multiple]) { -webkit-appearance: none !important; appearance: none !important;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23948da0' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important; background-repeat: no-repeat !important;
+    background-position: right 16px center !important; background-size: 12px 8px !important; padding-right: 40px !important; }
+  select.tvpick, select.chipsel { background-position: right 10px center !important; background-size: 10px 7px !important; padding-right: 26px !important; }
+  select::-ms-expand { display: none; }
   ul.timeline li .tm { flex: none; width: 5.4em; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
   /* Delete: a small translucent round cross. */
   ul.timeline li button.link.del { flex: none; width: 24px; height: 24px; padding: 0; border-radius: 50%; display: grid; place-items: center;
@@ -734,6 +760,17 @@
   .qpop .qhead { display: flex; justify-content: space-between; align-items: baseline; margin: 0 4px 6px; }
   .qpop .qhead small { color: var(--muted); }
   .qpop ul.list { margin: 0; }
+  /* One scroll in the queue, not two (the list had its own inside the popup), and never sideways. */
+  .qpop { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+  .qpop ul.queue { max-height: none; overflow: visible; }
+  .qpop .qhead { position: sticky; top: -10px; z-index: 1; padding: 10px 4px 6px; margin: -10px 0 6px; background: inherit; }
+  /* The panel's own scrollbars everywhere: thin, in its colours, not the system's grey bars. */
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink) 28%, transparent) transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--ink) 26%, transparent); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--accent) 70%, transparent); }
+  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   /* Search inside the player: a small magnifier top right; the field and results open in place. */
   .psearchbtn { position: absolute; top: 12px; right: 12px; z-index: 2; width: 32px; height: 32px; padding: 0; border-radius: 50%;
     color: var(--muted); background: color-mix(in srgb, var(--ink) 6%, transparent); border: 0; }
@@ -805,7 +842,7 @@
   .addline input { flex: 1; min-width: 0; }
   .addline .addbtn { width: 44px; flex: none; padding: 0; font-size: 20px; border-radius: 14px; }
   /* The add form: one line until it is used. */
-  #planaddbox:not(.open) > :not(.addline) { display: none !important; }
+  #planaddbox:not(.open) > :not(.addline):not(.msg) { display: none !important; }
   .btnow { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 16px; margin: 8px 0;
     background: color-mix(in srgb, #2a8cff 10%, transparent); border: 1px solid color-mix(in srgb, #2a8cff 35%, transparent); }
   .btnow[hidden], #btactions[hidden] { display: none; }
@@ -1035,10 +1072,9 @@
         </div>
       </div>
       <p class="hint" id="addhint"></p>
-
+      <div class="msg" id="planmsg"></div>
     </div>
-    <div class="msg" id="planmsg"></div>
-    <details><summary class="hint">Выполненные на колонке</summary><ul class="list plans" id="plandone"></ul></details>
+    <details class="donelist"><summary>Выполненные на колонке</summary><ul class="list plans" id="plandone"></ul></details>
 
     <details class="psect"><summary>Настройки планировщика</summary>
     <label class="switch"><input type="checkbox" id="planon" onchange="savePlanner()"><span><b>Планировщик soundya</b></span></label>
@@ -5576,6 +5612,25 @@ post('/api/cmd', 'update auto').then(refresh);
       <button class="primary" id="aladd">Поставить</button>
     </div>
     <p class="hint">Выключается только словами «Алиса, я проснулся» и ответом на пример. «Стоп», пауза и ▶‖ его не выключают.</p>
+    <details class="donelist" id="almorning"><summary>Утро после будильника</summary>
+      <label class="check"><input type="checkbox" id="mon"><span>После верного ответа — приветствие, погода, планы и новости</span></label>
+      <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:6px">
+        <input type="text" id="mgreet" placeholder="Доброе утро!" style="flex:1 1 220px">
+        <select id="mnews" style="${FIELD};flex:1 1 160px">
+          <option value="">Без новостей</option><option value="ria">РИА Новости</option><option value="rbc">РБК</option>
+          <option value="lenta">Лента.ру</option><option value="habr">Хабр</option><option value="tg">Каналы Telegram…</option><option value="url">Своя RSS-ссылка…</option>
+        </select>
+      </div>
+      <input type="text" id="mnewsurl" placeholder="https://… ссылка на RSS" hidden style="margin-top:8px">
+      <input type="text" id="mnewstg" placeholder="@meduzalive, @rbc_news, @breakingmash — открытые каналы через запятую" hidden style="margin-top:8px">
+      <input type="text" id="mintro" placeholder="Заставка: трек SoundCloud — ссылка или название (необязательно)" style="margin-top:8px">
+      <div class="row" style="flex-wrap:wrap;gap:12px;margin-top:6px">
+        <label class="check"><input type="checkbox" id="mweather"><span>Погода</span></label>
+        <label class="check"><input type="checkbox" id="mplans"><span>Планы на день</span></label>
+      </div>
+      <p class="hint">Каналы Telegram — только открытые, у которых есть веб-страница t.me/s/имя (у некоторых, например РИА, она выключена). Telegram в России закрыт, поэтому посты колонка берёт через сервер soundya (он видит только имена каналов). Заставка играет 20 секунд, потом Алиса здоровается. Говорит голосом Алисы; погода — для города из «Вид → Экран», планы — из планировщика.</p>
+      <div class="row" style="gap:8px"><button class="primary" id="msave">Сохранить</button><button id="mtest">Проверить сейчас</button></div>
+    </details>
     <div class="msg" id="almsg"></div>`;
   home.insertBefore(box, home.firstElementChild ? home.firstElementChild.nextSibling : null);
   const $ = id => box.querySelector('#' + id);
@@ -5620,6 +5675,45 @@ post('/api/cmd', 'update auto').then(refresh);
     load();
   };
   $('alsnooze').onclick = async () => { show(await send('alarm snooze')); load(); };
+  // «Утро после будильника»: kept in the settings like any other.
+  const KNOWN = ['', 'ria', 'rbc', 'lenta', 'habr'];
+  function fillMorning() {
+    const st = (typeof settings === 'object' && settings) || {};
+    if (box.querySelector('#almorning').contains(document.activeElement)) return;
+    $('mon').checked = st.morning_on !== false;
+    $('mgreet').value = st.morning_greet || '';
+    const news = st.morning_news === undefined ? 'ria' : st.morning_news;
+    const tg = news.startsWith('tg:');
+    $('mnews').value = KNOWN.includes(news) ? news : tg ? 'tg' : 'url';
+    $('mnewsurl').value = KNOWN.includes(news) || tg ? '' : news;
+    $('mnewstg').value = tg ? news.slice(3).split(',').map(c => '@' + c.trim().replace(/^@/, '')).filter(c => c.length > 1).join(', ') : '';
+    $('mnewsurl').hidden = $('mnews').value !== 'url';
+    $('mnewstg').hidden = $('mnews').value !== 'tg';
+    $('mintro').value = st.morning_intro || '';
+    $('mweather').checked = st.morning_weather !== false;
+    $('mplans').checked = st.morning_plans !== false;
+  }
+  $('mnews').onchange = () => {
+    $('mnewsurl').hidden = $('mnews').value !== 'url';
+    $('mnewstg').hidden = $('mnews').value !== 'tg';
+    if (!$('mnewsurl').hidden) $('mnewsurl').focus();
+    if (!$('mnewstg').hidden) $('mnewstg').focus();
+  };
+  const morningBody = () => JSON.stringify({
+    morning_on: $('mon').checked, morning_greet: $('mgreet').value.trim(),
+    morning_news: $('mnews').value === 'url' ? $('mnewsurl').value.trim() : $('mnews').value === 'tg' ? 'tg:' + $('mnewstg').value.trim() : $('mnews').value,
+    morning_intro: $('mintro').value.trim(), morning_weather: $('mweather').checked, morning_plans: $('mplans').checked,
+  });
+  $('msave').onclick = async () => { show(await fetch('/api/settings', { method: 'POST', body: morningBody() }).then(r => r.text()).catch(e => 'error: ' + e)); };
+  $('mtest').onclick = async () => {
+    const saved = await fetch('/api/settings', { method: 'POST', body: morningBody() }).then(r => r.text()).catch(e => 'error: ' + e);
+    if (saved.startsWith('error')) { show(saved); return; }
+    show(await send('morning test'));
+  };
+  // Developer build only for now.
+  box.querySelector('#almorning').hidden = !window.SOUNDYA_DEV;
+  box.querySelector('#almorning').addEventListener('toggle', fillMorning);
+  setTimeout(fillMorning, 1500);
   load();
   setInterval(load, 5000);
 })();

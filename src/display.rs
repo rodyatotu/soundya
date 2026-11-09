@@ -483,6 +483,9 @@ pub fn run_providers(shared: std::sync::Arc<crate::Shared>) {
     });
 }
 
+/// How long after Alice falls silent the display stays hers.
+const ALICE_GRACE: Duration = Duration::from_millis(2500);
+
 /// Draws the install phases, interrupts and widgets, and puts the firmware's
 /// clock back when it is the clock's turn.
 pub fn run() {
@@ -493,11 +496,31 @@ pub fn run() {
         let mut started = Instant::now();
         let cycle = Instant::now();
         let mut last = None;
+        // What was written last and when: unchanged segments are written again only once a
+        // second (the firmware redraws its clock by itself), not every 90 ms.
+        let mut drawn: Option<(Vec<String>, bool)> = None;
+        let mut drawn_at = Instant::now();
+        // While Alice listens / speaks the firmware draws on the display itself (its own
+        // animation and volume): soundya steps aside until she has been quiet for a moment —
+        // writing over her made the display blink (report SY-427B7DFE, Plum).
+        let mut quiet_from = Instant::now();
         loop {
             let phase = crate::led::install_phase();
             if phase != last {
                 started = Instant::now();
                 last = phase.clone();
+            }
+            if crate::voice::alice_is_busy() {
+                quiet_from = Instant::now() + ALICE_GRACE;
+            }
+            if phase.is_none() && Instant::now() < quiet_from {
+                if let Some(s) = saved.take() {
+                    clock.restore(&s);
+                }
+                drawn = None;
+                *SHOWN.lock().unwrap() = "clock".into();
+                thread::sleep(Duration::from_millis(90));
+                continue;
             }
             let note = NOTE.lock().unwrap().clone().filter(|(_, until)| Instant::now() < *until);
             let widgets = WIDGETS.lock().unwrap().clone().filter(|w| w.on);
@@ -528,13 +551,19 @@ pub fn run() {
                     if saved.is_none() {
                         saved = Some(clock.read());
                     }
-                    clock.show(&lit, colon);
+                    let frame = (lit, colon);
+                    if drawn.as_ref() != Some(&frame) || drawn_at.elapsed() >= Duration::from_secs(1) {
+                        clock.show(&frame.0, frame.1);
+                        drawn = Some(frame);
+                        drawn_at = Instant::now();
+                    }
                     *SHOWN.lock().unwrap() = text;
                 }
                 None => {
                     if let Some(s) = saved.take() {
                         clock.restore(&s);
                     }
+                    drawn = None;
                     *SHOWN.lock().unwrap() = "clock".into();
                 }
             }

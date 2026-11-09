@@ -113,6 +113,47 @@ def main():
         srv.terminate()
         srv.wait()
         relay.shutdown()
+    # /tg/<channel>: a server that reaches Telegram answers with the posts' text blocks only,
+    # a server that cannot asks the other one (SOUNDYA_REPORT_RELAY's server).
+    asked = []
+
+    class FakeTelegram(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            asked.append(self.path)
+            if self.path.endswith("/closedchan"):
+                body = b"<html>no web preview</html>"
+            else:
+                body = ('<html><div class="tgme_widget_message_text js-message_text" dir="auto"><b>One</b><br/>x</div>'
+                        '<script>junk</script><div class="tgme_widget_message_text js-message_text" dir="auto">Two</div></html>').encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+    tg = http.server.ThreadingHTTPServer(("127.0.0.1", PORT + 3), FakeTelegram)
+    threading.Thread(target=tg.serve_forever, daemon=True).start()
+    abroad = subprocess.Popen([sys.executable, os.path.join(ROOT, "server", "stats.py"), "--host", "127.0.0.1", "--port", str(PORT + 4),
+                               "--db", os.path.join(tmp, "abroad.db")], env=dict(env, SOUNDYA_TG_WEB=f"http://127.0.0.1:{PORT + 3}/s"),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    home = subprocess.Popen([sys.executable, os.path.join(ROOT, "server", "stats.py"), "--host", "127.0.0.1", "--port", str(PORT),
+                             "--db", db], env=dict(env, SOUNDYA_REPORT_RELAY=f"http://127.0.0.1:{PORT + 4}/report"),
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    time.sleep(1.5)
+    try:
+        code, body = get("/tg/meduzalive")
+        text = body.decode()
+        check("/tg/ through the relay: the posts' blocks only", code == 200 and "One" in text and "Two" in text and "junk" not in text)
+        get("/tg/meduzalive")
+        check("/tg/ is kept: Telegram asked once", asked.count("/s/meduzalive") == 1)
+        check("/tg/ refuses odd names", get("/tg/../etc")[0] in (400, 404) and get("/tg/a%20b")[0] == 400)
+        check("/tg/ of a channel without a web page: 404", get("/tg/closedchan")[0] == 404)
+    finally:
+        for p in (home, abroad):
+            p.terminate()
+            p.wait()
+        tg.shutdown()
     print("all passed" if not fails else f"{fails} failed")
     sys.exit(1 if fails else 0)
 

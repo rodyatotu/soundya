@@ -16,6 +16,7 @@ mod display;
 mod dns;
 mod ducking;
 mod alarm;
+mod morning;
 #[cfg(feature = "dev")]
 mod devpage;
 mod eq;
@@ -531,6 +532,12 @@ impl Controller {
         settings["timer_face"] = self.settings.timer_face.into();
         settings["adb_keep"] = self.settings.adb_keep.into();
         settings["remote_tab"] = self.settings.remote_tab.into();
+        settings["morning_on"] = self.settings.morning_on.into();
+        settings["morning_greet"] = self.settings.morning_greet.clone().into();
+        settings["morning_news"] = self.settings.morning_news.clone().into();
+        settings["morning_intro"] = self.settings.morning_intro.clone().into();
+        settings["morning_weather"] = self.settings.morning_weather.into();
+        settings["morning_plans"] = self.settings.morning_plans.into();
         settings["home_hidden"] = self.settings.home_hidden.clone().into();
         settings["home_order"] = self.settings.home_order.clone().into();
         settings["pomo_on_work"] = self.settings.pomo_on_work.clone().into();
@@ -998,6 +1005,13 @@ impl Controller {
         self.shared.tv.store(new.tv_configured(), Ordering::Release);
         alice::set_tv(new.tv_configured());
         alice::set_devices(device_names(&new));
+        new.morning_greet = new.morning_greet.trim().chars().take(200).collect();
+        new.morning_intro = new.morning_intro.trim().chars().take(300).collect();
+        new.morning_news = new.morning_news.trim().to_owned();
+        if !new.morning_news.is_empty() && morning::feed_url(&new.morning_news).is_none() && morning::tg_channels(&new.morning_news).is_none() {
+            return "error: новости — один из источников списка, ссылка на RSS (https://…) или каналы Telegram (@канал, @канал)".into();
+        }
+        alarm::set_morning(new.morning_on);
         self.shared.soundcloud.store(new.soundcloud, Ordering::Release);
         let proxy_changed = new.use_proxy() != self.settings.use_proxy();
         // Only a save that passed all checks switches ADB (turning it off touches the device).
@@ -2247,6 +2261,20 @@ impl Controller {
                 });
             }
             "alarm" => send_to(&reply, alarm::panel(&arg)),
+            // «morning run» after the alarm, «morning test» from the panel's «Проверить».
+            "morning" => {
+                if arg != "run" && arg != "test" {
+                    send_to(&reply, "usage: morning test".into());
+                    return;
+                }
+                // Developer build only for now.
+                if !cfg!(feature = "dev") || (arg == "run" && !self.settings.morning_on) {
+                    send_to(&reply, "error: утро после будильника — только в dev-сборке".into());
+                    return;
+                }
+                morning::run(self.settings.clone(), self.shared.clone(), self.tx.clone(), arg == "test");
+                send_to(&reply, "OK: утро началось — слушайте колонку".into());
+            }
             "timer" => {
                 let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
                 let r = match what {
@@ -3395,6 +3423,7 @@ fn daemon() {
     adbkeep::configure(settings.adb_keep);
     alice::set_tv(settings.tv_configured());
     alice::set_devices(device_names(&settings));
+    alarm::set_morning(settings.morning_on);
     adbkeep::run();
     calendar::configure(settings.cal_on, &settings.cal_url, settings.cal_remind);
     apply_planner(&settings);

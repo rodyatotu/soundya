@@ -254,6 +254,20 @@ pub struct Settings {
     /// The panel's own «Пульт» tab (a big TV remote), switched on in «Устройства».
     #[serde(default)]
     pub remote_tab: bool,
+    /// The morning after the alarm (morning.rs): on, the greeting, the news feed ("" = none),
+    /// an intro track (a SoundCloud link or search), and whether to tell the weather and plans.
+    #[serde(default = "yes")]
+    pub morning_on: bool,
+    #[serde(default = "default_greet")]
+    pub morning_greet: String,
+    #[serde(default = "default_news")]
+    pub morning_news: String,
+    #[serde(default)]
+    pub morning_intro: String,
+    #[serde(default = "yes")]
+    pub morning_weather: bool,
+    #[serde(default = "yes")]
+    pub morning_plans: bool,
     /// Keep the speaker's network ADB (port 5555) on, also after a restart (adbkeep.rs).
     #[serde(default = "yes")]
     pub adb_keep: bool,
@@ -354,6 +368,13 @@ pub struct Autostart {
     /// "boot": only after the speaker was switched on; "always": every start.
     #[serde(default)]
     pub when: String,
+}
+
+fn default_greet() -> String {
+    crate::morning::DEFAULT_GREET.into()
+}
+fn default_news() -> String {
+    "ria".into()
 }
 
 /// One more TV or projector (the first is `tv_host` / `tv_name`).
@@ -683,6 +704,12 @@ impl Default for Settings {
             home_hidden: home_hidden(),
             home_order: Vec::new(),
             remote_tab: false,
+            morning_on: true,
+            morning_greet: default_greet(),
+            morning_news: default_news(),
+            morning_intro: String::new(),
+            morning_weather: true,
+            morning_plans: true,
             pomo_on_work: String::new(),
             pomo_on_break: String::new(),
             pomo_on_done: String::new(),

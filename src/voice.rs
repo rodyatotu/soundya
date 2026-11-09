@@ -69,6 +69,11 @@ fn save_restore(v: Option<(u32, u32)>) {
     }
 }
 
+/// Alice is listening, thinking or speaking now (the clock display steps aside meanwhile).
+pub fn alice_is_busy() -> bool {
+    BUSY.load(Ordering::Acquire)
+}
+
 /// Alice's state from alice.rs: listening/thinking/speaking (true) or idle.
 pub fn alice_busy(busy: bool) {
     if BUSY.swap(busy, Ordering::AcqRel) == busy {

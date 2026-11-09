@@ -170,9 +170,9 @@ pub const TV_KEYS: [(&str, &str, &str); 14] = [
 /// «на проекторе», «на телевизоре», «на тв», «на приставке» — or the device named
 /// as the object («включи проектор»). The phrase without it, if it was there.
 fn strip_tv(text: &str) -> Option<(String, bool)> {
-    const PLACES: [&str; 12] = [
+    const PLACES: [&str; 13] = [
         " на телевизоре ", " на телеке ", " на телике ", " на тв ", " на проекторе ", " на приставке ",
-        " в телевизоре ", " в проекторе ", " на телевизор ", " на проектор ", " на тиви ", " на андроид тв ",
+        " в телевизоре ", " в проекторе ", " на телевизор ", " на проектор ", " на тиви ", " на андроид тв ", " на смарт тв ",
     ];
     const NOUNS: [&str; 14] = [
         "телевизор", "телевизора", "телевизору", "телек", "телик", "тв", "тиви", "проектор", "проектора",
@@ -491,7 +491,11 @@ fn tv(text: &str) -> Option<TvAction> {
             Some(TvAction::Search(q))
         }
         "открой" | "запусти" | "открыть" | "запустить" => {
+            // «запусти приложение лифт»: the app is «лифт»; stray «на» left from the places go.
             let q = after(1);
+            let q = q.strip_prefix("приложение ").unwrap_or(&q).trim();
+            let q: Vec<&str> = q.split_whitespace().filter(|w| *w != "на" && *w != "в").collect();
+            let q = q.join(" ");
             (!q.is_empty()).then_some(TvAction::Open(q))
         }
         _ => None,
@@ -1517,6 +1521,23 @@ pub fn say(text: String) {
     });
 }
 
+/// Says it and returns once she is done (or gave up): for things said one after another.
+pub fn say_wait(text: &str) {
+    let start = std::time::Instant::now();
+    match speak(text) {
+        Ok(()) => eprintln!("say: {text:?} (speaking: {} ms)", start.elapsed().as_millis()),
+        Err(e) => {
+            eprintln!("say: {text:?}: {e}");
+            // Some firmwares speak without telling when they are done: give the phrase the
+            // time it takes to say (about 13 letters a second), so the next one does not cut in.
+            let takes = Duration::from_millis(1000 + text.chars().count() as u64 * 1000 / 13);
+            if let Some(left) = takes.checked_sub(start.elapsed()) {
+                thread::sleep(left);
+            }
+        }
+    }
+}
+
 /// When the last phrase soundya took over was recognized: the log says how long answers take.
 static HEARD_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
@@ -2320,8 +2341,12 @@ mod tests {
         );
     }
 
+    /// The device names are global: the tests that set them take turns.
+    static DEVICES_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn devices_by_their_names() {
+        let _one = DEVICES_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let d = vec![("спальня".to_owned(), true), ("кухня".to_owned(), true), ("ноутбук".to_owned(), false), ("большой комп".to_owned(), false)];
         let on = |t: &str| device_in(&normalize(t), &d).map(|(n, _, p)| (n, p));
         assert_eq!(on("выключи телевизор в спальне"), Some(("спальня".into(), "выключи телевизор".into())));
@@ -2337,6 +2362,15 @@ mod tests {
         assert_eq!(intent("усыпи ноутбук", false), Some(Intent::On("ноутбук".into(), Box::new(Intent::Pc(PcAction::Sleep)))));
         assert_eq!(intent("пульт спальня", false), Some(Intent::On("спальня".into(), Box::new(Intent::Tv(TvAction::RemoteMode(true))))));
         assert!(!matches!(intent("включи музыку на кухне", false), Some(Intent::On(..))));
+        set_devices(Vec::new());
+    }
+
+    #[test]
+    fn open_an_app_said_loosely() {
+        let _one = DEVICES_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let d = vec![("кабинет".to_owned(), true)];
+        set_devices(d);
+        assert_eq!(intent("Алиса запусти приложение лифт на в кабинете на смарт тв", false), Some(Intent::On("кабинет".into(), Box::new(Intent::Tv(TvAction::Open("лифт".into()))))));
         set_devices(Vec::new());
     }
 }

@@ -91,6 +91,16 @@ pub enum Action {
     Say(String),
     Volume(i32),
     Restore(Option<i32>),
+    /// The morning after the right answer: greeting, weather, plans, news (morning.rs).
+    Morning,
+}
+
+/// «Утро после будильника» switched on in the settings.
+/// Developer build only for now (the user build switches the alarm off as before).
+static MORNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(feature = "dev"));
+
+pub fn set_morning(on: bool) {
+    MORNING.store(on && cfg!(feature = "dev"), std::sync::atomic::Ordering::Release);
 }
 
 // ------------------------------------------------------------------ time
@@ -403,7 +413,12 @@ pub fn voice_command(s: &mut Saved, v: &Voice, now: i64, off: i64) -> (String, V
                 let (a, b) = r.question.unwrap_or((0, 0));
                 if *x == u32::from(a) + u32::from(b) {
                     s.ringing = None;
-                    ("Правильно! Доброе утро, будильник выключен".into(), vec![Action::StopMusic, Action::Restore(r.volume_before)])
+                    if MORNING.load(std::sync::atomic::Ordering::Acquire) {
+                        // The morning itself says «доброе утро».
+                        ("Правильно! Будильник выключен".into(), vec![Action::StopMusic, Action::Restore(r.volume_before), Action::Morning])
+                    } else {
+                        ("Правильно! Доброе утро, будильник выключен".into(), vec![Action::StopMusic, Action::Restore(r.volume_before)])
+                    }
                 } else {
                     let (c, d) = question(now + 1);
                     if let Some(rr) = s.ringing.as_mut() {
@@ -487,6 +502,12 @@ pub fn execute(actions: Vec<Action>) {
                 let _ = crate::volume::set(v);
             }
             Action::Restore(None) => {}
+            Action::Morning => {
+                if let Some(tx) = &tx {
+                    let (reply, _) = std::sync::mpsc::channel();
+                    let _ = tx.send(Cmd::Control("morning run".into(), reply));
+                }
+            }
         }
     }
 }
@@ -642,7 +663,9 @@ mod tests {
         let (c, d) = s.ringing.as_ref().unwrap().question.unwrap();
         let (text, actions) = voice_command(&mut s, &Voice::Answer(u32::from(c) + u32::from(d)), t + 20, OFF);
         assert!(text.starts_with("Правильно") && s.ringing.is_none());
-        assert_eq!(actions, vec![Action::StopMusic, Action::Restore(Some(3))], "the volume comes back");
+        assert_eq!(&actions[..2], &[Action::StopMusic, Action::Restore(Some(3))], "the volume comes back");
+        // With «утро после будильника» on (the default) the morning follows.
+        assert_eq!(actions.get(2), MORNING.load(std::sync::atomic::Ordering::Acquire).then_some(&Action::Morning));
     }
 
     #[test]
