@@ -582,6 +582,8 @@
   .wscenes { display: flex; flex-wrap: wrap; gap: 8px; }
   .wscenes button { padding: 10px 14px; font-weight: 600; }
   .pcrow { display: grid; grid-template-columns: 96px 1fr auto; gap: 10px; align-items: center; margin: 6px 0; font-size: 14px; }
+  .pcone + .pcone { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .pctitle { display: block; font-size: 13px; color: var(--muted); font-weight: 600; margin-bottom: 2px; }
   .pcbar { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
   .pcbar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ff7a1a, #ff3d5a); }
   .pcval { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -3486,7 +3488,7 @@ async function loadWidgets(force) {
   let r;
   try { r = JSON.parse((await post('/api/cmd', 'widgets')).replace(/^OK:\s*/, '')); } catch (e) { r = {}; }
   renderWeather(r.weather || { error: 'нет ответа' });
-  renderPc(r.pc);
+  renderPcs(r.pcs || (r.pc ? [r.pc] : []));
 }
 function renderWeather(w) {
   const box = $('wweather');
@@ -3511,12 +3513,20 @@ function renderWeather(w) {
   box.querySelector('.wxmeta small').textContent = [w.feels != null ? 'ощущается ' + deg(w.feels) : '', w.max != null ? 'днём ' + deg(w.max) : '',
     w.min != null ? 'ночью ' + deg(w.min) : '', w.rain ? 'осадки ' + w.rain + '%' : '', w.wind != null ? 'ветер ' + w.wind + ' м/с' : ''].filter(Boolean).join(' · ');
 }
-function renderPc(p) {
+// Every computer: one block each, with its name on top when there are several.
+function renderPcs(list) {
   const box = $('wpc');
-  if (!p) { box.innerHTML = ''; return; }
-  if (p.error) { box.innerHTML = ''; const h = document.createElement('p'); h.className = 'hint'; h.textContent = 'Компьютер не отвечает: ' + p.error; box.appendChild(h); return; }
-  const rows = [['Процессор', p.cpu, p.cpu_temp], ['Видеокарта', p.gpu, p.gpu_temp], ['Память', p.ram_used, null]].filter(r => r[1] != null || r[2] != null);
   box.innerHTML = '';
+  for (const p of list) {
+    const part = document.createElement('div'); part.className = 'pcone';
+    if (list.length > 1) { const h = document.createElement('b'); h.className = 'pctitle'; h.textContent = p.name || 'Компьютер'; part.appendChild(h); }
+    renderPc(part, p);
+    box.appendChild(part);
+  }
+}
+function renderPc(box, p) {
+  if (p.error) { const h = document.createElement('p'); h.className = 'hint'; h.textContent = 'Компьютер не отвечает: ' + p.error; box.appendChild(h); return; }
+  const rows = [['Процессор', p.cpu, p.cpu_temp], ['Видеокарта', p.gpu, p.gpu_temp], ['Память', p.ram_used, null]].filter(r => r[1] != null || r[2] != null);
   for (const [name, load, temp] of rows) {
     const row = document.createElement('div'); row.className = 'pcrow';
     row.innerHTML = '<span class="pcname"></span><div class="pcbar"><i></i></div><span class="pcval"></span>';
@@ -3525,7 +3535,7 @@ function renderPc(p) {
     row.querySelector('.pcval').textContent = [load != null ? load + '%' : '', temp != null ? temp + '°' : ''].filter(Boolean).join(' · ');
     box.appendChild(row);
   }
-  if (!rows.length) box.innerHTML = '<p class="hint">Компьютер на связи, но не рассказал о себе.</p>';
+  if (!rows.length) { const h = document.createElement('p'); h.className = 'hint'; h.textContent = 'Компьютер на связи, но не рассказал о себе.'; box.appendChild(h); }
 }
 function renderScenes() {
   const box = $('wscenes'); if (!box) return;
@@ -3758,13 +3768,26 @@ function renderHome(s) {
   };
   const dv = s.device || {};
   dev(modelName(dv.model), `soundya ${dv.version || ''}${dv.firmware ? ' · прошивка ' + dv.firmware : ''}${s.led && s.led.ring ? ' · кольцо: ' + s.led.ring.split(',')[0] : ''}${dv.display ? ' · экран-часы' : ''}`);
-  const pcOn = st.pc_on && (st.pc_host || st.pc_mac);
-  dev('Компьютер', pcOn ? (st.pc_host || 'только включение по сети') + (s.pc_legacy ? ' · обновите soundya-pc: ключ идёт открытым текстом' : '') : 'не настроен',
-    pcOn ? 'Состояние' : 'Настроить',
-    pcOn ? async () => { busy($('homemsg'), 'Спрашиваю компьютер…'); show($('homemsg'), await post('/api/cmd', 'pc metrics')); } : () => openSettings('devices'));
-  const tvOn = st.tv_on && st.tv_host;
-  dev('Телевизор / проектор', tvOn ? st.tv_host : 'не настроен', tvOn ? 'Проверить' : 'Настроить',
-    tvOn ? async () => { busy($('homemsg'), 'Проверяю телевизор…'); show($('homemsg'), await post('/api/cmd', 'tv ping')); } : () => openSettings('devices'));
+  // Every computer and TV, not just the first: the extra ones are asked by name («on имя\t…»).
+  const ask = (name, line, wait) => async () => {
+    busy($('homemsg'), wait);
+    show($('homemsg'), await post('/api/cmd', name === null ? line : 'on ' + name + '\t' + line));
+  };
+  const pcs = [];
+  if ((st.pc_host || '').trim() || (st.pc_mac || '').trim()) pcs.push({ name: null, label: st.pc_name, host: st.pc_host });
+  for (const p of st.pcs_more || []) if ((p.host || '').trim() || (p.mac || '').trim()) pcs.push({ name: p.name, label: p.name, host: p.host });
+  if (st.pc_on && pcs.length) for (const p of pcs) {
+    const sub = (p.label ? p.label + ' · ' : '') + ((p.host || '').trim() || 'только включение по сети')
+      + (p.name === null && s.pc_legacy ? ' · обновите soundya-pc: ключ идёт открытым текстом' : '');
+    dev('Компьютер', sub, 'Состояние', ask(p.name, 'pc metrics', 'Спрашиваю ' + (p.label || 'компьютер') + '…'));
+  }
+  else dev('Компьютер', 'не настроен', 'Настроить', () => openSettings('devices'));
+  const tvs = [];
+  if ((st.tv_host || '').trim()) tvs.push({ name: null, label: st.tv_name, host: st.tv_host });
+  for (const t of st.tvs_more || []) if ((t.host || '').trim()) tvs.push({ name: t.name, label: t.name, host: t.host });
+  if (st.tv_on && tvs.length) for (const t of tvs)
+    dev('Телевизор / проектор', (t.label ? t.label + ' · ' : '') + t.host, 'Проверить', ask(t.name, 'tv ping', 'Проверяю ' + (t.label || 'телевизор') + '…'));
+  else dev('Телевизор / проектор', 'не настроен', 'Настроить', () => openSettings('devices'));
   if (s.airplay && s.airplay.active) dev('Телефон по AirPlay', 'сейчас играет на колонке');
   dev('Bluetooth', st.bt_mac ? (st.bt_name || st.bt_mac) + (st.bt_on ? ' · музыка там' : ' · выключено') : 'наушники и колонки не подключены',
     st.bt_mac ? (st.bt_on ? 'На колонку' : 'Включить') : 'Подключить',

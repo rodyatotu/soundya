@@ -2354,12 +2354,31 @@ impl Controller {
                             .unwrap_or_else(|e| serde_json::json!({ "error": e })),
                         _ => serde_json::json!({ "error": "no city" }),
                     };
-                    let pc = if s.pc_configured() && s.pc_on {
-                        pc::metrics_raw(&s).unwrap_or_else(|e| serde_json::json!({ "error": e }))
+                    // Every computer with an address, asked at once (one may be off and slow).
+                    let pcs: Vec<serde_json::Value> = if s.pc_on {
+                        let list: Vec<_> = s.pcs().into_iter().filter(|d| !d.host.is_empty()).collect();
+                        thread::scope(|sc| {
+                            let asks: Vec<_> = list
+                                .iter()
+                                .map(|d| {
+                                    let one = s.with_pc(d);
+                                    sc.spawn(move || pc::metrics_raw(&one).unwrap_or_else(|e| serde_json::json!({ "error": e })))
+                                })
+                                .collect();
+                            list.iter()
+                                .zip(asks)
+                                .map(|(d, h)| {
+                                    let mut m = h.join().unwrap_or_else(|_| serde_json::json!({ "error": "сбой" }));
+                                    m["name"] = d.name.clone().into();
+                                    m
+                                })
+                                .collect()
+                        })
                     } else {
-                        serde_json::Value::Null
+                        Vec::new()
                     };
-                    let _ = reply.send(serde_json::json!({ "weather": weather, "pc": pc }).to_string());
+                    let pc = pcs.first().cloned().unwrap_or(serde_json::Value::Null);
+                    let _ = reply.send(serde_json::json!({ "weather": weather, "pc": pc, "pcs": pcs }).to_string());
                 });
             }
             // «display city <город>»: the weather's place, found by name.
