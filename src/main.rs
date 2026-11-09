@@ -1160,10 +1160,10 @@ impl Controller {
 
     /// The music playing now moves to where it should play (Bluetooth on/off, connected/lost).
     fn reroute(&mut self) {
-        if let Some(f) = self.flags.as_ref().filter(|f| !f.paused.load(Ordering::Acquire)) {
-            let ms = f.position_ms.load(Ordering::Acquire);
-            let p = self.pos;
-            self.start_at(p, ms.saturating_sub(500), 0);
+        // The track goes on in its own download: only the sound card changes (it was restarted
+        // before: slow, and from a wrong place when Bluetooth had swallowed sound ahead).
+        if let Some(f) = self.flags.as_ref() {
+            f.move_to(&self.out_device());
         }
     }
 
@@ -1223,13 +1223,14 @@ impl Controller {
                 self.settings.bt_on = true;
                 let note = self.bt_save();
                 let connected = bt::connected(&self.settings.bt_mac);
-                send_to(&reply, if connected { format!("OK: музыка в «{}»{note}", self.settings.bt_name) }
+                // A plain «OK» (the page shows nothing): the switch itself shows where it plays.
+                send_to(&reply, if connected { if note.is_empty() { "OK".into() } else { format!("OK{note}") } }
                     else { format!("OK: музыка пойдёт в «{}», как только оно подключится{note}", self.settings.bt_name) });
             }
             "off" => {
                 self.settings.bt_on = false;
                 let note = self.bt_save();
-                send_to(&reply, format!("OK: музыка снова на колонке{note}"));
+                send_to(&reply, if note.is_empty() { "OK".into() } else { format!("OK{note}") });
             }
             "disconnect" | "forget" => {
                 let mac = if rest.is_empty() { self.settings.bt_mac.clone() } else { rest.to_ascii_uppercase() };

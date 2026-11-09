@@ -253,6 +253,13 @@ fn back(prog: &str, args: &[String], why: &str) -> String {
 
 /// One bluetoothctl session: commands with pauses after them, all of its output.
 fn ctl(steps: &[(&str, u64)], limit: Duration) -> Result<String, String> {
+    let steps: Vec<(&str, u64, &[&str])> = steps.iter().map(|(c, w)| (*c, *w, &[][..])).collect();
+    ctl_until(&steps, limit)
+}
+
+/// The same, but a step ends as soon as its output shows one of `done` (a pairing that took a
+/// second no longer waits nine).
+fn ctl_until(steps: &[(&str, u64, &[&str])], limit: Duration) -> Result<String, String> {
     let mut child = Command::new("bluetoothctl")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -260,21 +267,37 @@ fn ctl(steps: &[(&str, u64)], limit: Duration) -> Result<String, String> {
         .spawn()
         .map_err(|e| format!("bluetoothctl: {e}"))?;
     let mut out = child.stdout.take().ok_or("bluetoothctl: нет вывода")?;
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let seen2 = seen.clone();
     let reader = thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = out.read_to_end(&mut s);
-        String::from_utf8_lossy(&s).into_owned()
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = out.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            seen2.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
     });
     {
         let mut stdin = child.stdin.take().ok_or("bluetoothctl: нет ввода")?;
         let t0 = Instant::now();
-        for (cmd, wait_ms) in steps {
+        for (cmd, wait_ms, done) in steps {
             if t0.elapsed() > limit {
                 break;
             }
+            let from = seen.lock().unwrap().len();
             let _ = writeln!(stdin, "{cmd}");
             let _ = stdin.flush();
-            thread::sleep(Duration::from_millis(*wait_ms));
+            let step = Instant::now();
+            while step.elapsed() < Duration::from_millis(*wait_ms) {
+                thread::sleep(Duration::from_millis(100));
+                if !done.is_empty() {
+                    let new = String::from_utf8_lossy(&seen.lock().unwrap()[from..]).into_owned();
+                    if done.iter().any(|d| new.contains(d)) {
+                        break;
+                    }
+                }
+            }
         }
         let _ = writeln!(stdin, "quit");
     }
@@ -287,7 +310,9 @@ fn ctl(steps: &[(&str, u64)], limit: Duration) -> Result<String, String> {
     }
     let _ = child.kill();
     let _ = child.wait();
-    reader.join().map_err(|_| "bluetoothctl: вывод потерян".to_owned())
+    reader.join().map_err(|_| "bluetoothctl: вывод потерян".to_owned())?;
+    let all = seen.lock().unwrap().clone();
+    Ok(String::from_utf8_lossy(&all).into_owned())
 }
 
 /// Looks for devices around for `secs` seconds: the ones that can play sound first.
@@ -326,10 +351,30 @@ pub fn connect(mac: &str) -> Result<Device, String> {
     ensure_source()?;
     let known = info(mac);
     if !known.as_ref().is_some_and(|d| d.paired) {
-        ctl(&[("power on", 500), ("scan on", 4000), (&format!("pair {mac}"), 9000), ("scan off", 300)], Duration::from_secs(20))?;
+        // The scan only until the device is seen; pairing until it says how it went.
+        let seen_it = format!("Device {mac}");
+        ctl_until(
+            &[
+                ("power on", 500, &[]),
+                ("scan on", 4000, &[seen_it.as_str()]),
+                (&format!("pair {mac}"), 9000, &["Pairing successful", "Failed to pair", "AlreadyExists", "not available"]),
+                ("scan off", 300, &[]),
+            ],
+            Duration::from_secs(20),
+        )?;
     }
-    ctl(&[(&format!("trust {mac}"), 700), (&format!("connect {mac}"), 7000)], Duration::from_secs(12))?;
-    match info(mac) {
+    ctl_until(
+        &[
+            (&format!("trust {mac}"), 700, &["trust succeeded", "not available"]),
+            (&format!("connect {mac}"), 7000, &["Connection successful", "Failed to connect", "not available"]),
+        ],
+        Duration::from_secs(12),
+    )?;
+    let now = info(mac);
+    // In the log: what the device was before and is now (the page only says the outcome).
+    let say = |d: &Option<Device>| d.as_ref().map_or("not known".to_owned(), |d| format!("«{}» audio={} paired={} connected={}", d.name, d.audio, d.paired, d.connected));
+    eprintln!("bt: connect {mac}: before {}, after {}", say(&known), say(&now));
+    match now {
         Some(d) if d.connected => Ok(d),
         Some(d) if !d.paired => Err("не удалось сопрячь: переведите наушники в режим сопряжения (обычно — долго держать кнопку питания) и попробуйте снова".into()),
         Some(_) => Err("устройство сопряжено, но не подключилось: включено ли оно и не подключено ли к телефону?".into()),

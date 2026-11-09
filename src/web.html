@@ -2953,7 +2953,9 @@ async function setOutput(where) {
   // Bluetooth: the speaker sends its music to the chosen device (bt.rs); «Колонка» takes it back.
   if (where === 'bt' || (where === 'speaker' && settings && settings.bt_on)) {
     if (listening) { listening = false; clearInterval(listenBeat); la().pause(); la().removeAttribute('src'); la().load(); beat(false); }
-    show($('actmsg'), await post('/api/cmd', where === 'bt' ? 'bt on' : 'bt off'));
+    // The switch itself shows where it plays: only a failure is worth a message.
+    const res = await post('/api/cmd', where === 'bt' ? 'bt on' : 'bt off');
+    if (res.startsWith('error')) show($('actmsg'), res);
     settingsLoaded = false; refresh();
     return;
   }
@@ -3740,7 +3742,17 @@ async function btScan() {
   $('btmsg').textContent = list.length ? '' : 'Ничего не нашлось: включите устройство и переведите его в режим сопряжения.';
   $('btlist').replaceChildren(...list.map(d => item(d.name || 'Без имени',
     [d.connected ? 'подключено' : d.paired ? 'сопряжено' : '', d.audio ? 'наушники / колонка' : '', d.name ? '' : d.mac].filter(Boolean).join(' · '),
-    '', () => btConnect(d.mac, d.name), d.audio ? '' : 'muted')));
+    '', () => d.audio || d.paired ? btConnect(d.mac, d.name) : btNotAudio(d, list), d.audio ? '' : 'muted')));
+}
+// Grey rows: no sound there (a band, a lamp's control, «Ditoo-Plus-light»). Many speakers have two
+// Bluetooth devices — the app's one and «…-audio»: point to it instead of a «не найдено» later.
+function btNotAudio(d, list) {
+  const base = (d.name || '').toLowerCase().replace(/[-_ ]?(light|ble|le|app|control)$/, '');
+  const twin = base && list.find(x => x.audio && x.mac !== d.mac && (x.name || '').toLowerCase().startsWith(base));
+  if (twin) { show($('btmsg'), '«' + d.name + '» — не для звука. Подключаю «' + twin.name + '»…'); btConnect(twin.mac, twin.name); return; }
+  const msg = '«' + (d.name || d.mac) + '» не похоже на наушники или колонку — это, например, браслет или управление лампой.'
+    + ' У некоторых колонок (Divoom Ditoo и др.) для звука отдельное устройство с «audio» в имени: включите на колонке режим Bluetooth и нажмите «Найти».';
+  if (confirm(msg + '\n\nВсё равно подключить?')) btConnect(d.mac, d.name); else show($('btmsg'), 'error: ' + msg);
 }
 function renderHome(s) {
   renderStatusRow(s);
@@ -3761,7 +3773,6 @@ function renderHome(s) {
       st.duck_mode === 'off' ? '' : 'good', () => openSettings('speaker', 'ducksection')),
     stat('Обновления', s.update && s.update.available ? 'есть ' + s.update.latest : 'последняя версия', s.update && s.update.available ? 'slow' : 'good', () => openSettings('speaker', 'updsection')),
     stat('Защита', st.pin_on ? 'PIN включён' : 'без PIN', st.pin_on ? 'good' : 'slow', () => openSettings('speaker', 'pinsection')),
-    stat('Где играет', s.listen && s.listen.listeners ? 'в браузере (' + s.listen.listeners + ')' : 'колонка', 'good', () => { window.scrollTo({ top: 0, behavior: 'smooth' }); if ($('volpop').hidden) toggleVolume(); }),
   );
   const d = $('homedevices'); d.innerHTML = '';
   const DEV_ICON = {

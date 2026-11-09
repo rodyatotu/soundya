@@ -1999,9 +1999,22 @@ mod tests {
         thread::spawn(move || {
             for c in l.incoming().flatten() {
                 let mut c = c;
-                let mut buf = vec![0u8; 8192];
-                let k = c.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..k]).to_string();
+                // The body may come in a packet of its own: read up to Content-Length.
+                let mut req = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let k = c.read(&mut buf).unwrap_or(0);
+                    req.extend_from_slice(&buf[..k]);
+                    let text = String::from_utf8_lossy(&req).to_string();
+                    let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                        if k == 0 { break } else { continue }
+                    };
+                    let len = head.lines().find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))).unwrap_or(0);
+                    if body.len() >= len || k == 0 {
+                        break;
+                    }
+                }
+                let req = String::from_utf8_lossy(&req).to_string();
                 let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
                 seen2.lock().unwrap().push(body.clone());
                 let (code, out) = if body.contains("refresh_token=R1") {
