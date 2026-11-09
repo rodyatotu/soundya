@@ -352,6 +352,8 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         8 << 20
     } else if path == "/api/update/upload" {
         crate::update::UPLOAD_MAX
+    } else if path == "/api/mods/upload" {
+        2 << 20
     } else {
         64 * 1024
     };
@@ -639,6 +641,97 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         ("POST", "/api/test") => {
             let proxy = serde_json::from_str::<Settings>(&body).map(|s| s.proxy).unwrap_or_default();
             ("200 OK", "text/plain; charset=utf-8", ask(tx, |r| Cmd::TestProxy(proxy, r), 40))
+        }
+
+        // Mod static assets: /mods/...
+        _ if method == "GET" && path.starts_with("/mods/") => {
+            let rel = path.trim_start_matches("/mods/");
+            if !rel.contains("..") && !rel.starts_with('/') {
+                let file_path = std::path::Path::new("/data/opt/soundya/mods").join(rel);
+                if file_path.is_file() {
+                    if let Ok(content) = std::fs::read_to_string(&file_path) {
+                        let kind = if rel.ends_with(".css") {
+                            "text/css; charset=utf-8"
+                        } else if rel.ends_with(".js") {
+                            "application/javascript; charset=utf-8"
+                        } else if rel.ends_with(".json") {
+                            "application/json; charset=utf-8"
+                        } else {
+                            "text/plain; charset=utf-8"
+                        };
+                        ("200 OK", kind, content)
+                    } else {
+                        ("500 Internal Server Error", "text/plain", "failed to read mod file".into())
+                    }
+                } else {
+                    ("404 Not Found", "text/plain", "mod file not found".into())
+                }
+            } else {
+                ("403 Forbidden", "text/plain", "invalid path".into())
+            }
+        }
+
+        // Mod manager endpoints
+        ("GET", "/api/mods") => {
+            let dir = std::path::Path::new("/data/opt/soundya/mods");
+            let mut installed = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            if name.ends_with(".js") || name.ends_with(".css") {
+                                installed.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            installed.sort();
+            let config_path = dir.join("mods.json");
+            let active: serde_json::Value = std::fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            let res = serde_json::json!({
+                "installed": installed,
+                "active": active
+            });
+            ("200 OK", "application/json", res.to_string())
+        }
+
+        ("POST", "/api/mods") => {
+            let dir = std::path::Path::new("/data/opt/soundya/mods");
+            let _ = std::fs::create_dir_all(dir);
+            let path = dir.join("mods.json");
+            match std::fs::write(path, &body) {
+                Ok(_) => ("200 OK", "application/json", r#"{"status":"ok"}"#.into()),
+                Err(e) => ("500 Internal Server Error", "text/plain", e.to_string()),
+            }
+        }
+
+        ("POST", "/api/mods/upload") => {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let (Some(filename), Some(content)) = (val["filename"].as_str(), val["content"].as_str()) {
+                    let filename = std::path::Path::new(filename).file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !filename.is_empty() && (filename.ends_with(".js") || filename.ends_with(".css") || filename.ends_with(".json")) {
+                        let dir = std::path::Path::new("/data/opt/soundya/mods");
+                        let _ = std::fs::create_dir_all(dir);
+                        let file_path = dir.join(filename);
+                        match std::fs::write(file_path, content) {
+                            Ok(_) => ("200 OK", "application/json", r#"{"status":"ok"}"#.into()),
+                            Err(e) => ("500 Internal Server Error", "text/plain", e.to_string()),
+                        }
+                    } else {
+                        ("400 Bad Request", "text/plain", "invalid filename".into())
+                    }
+                } else {
+                    ("400 Bad Request", "text/plain", "missing filename or content".into())
+                }
+            } else {
+                ("400 Bad Request", "text/plain", "invalid json".into())
+            }
         }
         _ => ("404 Not Found", "text/plain", "not found".into()),
     };
