@@ -34,6 +34,15 @@ mod listen_tests {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_panel_installs_on_a_phone() {
+        let m: serde_json::Value = serde_json::from_str(super::manifest()).unwrap();
+        assert_eq!(m["display"], "standalone");
+        assert_eq!(m["start_url"], "/");
+        assert!(m["icons"][0]["src"].as_str().unwrap().starts_with("data:image/png;base64,iVBOR"));
+        assert!(super::PAGE.contains(r#"<link rel="manifest" href="/manifest.webmanifest">"#));
+    }
+
+    #[test]
     fn refusal_reaches_a_client_sending_an_archive() {
         use std::io::{Read as _, Write as _};
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -126,6 +135,29 @@ const PAGE: &str = include_str!("web.html");
 #[cfg(not(feature = "dev"))]
 fn page() -> &'static str {
     PAGE
+}
+
+/// The web app manifest: «На экран Домой» on a phone opens the panel as an app of its own,
+/// without the browser's address bar. Its icon is the page's own apple-touch-icon.
+fn manifest() -> &'static str {
+    static M: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    M.get_or_init(|| {
+        let icon = PAGE
+            .split_once(r#"<link rel="apple-touch-icon" href=""#)
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map_or("", |(href, _)| href);
+        serde_json::json!({
+            "name": "soundya",
+            "short_name": "soundya",
+            "start_url": "/",
+            "scope": "/",
+            "display": "standalone",
+            "background_color": "#141019",
+            "theme_color": "#ff5500",
+            "icons": [{ "src": icon, "sizes": "180x180", "type": "image/png", "purpose": "any" }],
+        })
+        .to_string()
+    })
 }
 
 #[cfg(feature = "dev")]
@@ -503,6 +535,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
     }
     let (status, kind, reply) = match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", page().to_owned()),
+        ("GET", "/manifest.webmanifest") => ("200 OK", "application/manifest+json", manifest().to_owned()),
         // The developer build: its scripts and the end of the log (secrets cut out;
         // POST, so only the panel itself and, with a PIN, only after it).
         #[cfg(feature = "dev")]

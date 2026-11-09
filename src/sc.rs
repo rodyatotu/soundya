@@ -324,6 +324,7 @@ fn playlist_info(v: &Value) -> Option<PlaylistInfo> {
             .get("artwork_url")
             .and_then(Value::as_str)
             .filter(|u| !u.is_empty())
+            .or_else(|| v.get("calculated_artwork_url").and_then(Value::as_str).filter(|u| !u.is_empty()))
             // As soundcloud.com shows it: the first track that has a cover (the first may have none).
             .or_else(|| {
                 v.get("tracks")?.as_array()?.iter().find_map(|t| t.get("artwork_url").and_then(Value::as_str).filter(|u| !u.is_empty()))
@@ -332,6 +333,20 @@ fn playlist_info(v: &Value) -> Option<PlaylistInfo> {
             .unwrap_or("")
             .replace("-large.", "-t300x300."),
     })
+}
+
+/// No cover of its own: none, or its author's picture standing in.
+fn bare_cover(art: &str) -> bool {
+    art.is_empty() || art.contains("/avatars-")
+}
+
+/// The first track cover in a list of tracks, t300x300.
+fn first_cover(tracks: &Value) -> Option<String> {
+    tracks
+        .as_array()?
+        .iter()
+        .find_map(|t| t.get("artwork_url").and_then(Value::as_str).filter(|u| !u.is_empty()))
+        .map(|u| u.replace("-large.", "-t300x300."))
 }
 
 fn status_of(e: &ureq::Error) -> Option<u16> {
@@ -1129,7 +1144,62 @@ impl Client {
     /// «More of what you like», daily / weekly mixes…), each with its playlists.
     pub fn home(&self) -> Res<Vec<Shelf>> {
         let v = self.api("/mixed-selections", &[("limit", "20")])?;
-        Ok(shelves(&v))
+        let mut out = shelves(&v);
+        self.fill_covers(&mut out);
+        Ok(out)
+    }
+
+    /// SoundCloud sends some shelf items («Related tracks: …», the genre charts, your own
+    /// playlists) with neither a cover nor their tracks, so they showed their author's picture:
+    /// SoundCloud's logo, or your avatar. soundcloud.com shows the first track's cover there,
+    /// so it is looked up (several at once) and remembered for the next visit.
+    fn fill_covers(&self, shelves: &mut [Shelf]) {
+        static KNOWN: std::sync::OnceLock<Mutex<std::collections::HashMap<String, String>>> = std::sync::OnceLock::new();
+        let known = KNOWN.get_or_init(Default::default);
+        let mut wanted = Vec::new();
+        for p in shelves.iter_mut().flat_map(|s| s.items.iter_mut()).filter(|p| bare_cover(&p.art)) {
+            match known.lock().unwrap().get(&p.id) {
+                Some(art) => p.art = art.clone(),
+                None if !wanted.contains(&p.id) => wanted.push(p.id.clone()),
+                None => {}
+            }
+        }
+        wanted.truncate(30);
+        if wanted.is_empty() {
+            return;
+        }
+        let found: Vec<(String, String)> = std::thread::scope(|scope| {
+            let jobs: Vec<_> = wanted
+                .chunks(wanted.len().div_ceil(6))
+                .map(|ids| scope.spawn(move || ids.iter().filter_map(|id| Some((id.clone(), self.cover_of_playlist(id)?))).collect::<Vec<_>>()))
+                .collect();
+            jobs.into_iter().flat_map(|j| j.join().unwrap_or_default()).collect()
+        });
+        let mut known = known.lock().unwrap();
+        for (id, art) in found {
+            known.insert(id, art);
+        }
+        for p in shelves.iter_mut().flat_map(|s| s.items.iter_mut()).filter(|p| bare_cover(&p.art)) {
+            if let Some(art) = known.get(&p.id) {
+                p.art = art.clone();
+            }
+        }
+    }
+
+    /// A playlist's cover as soundcloud.com shows it: its own, else its first track's.
+    fn cover_of_playlist(&self, id: &str) -> Option<String> {
+        let path = if id.bytes().all(|b| b.is_ascii_digit()) { format!("/playlists/{id}") } else { format!("/system-playlists/{id}") };
+        let v = self.api(&path, &[]).ok()?;
+        if let Some(p) = playlist_info(&v).filter(|p| !bare_cover(&p.art)) {
+            return Some(p.art);
+        }
+        // The tracks come as bare ids: the first few are fetched for their covers.
+        let ids: Vec<String> = v.get("tracks")?.as_array()?.iter().filter_map(|t| t.get("id")?.as_u64()).take(5).map(|n| n.to_string()).collect();
+        if ids.is_empty() {
+            return None;
+        }
+        let tracks = self.api("/tracks", &[("ids", ids.join(",").as_str())]).ok()?;
+        first_cover(&tracks)
     }
 
     pub fn related(&self, id: u64) -> Res<Vec<Track>> {
@@ -1753,6 +1823,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn shelf_items_without_a_cover_get_their_first_tracks() {
+        assert!(bare_cover(""));
+        assert!(bare_cover("https://i1.sndcdn.com/avatars-69H9-t300x300.jpg"));
+        assert!(!bare_cover("https://i1.sndcdn.com/artworks-a-t300x300.jpg"));
+        let tracks: Value = serde_json::from_str(r#"[{"id":1,"artwork_url":null},{"id":2,"artwork_url":"https://i1.sndcdn.com/artworks-b-large.jpg"}]"#).unwrap();
+        assert_eq!(first_cover(&tracks).as_deref(), Some("https://i1.sndcdn.com/artworks-b-t300x300.jpg"));
+        let chart: Value = serde_json::from_str(r#"{"kind":"system-playlist","urn":"soundcloud:system-playlists:charts-top:all-music","title":"Funk",
+            "calculated_artwork_url":"https://i1.sndcdn.com/artworks-c-large.jpg","user":{"avatar_url":"https://i1.sndcdn.com/avatars-x-large.jpg"}}"#).unwrap();
+        assert_eq!(playlist_info(&chart).unwrap().art, "https://i1.sndcdn.com/artworks-c-t300x300.jpg");
+    }
 
     #[test]
     fn finds_home_page_picks() {

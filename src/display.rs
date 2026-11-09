@@ -154,8 +154,13 @@ impl Clock {
             .collect()
     }
 
-    fn show(&self, lit: &[String], colon: bool) {
-        let level = (self.max * u32::from(BRIGHT.load(std::sync::atomic::Ordering::Acquire)) / 100).max(10).to_string();
+    /// `percent` of this board's brightest.
+    fn level(&self, percent: u8) -> u32 {
+        (self.max * u32::from(percent.clamp(5, 100)) / 100).max(1)
+    }
+
+    fn show(&self, lit: &[String], colon: bool, level: u32) {
+        let level = level.to_string();
         for (name, path) in &self.paths {
             let on = lit.iter().any(|l| l == name) || (colon && (name == "DH" || name == "DL"));
             let _ = std::fs::write(path, if on { level.as_str() } else { "0" });
@@ -206,6 +211,47 @@ pub struct Widgets {
     pub secs: u64,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
+    pub light: Light,
+}
+
+/// How bright soundya draws. `own: false` — as bright as the firmware's clock is right now
+/// (it dims it in the evening; the temperature stayed at full brightness next to a dimmed
+/// clock). `own: true` — day and night levels by the time of day, and soundya draws the
+/// clock itself too, so the whole display is one brightness.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Light {
+    pub own: bool,
+    pub day: u8,
+    pub night: u8,
+    /// The night, minutes of the local day: from..to, across midnight when from > to.
+    pub night_from: u16,
+    pub night_to: u16,
+    /// Local time = UTC + this many minutes.
+    pub tz: i32,
+}
+
+impl Light {
+    /// Brightness % at `minute` of the local day.
+    pub fn percent(&self, minute: u16) -> u8 {
+        let (f, t) = (self.night_from, self.night_to);
+        let night = if f == t { false } else if f < t { (f..t).contains(&minute) } else { minute >= f || minute < t };
+        if night { self.night } else { self.day }
+    }
+}
+
+/// Minute of the local day and «HHMM» for the clock, `tz` minutes from UTC.
+pub fn local_time(unix: i64, tz: i32) -> (u16, String) {
+    let m = (unix.div_euclid(60) + i64::from(tz)).rem_euclid(1440) as u16;
+    (m, format!("{:02}{:02}", m / 60, m % 60))
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+/// The firmware's clock level: the brightest of its lit segments (None when nothing is lit).
+fn firmware_level(saved: &HashMap<String, String>) -> Option<u32> {
+    saved.values().filter_map(|v| v.trim().parse::<u32>().ok()).filter(|&v| v > 0).max()
 }
 
 static WIDGETS: Mutex<Option<Widgets>> = Mutex::new(None);
@@ -219,9 +265,13 @@ static NOTE: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 static SHOWN: Mutex<String> = Mutex::new(String::new());
 static PC: Mutex<Option<crate::settings::Settings>> = Mutex::new(None);
 
+fn bright() -> u8 {
+    BRIGHT.load(std::sync::atomic::Ordering::Acquire)
+}
+
 pub fn configure(w: Widgets, bright: u8, settings: &crate::settings::Settings) {
     *WIDGETS.lock().unwrap() = Some(w);
-    BRIGHT.store(bright.clamp(10, 100), std::sync::atomic::Ordering::Release);
+    BRIGHT.store(bright.clamp(5, 100), std::sync::atomic::Ordering::Release);
     *PC.lock().unwrap() = settings.pc_configured().then(|| settings.clone());
 }
 
@@ -241,23 +291,26 @@ pub fn temp_text(t: i64, pc: bool) -> String {
     if pc { format!("P{:>2}C", t.min(99)) } else { format!("{t:>3}C") }
 }
 
-/// The widget for `ms` since the cycle began: None = the firmware's clock.
-fn widget_now(w: &Widgets, ms: u64) -> Option<String> {
+/// The widget for `ms` since the cycle began: None = the firmware's clock. With its own
+/// brightness soundya draws the clock too: «HHMM:» (the colon on), `now` = «HHMM».
+fn widget_now(w: &Widgets, ms: u64, now: &str) -> Option<String> {
+    let clock = || w.light.own.then(|| format!("{now}:"));
+    let only_clock = ["clock".to_owned()];
+    let list: &[String] = if w.on { &w.list } else { &only_clock };
     let fresh = |slot: &Mutex<Option<(i64, Instant)>>, max: u64| {
         slot.lock().unwrap().filter(|(_, at)| at.elapsed() < Duration::from_secs(max)).map(|(v, _)| v)
     };
-    let ready: Vec<Option<String>> = w
-        .list
+    let ready: Vec<Option<String>> = list
         .iter()
         .filter_map(|k| match k.as_str() {
-            "clock" => Some(None),
+            "clock" => Some(clock()),
             "pc" => fresh(&PC_TEMP, 300).map(|t| Some(temp_text(t, true))),
             "weather" => fresh(&WEATHER, 3600).map(|t| Some(temp_text(t, false))),
             _ => None,
         })
         .collect();
     if ready.is_empty() {
-        return None;
+        return clock();
     }
     let slot = (ms / (w.secs.max(3) * 1000)) as usize % ready.len();
     ready[slot].clone()
@@ -498,7 +551,7 @@ pub fn run() {
         let mut last = None;
         // What was written last and when: unchanged segments are written again only once a
         // second (the firmware redraws its clock by itself), not every 90 ms.
-        let mut drawn: Option<(Vec<String>, bool)> = None;
+        let mut drawn: Option<(Vec<String>, bool, u32)> = None;
         let mut drawn_at = Instant::now();
         // While Alice listens / speaks the firmware draws on the display itself (its own
         // animation and volume): soundya steps aside until she has been quiet for a moment —
@@ -523,7 +576,9 @@ pub fn run() {
                 continue;
             }
             let note = NOTE.lock().unwrap().clone().filter(|(_, until)| Instant::now() < *until);
-            let widgets = WIDGETS.lock().unwrap().clone().filter(|w| w.on);
+            let widgets = WIDGETS.lock().unwrap().clone().filter(|w| w.on || w.light.own);
+            let own = widgets.as_ref().map(|w| w.light.clone()).filter(|l| l.own);
+            let (minute, now) = local_time(unix_now(), widgets.as_ref().map_or(0, |w| w.light.tz));
             // What to draw: install > interrupt > timer > widget; None = the firmware's clock.
             let draw: Option<(Vec<String>, bool, String)> = if let Some(p) = &phase {
                 let ip = crate::mdns::own_ip().map(|i| i.to_string());
@@ -537,12 +592,16 @@ pub fn run() {
                 let paused = crate::timer::current().is_some_and(|t| t.paused.is_some());
                 let colon = paused || cycle.elapsed().as_millis() % 1000 < 500;
                 Some((segments(&text), colon, text))
-            } else if let Some(text) = widgets.as_ref().and_then(|w| widget_now(w, cycle.elapsed().as_millis() as u64)) {
+            } else if let Some(text) = widgets.as_ref().and_then(|w| widget_now(w, cycle.elapsed().as_millis() as u64, &now)) {
+                let (text, colon) = match text.strip_suffix(':') {
+                    Some(t) => (t.to_owned(), true),
+                    None => (text, false),
+                };
                 let mut lit = segments(&text);
                 if text.ends_with('C') {
                     lit.push("DEGREE".into());
                 }
-                Some((lit, false, text))
+                Some((lit, colon, text))
             } else {
                 None
             };
@@ -551,9 +610,19 @@ pub fn run() {
                     if saved.is_none() {
                         saved = Some(clock.read());
                     }
-                    let frame = (lit, colon);
-                    if drawn.as_ref() != Some(&frame) || drawn_at.elapsed() >= Duration::from_secs(1) {
-                        clock.show(&frame.0, frame.1);
+                    // Own brightness by the time of day; otherwise the firmware clock's own level
+                    // (read as soundya took over), so the temperature is not brighter than the clock.
+                    let level = match &own {
+                        Some(l) if phase.is_none() => clock.level(l.percent(minute)),
+                        _ if phase.is_none() => saved.as_ref().and_then(firmware_level).unwrap_or_else(|| clock.level(bright())),
+                        _ => clock.level(bright()),
+                    };
+                    let frame = (lit, colon, level);
+                    // The firmware redraws its clock once a minute: over soundya's own clock that
+                    // is put right within a quarter of a second.
+                    let every = if own.is_some() { Duration::from_millis(250) } else { Duration::from_secs(1) };
+                    if drawn.as_ref() != Some(&frame) || drawn_at.elapsed() >= every {
+                        clock.show(&frame.0, frame.1, frame.2);
                         drawn = Some(frame);
                         drawn_at = Instant::now();
                     }
@@ -625,11 +694,42 @@ mod tests {
         assert_eq!(parse_weather(&serde_json::json!({"current": {"temperature_2m": -2.6}})), Some(-3));
         *WEATHER.lock().unwrap() = Some((7, Instant::now()));
         *PC_TEMP.lock().unwrap() = None;
-        let w = Widgets { on: true, list: vec!["clock".into(), "pc".into(), "weather".into()], secs: 10, lat: None, lon: None };
-        assert_eq!(widget_now(&w, 0), None, "the clock first");
-        assert_eq!(widget_now(&w, 10_500), Some("  7C".into()), "no PC data: weather next");
-        assert_eq!(widget_now(&w, 20_500), None, "and round again");
+        let mut w = Widgets { on: true, list: vec!["clock".into(), "pc".into(), "weather".into()], secs: 10, lat: None, lon: None, light: light(false) };
+        assert_eq!(widget_now(&w, 0, "2341"), None, "the clock first");
+        assert_eq!(widget_now(&w, 10_500, "2341"), Some("  7C".into()), "no PC data: weather next");
+        assert_eq!(widget_now(&w, 20_500, "2341"), None, "and round again");
+        // Own brightness: soundya draws the clock itself, with the colon.
+        w.light.own = true;
+        assert_eq!(widget_now(&w, 0, "2341"), Some("2341:".into()));
+        assert_eq!(widget_now(&w, 10_500, "2341"), Some("  7C".into()));
+        // Widgets off but own brightness: just the clock.
+        w.on = false;
+        assert_eq!(widget_now(&w, 10_500, "0705"), Some("0705:".into()));
         *WEATHER.lock().unwrap() = None;
+    }
+
+    fn light(own: bool) -> Light {
+        Light { own, day: 100, night: 20, night_from: 22 * 60, night_to: 7 * 60, tz: 180 }
+    }
+
+    #[test]
+    fn brightness_by_the_time_of_day() {
+        let l = light(true);
+        assert_eq!(l.percent(12 * 60), 100);
+        assert_eq!(l.percent(22 * 60), 20, "night from 22:00");
+        assert_eq!(l.percent(3 * 60), 20, "across midnight");
+        assert_eq!(l.percent(7 * 60), 100, "day from 07:00");
+        let same = Light { night_from: 0, night_to: 0, ..l.clone() };
+        assert_eq!(same.percent(3 * 60), 100, "no night when from = to");
+        let evening = Light { night_from: 18 * 60, night_to: 23 * 60, ..l };
+        assert_eq!((evening.percent(19 * 60), evening.percent(23 * 60 + 30)), (20, 100));
+        // 2026-11-09 20:41 UTC = 23:41 in Moscow (UTC+3); the day wraps.
+        assert_eq!(local_time(1_794_256_860, 180), (23 * 60 + 41, "2341".into()));
+        assert_eq!(local_time(1_794_256_860, 240).1, "0041");
+        // The firmware's level: its brightest lit segment.
+        let saved: HashMap<String, String> = [("A0", "0"), ("B0", "40"), ("C0", "40"), ("DH", "")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        assert_eq!(firmware_level(&saved), Some(40));
+        assert_eq!(firmware_level(&HashMap::new()), None);
     }
 
     #[test]
@@ -649,7 +749,7 @@ mod tests {
         let c = Clock::detect_in(&d).expect("display found");
         assert!(!c.dots && c.paths.contains_key("DH"));
         let saved = c.read();
-        c.show(&segments("8888"), false);
+        c.show(&segments("8888"), false, c.level(100));
         assert_eq!(std::fs::read_to_string(d.join("plum:white:clockA0/brightness")).unwrap(), "255");
         c.restore(&saved);
         assert_eq!(std::fs::read_to_string(d.join("plum:white:clockA0/brightness")).unwrap(), "0");
@@ -673,7 +773,8 @@ mod tests {
         std::fs::write(d.join("mini2:white:clockDEGREE/brightness"), "0").unwrap();
         let c = Clock::detect_in(&d).expect("display found");
         assert_eq!(c.max, 170);
-        c.show(&segments("1   "), false);
+        assert_eq!((c.level(50), c.level(1)), (85, 8), "a share of 170, never below 5%");
+        c.show(&segments("1   "), false, c.level(100));
         // «1» on the left digit: B and C of digit 1, at its own brightest.
         assert_eq!(std::fs::read_to_string(d.join("mini2:white:clockB1/brightness")).unwrap(), "170");
         assert_eq!(std::fs::read_to_string(d.join("mini2:white:clockA1/brightness")).unwrap(), "0");

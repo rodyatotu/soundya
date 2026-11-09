@@ -323,6 +323,16 @@ pub struct Settings {
     pub display_secs: u16,
     #[serde(default = "hundred")]
     pub display_bright: u8,
+    /// Own brightness by the time of day (display_bright by day, display_night_bright at
+    /// night, from..to in minutes); off — as bright as the firmware's clock is.
+    #[serde(default)]
+    pub display_light_own: bool,
+    #[serde(default = "night_bright")]
+    pub display_night_bright: u8,
+    #[serde(default = "night_from")]
+    pub display_night_from: u16,
+    #[serde(default = "night_to")]
+    pub display_night_to: u16,
     #[serde(default)]
     pub display_city: String,
     #[serde(default)]
@@ -563,6 +573,18 @@ fn google_target() -> String {
     "google".into()
 }
 
+fn night_bright() -> u8 {
+    20
+}
+
+fn night_from() -> u16 {
+    22 * 60
+}
+
+fn night_to() -> u16 {
+    7 * 60
+}
+
 fn ten_u16() -> u16 {
     10
 }
@@ -664,6 +686,10 @@ impl Default for Settings {
             display_widgets: display_widgets(),
             display_secs: 10,
             display_bright: 100,
+            display_light_own: false,
+            display_night_bright: night_bright(),
+            display_night_from: night_from(),
+            display_night_to: night_to(),
             display_city: String::new(),
             display_lat: None,
             display_lon: None,

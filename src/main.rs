@@ -496,6 +496,10 @@ impl Controller {
         settings["display_widgets"] = self.settings.display_widgets.clone().into();
         settings["display_secs"] = self.settings.display_secs.into();
         settings["display_bright"] = self.settings.display_bright.into();
+        settings["display_light_own"] = self.settings.display_light_own.into();
+        settings["display_night_bright"] = self.settings.display_night_bright.into();
+        settings["display_night_from"] = self.settings.display_night_from.into();
+        settings["display_night_to"] = self.settings.display_night_to.into();
         settings["display_city"] = self.settings.display_city.clone().into();
         settings["tg_bots"] = self.settings.tg_bots.iter().map(|b| serde_json::json!({
             "name": b.name,
@@ -752,6 +756,9 @@ impl Controller {
     }
 
     fn apply_settings(&mut self, mut new: Settings) -> String {
+        if new.display_night_from >= 1440 || new.display_night_to >= 1440 {
+            return "error: время ночи — от 00:00 до 23:59".into();
+        }
         if !led::MODES.contains(&new.light_mode.as_str()) {
             new.light_mode = "solid".into();
         }
@@ -799,7 +806,8 @@ impl Controller {
         new.display_widgets.retain(|w| ["clock", "pc", "weather"].contains(&w.as_str()));
         new.display_widgets.dedup();
         new.display_secs = new.display_secs.clamp(3, 120);
-        new.display_bright = new.display_bright.clamp(10, 100);
+        new.display_bright = new.display_bright.clamp(5, 100);
+        new.display_night_bright = new.display_night_bright.clamp(5, 100);
         display::configure(display_widgets(&new), new.display_bright, &new);
         new.autostart.retain(|a| !a.phrase.trim().is_empty());
         new.autostart.truncate(10);
@@ -3067,6 +3075,14 @@ fn display_widgets(s: &Settings) -> display::Widgets {
         secs: u64::from(s.display_secs),
         lat: s.display_lat,
         lon: s.display_lon,
+        light: display::Light {
+            own: s.display_light_own,
+            day: s.display_bright,
+            night: s.display_night_bright,
+            night_from: s.display_night_from,
+            night_to: s.display_night_to,
+            tz: s.tz_offset,
+        },
     }
 }
 
