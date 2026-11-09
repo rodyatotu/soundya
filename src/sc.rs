@@ -900,42 +900,11 @@ impl Client {
     /// The library for the page: with the covers soundcloud.com shows (a few more requests,
     /// so not for voice commands, which only need the names).
     pub fn library_with_covers(&self) -> Res<Vec<PlaylistInfo>> {
-        let mut out = self.library()?;
-        if let Ok((uid, _)) = self.me() {
-            self.track_covers(uid, &mut out);
-        }
-        Ok(out)
-    }
-
-    /// The library lists playlists without their tracks, so one without its own cover shows
-    /// its author's picture; soundcloud.com shows the first track's cover there. Own playlists
-    /// come with their tracks in one request, the others (a few) one by one.
-    fn track_covers(&self, uid: u64, out: &mut [PlaylistInfo]) {
-        let bare = |p: &PlaylistInfo| (p.art.is_empty() || p.art.contains("/avatars-")) && p.id.bytes().all(|b| b.is_ascii_digit());
-        if !out.iter().any(bare) {
-            return;
-        }
-        let mut found = std::collections::HashMap::new();
-        if let Ok(v) = self.api(&format!("/users/{uid}/playlists"), &[("limit", "100")]) {
-            for p in v.get("collection").and_then(Value::as_array).into_iter().flatten().filter_map(playlist_info) {
-                if !p.art.contains("/avatars-") && !p.art.is_empty() {
-                    found.insert(p.id, p.art);
-                }
-            }
-        }
-        let mut asked = 0;
-        for p in out.iter_mut().filter(|p| bare(p)) {
-            if let Some(art) = found.get(&p.id) {
-                p.art = art.clone();
-            } else if asked < 12 {
-                asked += 1;
-                if let Some(info) = self.api(&format!("/playlists/{}", p.id), &[]).ok().as_ref().and_then(playlist_info) {
-                    if !info.art.is_empty() && !info.art.contains("/avatars-") {
-                        p.art = info.art;
-                    }
-                }
-            }
-        }
+        // The home page's way: the covers it already knows at once, the rest six at a time
+        // (one by one, «Моя музыка» drew its covers long after the home page).
+        let mut shelf = [Shelf { title: String::new(), items: self.library()? }];
+        self.fill_covers(&mut shelf);
+        Ok(std::mem::take(&mut shelf[0].items))
     }
 
     pub fn likes(&self) -> Res<Vec<Track>> {

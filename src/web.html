@@ -784,13 +784,9 @@
   .qpop { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
   .qpop ul.queue { max-height: none; overflow: visible; }
   .qpop .qhead { position: sticky; top: -10px; z-index: 1; padding: 10px 4px 6px; margin: -10px 0 6px; background: inherit; }
-  /* The panel's own scrollbars everywhere: thin, in its colours, not the system's grey bars. */
-  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink) 28%, transparent) transparent; }
-  ::-webkit-scrollbar { width: 8px; height: 8px; }
-  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--ink) 26%, transparent); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
-  ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--accent) 70%, transparent); }
-  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  /* No scrollbars anywhere (asked for): wheel, trackpad and finger scroll as before. */
+  * { scrollbar-width: none; }
+  ::-webkit-scrollbar { display: none; width: 0; height: 0; }
   /* Search inside the player: a small magnifier top right; the field and results open in place. */
   .psearchbtn { position: absolute; top: 12px; right: 12px; z-index: 2; width: 32px; height: 32px; padding: 0; border-radius: 50%;
     color: var(--muted); background: color-mix(in srgb, var(--ink) 6%, transparent); border: 0; }
@@ -867,6 +863,7 @@
     background: color-mix(in srgb, #2a8cff 10%, transparent); border: 1px solid color-mix(in srgb, #2a8cff 35%, transparent); }
   .btnow[hidden], #btactions[hidden] { display: none; }
   label.switch.mini { margin: 0; }
+  .widget.alarmoff { display: none !important; }
   .bticon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: #2a8cff; color: #fff; flex: none; }
   .bticon svg { width: 18px; height: 18px; }
   .bttext { flex: 1; min-width: 0; } .bttext small { display: block; color: var(--muted); font-size: 12px; }
@@ -1497,6 +1494,12 @@
       <button data-music="yandex" role="radio">Яндекс Музыка</button>
     </div>
     <p class="hint" id="musichint"></p>
+    <div class="field">Будильник</div>
+    <div class="seg" id="alarmkind" role="radiogroup">
+      <button data-alarm="own" role="radio">soundya</button>
+      <button data-alarm="alice" role="radio">Стандартный</button>
+    </div>
+    <p class="hint" id="alarmhint"></p>
     <input type="checkbox" id="keyword" hidden>
     <button class="link bugbtn" onclick="openReport('yandex_music')">Сообщить об ошибке</button>
     <label class="check">
@@ -3594,6 +3597,8 @@ async function loadHome(force) {
   if (!force && Date.now() - homeLoaded < 60000) return;
   homeLoaded = Date.now();
   loadShelves(force);
+  // «Моя музыка» ahead, quietly: its covers are there before the tab is opened.
+  setTimeout(() => { if (settings.token && !$('mylists').children.length) library(); }, 2500);
   homeWidgets();
   renderScenes();
   loadWidgets(force);
@@ -4862,6 +4867,26 @@ function renderMusic(m) {
   $('musichint').textContent = MUSIC_HINT[m] || '';
   $('keyword').checked = m === 'yandex';
 }
+// «Будильник»: soundya's (music, «я проснулся», the sum) or Alice's stock one.
+const ALARM_HINT = {
+  own: '«Алиса, разбуди меня в 7 под мои лайки» — будильник soundya: музыка, потом Алиса; выключается только словами «Алиса, я проснулся» и ответом на пример. Виджет — на главной.',
+  alice: '«Алиса, разбуди меня в 7» ставит обычный будильник Алисы. Будильники soundya не звонят, виджета на главной нет.',
+};
+function renderAlarmKind(own) {
+  const k = own === false ? 'alice' : 'own';
+  document.querySelectorAll('#alarmkind button').forEach(b => {
+    b.classList.toggle('on', b.dataset.alarm === k); b.setAttribute('aria-checked', String(b.dataset.alarm === k));
+  });
+  $('alarmhint').textContent = ALARM_HINT[k];
+  const w = document.querySelector('.widget[data-w="alarm"]');
+  if (w) w.classList.toggle('alarmoff', k === 'alice');
+}
+document.querySelectorAll('#alarmkind button').forEach(b => b.onclick = async () => {
+  const own = b.dataset.alarm === 'own';
+  renderAlarmKind(own);
+  show($('spkmsg'), await post('/api/settings', JSON.stringify({ alarm_own: own })));
+  settingsLoaded = false; refresh();
+});
 document.querySelectorAll('#musicdefault button').forEach(b => b.onclick = async () => {
   renderMusic(b.dataset.music);
   show($('spkmsg'), await post('/api/settings', JSON.stringify({ music_default: b.dataset.music })));
@@ -5135,6 +5160,7 @@ async function refresh() {
     $('proxy').value = settings.proxy;
     $('keyword').checked = settings.keyword_only;
     renderMusic(settings.music_default || (settings.keyword_only ? 'yandex' : 'soundcloud'));
+    renderAlarmKind(settings.alarm_own);
     $('ring').checked = settings.ring !== false;
     renderLight(settings);
     renderLedOrder(settings.led_order, s.led);
@@ -5342,7 +5368,14 @@ async function recs() {
   refresh();
 }
 
+let libraryAsked = null;
 async function library() {
+  // One request at a time (the home page asks ahead; the tab may ask meanwhile).
+  if (libraryAsked) return libraryAsked;
+  libraryAsked = libraryNow().finally(() => { libraryAsked = null; });
+  return libraryAsked;
+}
+async function libraryNow() {
   busy($('minemsg'), 'Загружаю плейлисты…');
   const r = await postJSON('library');
   if (r.error) { show($('minemsg'), r.error, true); return; }
@@ -5868,6 +5901,8 @@ post('/api/cmd', 'update auto').then(refresh);
     if (saved.startsWith('error')) { show(saved); return; }
     show(await send('morning test'));
   };
+  // «Стандартный» in «Колонка»: the widget is not shown (settings.alarm_own).
+  setInterval(() => box.classList.toggle('alarmoff', typeof settings === 'object' && settings && settings.alarm_own === false), 2000);
   // Developer build only for now.
   box.querySelector('#almorning').hidden = !window.SOUNDYA_DEV;
   box.querySelector('#almorning').addEventListener('toggle', fillMorning);

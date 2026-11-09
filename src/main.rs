@@ -540,6 +540,7 @@ impl Controller {
         settings["adb_keep"] = self.settings.adb_keep.into();
         settings["remote_tab"] = self.settings.remote_tab.into();
         settings["morning_on"] = self.settings.morning_on.into();
+        settings["alarm_own"] = self.settings.alarm_own.into();
         settings["morning_greet"] = self.settings.morning_greet.clone().into();
         settings["morning_news"] = self.settings.morning_news.clone().into();
         settings["morning_intro"] = self.settings.morning_intro.clone().into();
@@ -1032,6 +1033,7 @@ impl Controller {
             return "error: новости — один из источников списка, ссылка на RSS (https://…) или каналы Telegram (@канал, @канал)".into();
         }
         alarm::set_morning(new.morning_on);
+        alarm::set_own(new.alarm_own);
         self.shared.soundcloud.store(new.soundcloud, Ordering::Release);
         let proxy_changed = new.use_proxy() != self.settings.use_proxy();
         // Only a save that passed all checks switches ADB (turning it off touches the device).
@@ -3489,6 +3491,7 @@ fn daemon() {
     alice::set_tv(settings.tv_configured());
     alice::set_devices(device_names(&settings));
     alarm::set_morning(settings.morning_on);
+    alarm::set_own(settings.alarm_own);
     adbkeep::run();
     calendar::configure(settings.cal_on, &settings.cal_url, settings.cal_remind);
     apply_planner(&settings);

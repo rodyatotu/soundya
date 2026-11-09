@@ -18,6 +18,11 @@ use std::{
 use serde_json::Value;
 
 const RELEASES: &str = "https://api.github.com/repos/rodyatotu/soundya/releases/latest";
+/// The same without the API: GitHub answers the API 60 times an hour per address, and many
+/// speakers behind one provider's address got «status code 403» and never saw an update.
+const LATEST_PAGE: &str = "https://github.com/rodyatotu/soundya/releases/latest";
+const DOWNLOAD: &str = "https://github.com/rodyatotu/soundya/releases/download";
+const CHANGELOG: &str = "https://raw.githubusercontent.com/rodyatotu/soundya";
 const ASSET: &str = "soundya-armv7.tar";
 const TAR: &str = "/tmp/soundya-update.tar";
 const DIR: &str = "/tmp/soundya-update";
@@ -386,14 +391,62 @@ fn verify_digest(path: &str, digest: &str) -> Result<(), String> {
 
 fn fetch_latest(proxy: &str) -> Result<Release, String> {
     let agent = crate::sc::build_agent(proxy).map_err(|e| e.to_string())?;
-    let v: Value = agent
-        .get(RELEASES)
-        .set("Accept", "application/vnd.github+json")
+    let api = agent.get(RELEASES).set("Accept", "application/vnd.github+json").call();
+    match api {
+        Ok(resp) => {
+            let v: Value = resp.into_json().map_err(|e| e.to_string())?;
+            release_from(&v).ok_or_else(|| "в последнем релизе нет сборки".to_owned())
+        }
+        // Over the API's limit (403 / 429): the release page, as a browser sees it.
+        Err(ureq::Error::Status(code @ (403 | 429), _)) => {
+            eprintln!("update: GitHub API said {code}; reading the release page instead");
+            fetch_latest_page(&agent)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The latest release without the API: …/releases/latest redirects to …/tag/vX.Y.Z; the file
+/// is at …/download/vX.Y.Z/soundya-armv7.tar, the notes in that version's CHANGELOG.md.
+fn fetch_latest_page(agent: &ureq::Agent) -> Result<Release, String> {
+    let resp = agent.head(LATEST_PAGE).call().map_err(|e| e.to_string())?;
+    let tag = tag_from_url(resp.get_url()).ok_or("GitHub не назвал последнюю версию")?;
+    let version = tag.trim_start_matches('v').to_owned();
+    let notes = agent
+        .get(&format!("{CHANGELOG}/{tag}/CHANGELOG.md"))
         .call()
-        .map_err(|e| e.to_string())?
-        .into_json()
-        .map_err(|e| e.to_string())?;
-    release_from(&v).ok_or_else(|| "в последнем релизе нет сборки".to_owned())
+        .ok()
+        .and_then(|r| r.into_string().ok())
+        .map(|t| notes_of(&t, &version))
+        .unwrap_or_default();
+    Ok(Release { url: format!("{DOWNLOAD}/{tag}/{ASSET}"), version, notes, api_url: String::new(), size: 0, digest: String::new() })
+}
+
+/// "https://github.com/o/r/releases/tag/v0.5.6" → "v0.5.6".
+fn tag_from_url(url: &str) -> Option<String> {
+    let tag = url.split("/releases/tag/").nth(1)?.split(['?', '#', '/']).next()?.trim();
+    (tag.starts_with('v') && tag.len() > 1).then(|| tag.to_owned())
+}
+
+/// The «## 0.5.6» section of CHANGELOG.md (as the release notes are).
+fn notes_of(changelog: &str, version: &str) -> String {
+    let head = format!("## {version}");
+    let mut out = String::new();
+    let mut inside = false;
+    for line in changelog.lines() {
+        if line.starts_with("## ") {
+            if inside {
+                break;
+            }
+            inside = line.trim() == head;
+            continue;
+        }
+        if inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.trim().chars().take(1500).collect()
 }
 
 /// Downloads one URL to TAR and checks its size.
@@ -504,6 +557,15 @@ mod tests {
         let v = serde_json::json!({"tag_name": "v0.5.0", "assets": [{"name": "soundya-armv7.tar",
             "browser_download_url": "https://x/a", "size": 3, "digest": "sha256:ABC"}]});
         assert_eq!(release_from(&v).unwrap().digest, "sha256:ABC");
+    }
+
+    #[test]
+    fn the_release_page_when_the_api_says_403() {
+        assert_eq!(tag_from_url("https://github.com/rodyatotu/soundya/releases/tag/v0.5.6").as_deref(), Some("v0.5.6"));
+        assert_eq!(tag_from_url("https://github.com/rodyatotu/soundya/releases"), None);
+        let log = "# Изменения\n\n## 0.5.6\n- 🔧 one\n- two\n\n## 0.5.5\n- old\n";
+        assert_eq!(notes_of(log, "0.5.6"), "- 🔧 one\n- two");
+        assert_eq!(notes_of(log, "0.4.0"), "");
     }
 
     #[test]

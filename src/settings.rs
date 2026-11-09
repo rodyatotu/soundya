@@ -261,6 +261,9 @@ pub struct Settings {
     /// an intro track (a SoundCloud link or search), and whether to tell the weather and plans.
     #[serde(default = "yes")]
     pub morning_on: bool,
+    /// soundya's own alarm takes «разбуди меня…» (off: Alice's stock alarm does).
+    #[serde(default = "yes")]
+    pub alarm_own: bool,
     #[serde(default = "default_greet")]
     pub morning_greet: String,
     #[serde(default = "default_news")]
@@ -735,6 +738,7 @@ impl Default for Settings {
             home_order: Vec::new(),
             remote_tab: false,
             morning_on: true,
+            alarm_own: true,
             morning_greet: default_greet(),
             morning_news: default_news(),
             morning_intro: String::new(),

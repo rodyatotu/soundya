@@ -99,6 +99,18 @@ pub enum Action {
 /// Developer build only for now (the user build switches the alarm off as before).
 static MORNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(feature = "dev"));
 
+/// soundya's own alarm («Будильник soundya» in the panel). Off: «разбуди меня…», «поставь
+/// будильник…» stay Alice's (her stock alarm), and soundya's alarms do not ring.
+static OWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_own(on: bool) {
+    OWN.store(on, std::sync::atomic::Ordering::Release);
+}
+
+pub fn own() -> bool {
+    OWN.load(std::sync::atomic::Ordering::Acquire)
+}
+
 pub fn set_morning(on: bool) {
     MORNING.store(on && cfg!(feature = "dev"), std::sync::atomic::Ordering::Release);
 }
@@ -222,6 +234,11 @@ fn number(n: &str) -> Option<u32> {
 /// Phrases that are the alarm's. `ringing`: one is ringing now (then «стоп», numbers and
 /// «я проснулся» are ours too).
 pub fn voice(n: &str, ringing: bool, now: i64, off: i64) -> Option<Voice> {
+    voice_with(n, ringing, now, off, own())
+}
+
+/// `voice`, with soundya's alarm switched on or off (`own`).
+fn voice_with(n: &str, ringing: bool, now: i64, off: i64, own: bool) -> Option<Voice> {
     let n = n.trim().trim_end_matches(['.', '!', '?']).trim();
     if ringing {
         const AWAKE: [&str; 12] = [
@@ -245,7 +262,7 @@ pub fn voice(n: &str, ringing: bool, now: i64, off: i64) -> Option<Voice> {
         }
     }
     let about = n.contains("будильник") || n.starts_with("разбуди");
-    if !about {
+    if !about || !own {
         return None;
     }
     if ["какие", "список", "на когда", "на сколько", "когда будильник", "когда прозвенит"].iter().any(|w| n.contains(w)) {
@@ -331,6 +348,9 @@ pub fn tick(s: &mut Saved, now: i64, off: i64, volume: Option<i32>) -> Vec<Actio
         };
     }
     let mut out = vec![];
+    if !own() {
+        return out;
+    }
     for a in s.alarms.iter_mut().filter(|a| a.on && a.next <= now) {
         let late = now - a.next;
         let source = a.source.clone();
@@ -590,6 +610,17 @@ mod tests {
     // Monday 2026-11-09 06:00 MSK.
     const OFF: i64 = 3 * 3600;
     const MON_6: i64 = 1_794_214_800 - 6 * 3600;
+
+    #[test]
+    fn alices_own_alarm_when_soundyas_is_off() {
+        // «Как отключить этот будильник под музыку? Как штатный вернуть?» — the switch: off,
+        // «разбуди меня…» is Alice's; a ringing soundya alarm still hears «я проснулся».
+        let (now, off) = (1_794_200_000, 180 * 60);
+        assert!(voice_with("разбуди меня в 7", false, now, off, true).is_some());
+        assert!(voice_with("разбуди меня в 7", false, now, off, false).is_none());
+        assert!(voice_with("поставь будильник на 8 утра", false, now, off, false).is_none());
+        assert!(voice_with("я проснулся", true, now, off, false).is_some());
+    }
 
     #[test]
     fn next_times() {
