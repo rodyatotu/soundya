@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Banners for the 0.5.00 release, in the README's look (dark violet, neon gradient
-wordmark, glass cards, a grid floor):
+"""The README's pictures, in its look (dark violet, neon gradient wordmark, glass cards,
+a grid floor), from the panel's screenshots on demo data (scripts/screens/):
 
-    docs/banner-050.jpg       1774×887  the release / README top
-    docs/banner-whatsnew.jpg  1600×533  «Что нового в 0.5.00» section
-    dist/telegram-050.jpg     1280×720  the Telegram post
+    docs/banner.jpg           1774×887  the README top
+    docs/banner-whatsnew.jpg  1600×533  «Что нового»
+    docs/showcase.jpg         1600×900  four phones with the panel
+    docs/banner-web.jpg       1600×500  «Пульт в телефоне»
+    docs/banner-mac.jpg       1600×700  soundya in the Mac menu bar
 
+    python3 scripts/screens/demo_server.py 8899 & python3 scripts/screens/shoot.py
     python3 scripts/banners/make_banners.py
 
 Needs Pillow and SF (a Mac) or Inter / DejaVu fonts.
@@ -179,7 +182,8 @@ def paste_icon(img, cx, cy, size):
     img.alpha_composite(icon, (int(cx - size / 2), int(cy - size / 2)))
 
 
-FEATURES = ["Пульт ТВ", "Планы + Google", "Помодоро", "Bluetooth", "Mac и Windows", "Обновление с откатом", "Эквалайзер"]
+VERSION = "0.5.8"
+FEATURES = ["Голосом Алисы", "Mac: строка меню", "Пульт ТВ", "Планы + Google", "Будильник", "AirPlay", "Ambilight"]
 
 
 def stat_card(img, cx, cy, big, small):
@@ -208,10 +212,10 @@ def hero(out):
     paste_icon(img, cx, cy, 310)
     stat_card(img, cx, 700, 84, 30)
     # Left: version, wordmark, thanks, features.
-    text(img, (112, 150), "ВЕРСИЯ 0.5.00", font(32, "Heavy"), PINK, spacing=7)
+    text(img, (112, 150), f"ВЕРСИЯ {VERSION}", font(32, "Heavy"), PINK, spacing=7)
     neon_text(img, (100, 196), "soundya", font(210, "Black", italic=True))
-    text(img, (112, 455), "Нас больше ста. Спасибо, что вы с нами!", font(46, "Bold"), (255, 255, 255))
-    text(img, (112, 520), "Самое большое обновление: пульт, планы, компьютер, Bluetooth", font(30, "Medium"), (205, 195, 235))
+    text(img, (112, 455), "SoundCloud на Яндекс Станции", font(46, "Bold"), (255, 255, 255))
+    text(img, (112, 520), "Голосом Алисы, с телефона и из строки меню Mac", font(30, "Medium"), (205, 195, 235))
     chips(img, 112, 590, FEATURES, font(28, "Semibold"), max_x=1060)
     img.convert("RGB").save(out, quality=92)
 
@@ -221,9 +225,9 @@ def whatsnew(out):
     img = background(w, h)
     glass(img, [90, 105, 905, 300], 40, alpha=28, edge=70)
     neon_text(img, (140, 205), "Что нового", font(112, "Black", italic=True), anchor="lm")
-    text(img, (140, 380), "в soundya 0.5.00", font(48, "Bold"), (255, 255, 255), anchor="lm")
+    text(img, (140, 380), f"в soundya {VERSION}", font(48, "Bold"), (255, 255, 255), anchor="lm")
     # Right: a stack of small glass tiles with the headline features.
-    tiles = [("📺", "Пульт ТВ"), ("🗓", "Планы"), ("⏱", "Помодоро"), ("🎧", "Bluetooth"), ("💻", "Mac / Win"), ("🛡", "Откат")]
+    tiles = [("", "Mac: трей"), ("", "Фильмы ТВ"), ("", "Планы"), ("", "Будильник"), ("", "Ambilight"), ("", "Обложки")]
     f = font(30, "Semibold")
     x0, y0, tw, th, gap = 990, 95, 250, 96, 22
     for i, (_, label) in enumerate(tiles):
@@ -282,15 +286,15 @@ def drop(img, el, x, y, blur=40, alpha=150):
 
 
 def showcase(out):
-    """Three phones with the new panel, captions on top (replaces the 0.4 screenshots)."""
+    """Four phones with the panel, captions on top."""
     w, h = 1600, 900
     img = background(w, h)
-    items = [("home.jpg", "Главная и погода"), ("music.jpg", "Ваша музыка"), ("remote.jpg", "Пульт для ТВ")]
-    pw = 370
-    gap = (w - 3 * pw) // 4
+    items = [("home.jpg", "Главная"), ("music.jpg", "Ваша музыка"), ("plans.jpg", "Планы"), ("remote.jpg", "Пульт ТВ")]
+    pw = 330
+    gap = (w - len(items) * pw) // (len(items) + 1)
     for i, (shot, title) in enumerate(items):
         x = gap + i * (pw + gap)
-        neon_text(img, (x + pw // 2, 62), title, font(40, "Heavy"), colors=[(255, 255, 255), (230, 215, 255)], glow=0.35, anchor="mm")
+        neon_text(img, (x + pw // 2, 62), title, font(38, "Heavy"), colors=[(255, 255, 255), (230, 215, 255)], glow=0.35, anchor="mm")
         ph = phone(shot, pw)
         drop(img, ph, x, 110)
     img.convert("RGB").save(out, quality=90)
@@ -313,11 +317,49 @@ def web_banner(out):
     img.convert("RGB").save(out, quality=90)
 
 
+def mac_banner(out):
+    """soundya in the Mac menu bar: a strip of the menu bar with its icon, the glass window under it."""
+    w, h = 1600, 700
+    img = background(w, h)
+    # The menu bar.
+    bar = Image.new("RGBA", (w, 52), (18, 14, 30, 210))
+    img.alpha_composite(bar, (0, 0))
+    ImageDraw.Draw(img).line([(0, 52), (w, 52)], fill=(255, 255, 255, 30), width=1)
+    icon = Image.open(os.path.join(ROOT, "installer", "src", "menubar.png")).convert("RGBA")
+    icon = icon.resize((44, 36), Image.LANCZOS)
+    white = Image.new("RGBA", icon.size, (255, 255, 255, 255))
+    white.putalpha(icon.split()[3])
+    hl = Image.new("RGBA", (62, 40), (0, 0, 0, 0))
+    ImageDraw.Draw(hl).rounded_rectangle([0, 0, 61, 39], radius=10, fill=(255, 255, 255, 50))
+    ix = 1120
+    img.alpha_composite(hl, (ix - 31, 6))
+    img.alpha_composite(white, (ix - 22, 8))
+    text(img, (w - 40, 26), "Вт 10:00", font(24, "Semibold"), (240, 235, 250), anchor="rm")
+    # The window, hanging from the icon.
+    shot = Image.open(os.path.join(ROOT, "docs", "screens", "glass.jpg")).convert("RGB")
+    ww = 430
+    wh = 540
+    sh = shot.resize((ww, int(shot.height * ww / shot.width)), Image.LANCZOS).crop((0, 0, ww, wh))
+    win = Image.new("RGBA", (ww, wh), (0, 0, 0, 0))
+    m = Image.new("L", (ww, wh), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, ww - 1, wh - 1], radius=22, fill=255)
+    win.paste(sh, (0, 0), m)
+    ImageDraw.Draw(win).rounded_rectangle([0, 0, ww - 1, wh - 1], radius=22, outline=(255, 255, 255, 50), width=2)
+    drop(img, win, ix - ww // 2, 70)
+    # Left: what it is.
+    neon_text(img, (90, 150), "soundya", font(120, "Black", italic=True))
+    text(img, (96, 345), "в строке меню Mac", font(54, "Heavy"), (255, 255, 255))
+    for i, line in enumerate(["Клик по значку — и плеер под рукой, без браузера",
+                              "Музыка с колонки или прямо на Mac",
+                              "Сценарии, пульт ТВ, планы — что сами выберете"]):
+        text(img, (96, 440 + i * 46), "•  " + line, font(28, "Medium"), (215, 205, 240))
+    img.convert("RGB").save(out, quality=90)
+
+
 if __name__ == "__main__":
-    os.makedirs(os.path.join(ROOT, "dist"), exist_ok=True)
-    hero(os.path.join(ROOT, "docs", "banner-050.jpg"))
+    hero(os.path.join(ROOT, "docs", "banner.jpg"))
     whatsnew(os.path.join(ROOT, "docs", "banner-whatsnew.jpg"))
-    telegram(os.path.join(ROOT, "dist", "telegram-050.jpg"))
     showcase(os.path.join(ROOT, "docs", "showcase.jpg"))
     web_banner(os.path.join(ROOT, "docs", "banner-web.jpg"))
-    print("banners: docs/banner-050.jpg, docs/banner-whatsnew.jpg, dist/telegram-050.jpg")
+    mac_banner(os.path.join(ROOT, "docs", "banner-mac.jpg"))
+    print("banners: docs/banner.jpg, banner-whatsnew.jpg, showcase.jpg, banner-web.jpg, banner-mac.jpg")

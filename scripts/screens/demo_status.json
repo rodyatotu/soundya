@@ -1,0 +1,403 @@
+{
+ "airplay": {
+  "enabled": true,
+  "name": "Яндекс Станция",
+  "ready": true,
+  "active": false,
+  "error": null
+ },
+ "bypass_busy": false,
+ "bypass_log": [],
+ "calendar": {
+  "on": false,
+  "events": 0,
+  "next": [],
+  "error": "",
+  "fetched": 0,
+  "google": {
+   "on": false,
+   "calendars": [],
+   "lists": []
+  }
+ },
+ "cover": "",
+ "current_id": 2359036709,
+ "current_liked": false,
+ "current_url": "",
+ "device": {
+  "dev": false,
+  "display": false,
+  "firmware": "",
+  "model": "yandexmini_2",
+  "version": "0.5.8"
+ },
+ "display": {},
+ "ducking": {
+  "events": [],
+  "level": 1.0,
+  "manual": false,
+  "mode": "smart"
+ },
+ "duration_ms": 1513760,
+ "heard": {
+  "at": 0,
+  "text": ""
+ },
+ "led": {
+  "order": "rgb",
+  "ring": "3 zones, max_brightness [255, 255, 255]"
+ },
+ "listen": {
+  "gen": 0,
+  "listeners": 0,
+  "muted": false,
+  "seekable": true
+ },
+ "loading": null,
+ "login": "ok",
+ "net": {
+  "level": "good",
+  "ping_ms": 48,
+  "speed_kbps": 1450,
+  "buffer_s": 30,
+  "error": null,
+  "warning": null
+ },
+ "net_update": true,
+ "onboarding": {
+  "phase": null,
+  "stage": "Idle"
+ },
+ "pc_legacy": false,
+ "pos": 1,
+ "position_ms": 854580,
+ "queue": [],
+ "queue_ids": [],
+ "queue_liked": [],
+ "repeat": false,
+ "settings": {
+  "adb_keep": true,
+  "airplay": true,
+  "airplay_icon": "homepod-big",
+  "airplay_name": "Яндекс Станция",
+  "alarm_louder": true,
+  "alarm_own": true,
+  "alarm_volume": 5,
+  "alice_voice": 65,
+  "alice_voice_max": 10,
+  "autostart": [],
+  "brief_at": 720,
+  "brief_days": "all",
+  "brief_on": true,
+  "brief_phrase": false,
+  "bt_mac": "",
+  "bt_name": "",
+  "bt_on": false,
+  "bypass": "nfq22",
+  "bypass_manual": false,
+  "bypass_name": "zapret «general (ALT11)»",
+  "bypass_on": true,
+  "cal_on": false,
+  "cal_remind": 10,
+  "cal_url": "",
+  "display_bright": 100,
+  "display_city": "",
+  "display_light_own": false,
+  "display_night_bright": 20,
+  "display_night_from": 1320,
+  "display_night_to": 420,
+  "display_on": false,
+  "display_secs": 10,
+  "display_widgets": [
+   "clock",
+   "weather",
+   "pc"
+  ],
+  "duck_call_level": 15,
+  "duck_exclude": [],
+  "duck_mode": "smart",
+  "duck_notify_level": 40,
+  "duck_notify_secs": 6,
+  "eq": [
+   7,
+   5,
+   5,
+   3,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "eq_on": true,
+  "g_client_id": "",
+  "g_client_secret": "",
+  "g_connected": true,
+  "g_list": "",
+  "g_on": false,
+  "g_read": [],
+  "g_write": "",
+  "home_hidden": [
+   "sc",
+   "recent",
+   "pc"
+  ],
+  "home_order": [
+   "weather",
+   "plans",
+   "remote",
+   "scenes",
+   "timer",
+   "foryou",
+   "sc",
+   "recent",
+   "pc"
+  ],
+  "keyword_only": false,
+  "led_order": "rgb",
+  "light_bass": "#ff2a00",
+  "light_bright": 100,
+  "light_color": "#ff3d00",
+  "light_color2": "#ff2fa8",
+  "light_high": "#b14dff",
+  "light_intensity": 130,
+  "light_mid": "#ff2f7a",
+  "light_mode": "eq",
+  "light_speed": 100,
+  "macros": [
+   {
+    "phrase": "включи кино",
+    "script": "tv wake"
+   },
+   {
+    "phrase": "доброе утро",
+    "script": "likes"
+   },
+   {
+    "phrase": "рабочий режим",
+    "script": "pc do открой телеграм"
+   }
+  ],
+  "meet_bot_token": "",
+  "meet_minutes": 30,
+  "morning_greet": "Доброе утро",
+  "morning_intro": "",
+  "morning_news": "",
+  "morning_on": false,
+  "morning_plans": true,
+  "morning_weather": true,
+  "music_default": "soundcloud",
+  "onboarded": true,
+  "party_seen": true,
+  "pc_apps": true,
+  "pc_contacts": [],
+  "pc_host": "192.168.1.20",
+  "pc_keep": "",
+  "pc_mac": "",
+  "pc_name": "",
+  "pc_on": true,
+  "pc_plain": true,
+  "pc_power": true,
+  "pc_search": true,
+  "pc_tg": true,
+  "pc_token": "",
+  "pcs_more": [],
+  "pin_on": false,
+  "plan_due_time": 1080,
+  "plan_mode": "simple",
+  "plan_target": "google",
+  "plan_warn": 30,
+  "planner_on": true,
+  "pomo_break": 5,
+  "pomo_long": 15,
+  "pomo_on_break": "",
+  "pomo_on_done": "",
+  "pomo_on_work": "",
+  "pomo_rounds": 4,
+  "pomo_work": 25,
+  "proxy": "",
+  "proxy_on": false,
+  "remote_tab": true,
+  "report_logs": true,
+  "resume_music": false,
+  "ring": true,
+  "sc_refresh": "",
+  "sc_renew_error": null,
+  "share_heard": true,
+  "soundcloud": true,
+  "stats": true,
+  "teams": [],
+  "tg_allowed": [],
+  "tg_bots": [],
+  "tg_max": 200,
+  "tg_on": false,
+  "tg_quiet_from": 1380,
+  "tg_quiet_on": false,
+  "tg_quiet_to": 480,
+  "tg_read": true,
+  "timer_face": true,
+  "token": "••••demo",
+  "token_exp": 1794339198,
+  "tv_active": "",
+  "tv_host": "192.168.1.30",
+  "tv_name": "",
+  "tv_on": true,
+  "tv_search": {},
+  "tvs_more": [],
+  "tz_offset": 180,
+  "voice_hello": true,
+  "work_days": "weekdays",
+  "work_from": 600,
+  "work_to": 1140,
+  "zapret_args": "",
+  "display_lat": 59.94,
+  "display_lon": 30.31,
+  "secrets": {}
+ },
+ "shuffle": false,
+ "source": "soundcloud",
+ "state": "playing",
+ "telegram": {
+  "errors": [],
+  "groups": [],
+  "held": 0,
+  "last": null,
+  "said": 0,
+  "unknown": []
+ },
+ "timer": {
+  "on": false,
+  "today": 0
+ },
+ "track": "",
+ "update": {
+  "available": false,
+  "current": "0.5.8",
+  "latest": "0.5.8",
+  "error": null,
+  "installing": false,
+  "notes": "",
+  "state": null,
+  "last": null
+ },
+ "user": "Ваш аккаунт",
+ "voice": {
+  "available": true,
+  "lowered": false
+ },
+ "volume": 4,
+ "writes": false,
+ "zapret_presets": [
+  [
+   "nfq1",
+   "Станция (alice-zapret2)",
+   "1"
+  ],
+  [
+   "nfq2",
+   "general",
+   "1"
+  ],
+  [
+   "nfq3",
+   "general (ALT)",
+   "1"
+  ],
+  [
+   "nfq4",
+   "general (ALT2)",
+   "1"
+  ],
+  [
+   "nfq5",
+   "general (ALT3)",
+   "1"
+  ],
+  [
+   "nfq6",
+   "general (ALT4)",
+   "1"
+  ],
+  [
+   "nfq7",
+   "general (ALT5)",
+   "1"
+  ],
+  [
+   "nfq8",
+   "general (FAKE TLS AUTO)",
+   "1"
+  ],
+  [
+   "nfq9",
+   "general (SIMPLE FAKE)",
+   "1"
+  ],
+  [
+   "nfq10",
+   "fake + multisplit (md5sig)",
+   "1"
+  ],
+  [
+   "nfq11",
+   "fake (badseq ×11)",
+   "1"
+  ],
+  [
+   "nfq12",
+   "multidisorder",
+   "1"
+  ],
+  [
+   "nfq13",
+   "zapret2: по умолчанию",
+   "2"
+  ],
+  [
+   "nfq14",
+   "zapret2: fake + multisplit (md5)",
+   "2"
+  ],
+  [
+   "nfq15",
+   "zapret2: multisplit seqovl",
+   "2"
+  ],
+  [
+   "nfq16",
+   "zapret2: multidisorder seqovl",
+   "2"
+  ],
+  [
+   "nfq17",
+   "zapret2: tcpseg seqovl",
+   "2"
+  ],
+  [
+   "nfq18",
+   "zapret2: fake + fakedsplit (ts)",
+   "2"
+  ],
+  [
+   "nfq19",
+   "zapret2: hostfakesplit",
+   "2"
+  ],
+  [
+   "nfq20",
+   "zapret2: fake tls_mod + multidisorder",
+   "2"
+  ],
+  [
+   "nfq21",
+   "zapret2: fake badsum + multisplit",
+   "2"
+  ],
+  [
+   "nfq22",
+   "general (ALT11)",
+   "1"
+  ]
+ ]
+}
