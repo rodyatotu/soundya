@@ -1,7 +1,7 @@
 //! Developer build only for now. The morning after the alarm (alarm.rs): once it is switched off by the right answer,
 //! an intro track of the user's choice plays for a moment, then Alice greets («Доброе утро!»
 //! unless changed), tells the weather, the day's plans and the headlines of a
-//! news feed, and the music goes on.
+//! news feed over the music, played quieter meanwhile.
 //!
 //! The feeds are plain RSS; the titles are read out, nothing else of the articles.
 
@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{alice::Intent, settings::Settings, Cmd, Shared};
+use crate::{settings::Settings, Cmd, Shared};
 
 pub const DEFAULT_GREET: &str = "Доброе утро!";
 /// Headlines read out.
@@ -289,7 +289,9 @@ pub fn run(s: Settings, shared: Arc<Shared>, tx: Sender<Cmd>, test: bool) {
             let (reply, _) = std::sync::mpsc::channel();
             let _ = tx.send(Cmd::Control(format!("play {intro}"), reply));
             thread::sleep(INTRO_FOR);
-            let _ = tx.send(Cmd::Voice(Intent::Pause));
+            // The music goes on under Alice, quieter (it was paused: «музыку на фоне вырубило»).
+            let (reply, _) = std::sync::mpsc::channel();
+            let _ = tx.send(Cmd::Control("duck down".into(), reply));
             thread::sleep(Duration::from_millis(800));
         }
         let greet = if s.morning_greet.trim().is_empty() { DEFAULT_GREET.to_owned() } else { s.morning_greet.trim().to_owned() };
@@ -308,6 +310,9 @@ pub fn run(s: Settings, shared: Arc<Shared>, tx: Sender<Cmd>, test: bool) {
         }
         if s.morning_plans {
             crate::alice::say_wait(&crate::planner::agenda(Some(0)));
+            if !test {
+                crate::planner::brief_told_today();
+            }
         }
         match fetching.join().ok().flatten() {
             Some(Ok((name, t))) => {
@@ -322,7 +327,8 @@ pub fn run(s: Settings, shared: Arc<Shared>, tx: Sender<Cmd>, test: bool) {
             None => {}
         }
         if !intro.is_empty() {
-            let _ = tx.send(Cmd::Voice(Intent::Resume));
+            let (reply, _) = std::sync::mpsc::channel();
+            let _ = tx.send(Cmd::Control("duck restore".into(), reply));
         }
         eprintln!("morning: done");
     });

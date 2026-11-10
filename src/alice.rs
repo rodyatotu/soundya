@@ -526,6 +526,78 @@ pub enum PcAction {
     Key(String),
 }
 
+/// Which PC commands soundya takes («Компьютер» menu); the rest stay Alice's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PcRules {
+    pub power: bool,
+    pub apps: bool,
+    pub tg: bool,
+    pub search: bool,
+    /// Commands without «на компьютере».
+    pub plain: bool,
+    /// Normalized words and phrases always left to Alice.
+    pub keep: Vec<String>,
+}
+
+impl Default for PcRules {
+    fn default() -> Self {
+        PcRules { power: true, apps: true, tg: true, search: true, plain: true, keep: Vec::new() }
+    }
+}
+
+static PC_RULES: std::sync::Mutex<Option<PcRules>> = std::sync::Mutex::new(None);
+
+pub fn set_pc_rules(rules: PcRules) {
+    *PC_RULES.lock().unwrap() = Some(rules);
+}
+
+fn pc_rules() -> PcRules {
+    PC_RULES.lock().unwrap().clone().unwrap_or_default()
+}
+
+/// «окно, Выключи компьютер; шторы» → ["окно", "выключи компьютер", "шторы"].
+pub fn keep_list(text: &str) -> Vec<String> {
+    text.split([',', ';', '\n']).map(normalize).filter(|w| !w.is_empty()).collect()
+}
+
+/// The phrase has one of the user's «всегда оставлять Алисе» words or phrases.
+fn kept_for_alice(norm: &str, rules: &PcRules) -> bool {
+    let padded = format!(" {norm} ");
+    rules.keep.iter().any(|k| {
+        let k = format!(" {k} ");
+        padded.contains(&k) || (!k.trim().contains(' ') && padded.split_whitespace().any(|w| w.starts_with(k.trim())))
+    })
+}
+
+/// A PC command is soundya's under the user's rules: `named` — the PC was said.
+fn pc_allowed(norm: &str, action: &PcAction, named: bool, rules: &PcRules) -> bool {
+    if kept_for_alice(norm, rules) || (!named && !rules.plain) {
+        return false;
+    }
+    match action {
+        PcAction::Wake | PcAction::Sleep | PcAction::Shutdown | PcAction::Restart | PcAction::Lock => rules.power,
+        PcAction::Command(text) => {
+            let words: Vec<&str> = text.split_whitespace().collect();
+            let verb = words.first().copied().unwrap_or("");
+            let has = |stems: &[&str]| words.iter().any(|w| stems.iter().any(|s| w.starts_with(s)));
+            if matches!(verb, "отправь" | "скинь" | "пошли" | "напиши") && has(&["телег", "телеграм", "сообщени"]) {
+                rules.tg
+            } else if matches!(verb, "загугли" | "погугли" | "найди" | "поищи" | "запиши" | "допиши" | "напиши" | "создай" | "сделай" | "добавь") {
+                rules.search
+            } else {
+                rules.apps
+            }
+        }
+        _ => true,
+    }
+}
+
+/// «напиши лизе я скоро буду» under the rules: Telegram may be left to Alice.
+pub fn contact_allowed(text: &str) -> bool {
+    let rules = pc_rules();
+    rules.tg && !kept_for_alice(&normalize(text), &rules)
+}
+
 /// Questions about the PC's state: only with the PC named.
 fn pc_question(text: &str) -> Option<PcAction> {
     let pc = ["компьютер", "компа", "компе", "комп ", "пк", "процессор", "видеокарт"].iter().any(|w| format!("{text} ").contains(w));
@@ -558,9 +630,26 @@ const PC_VERBS: [&str; 25] = [
 /// Words that make «запиши…», «создай…» a job for the PC.
 const PC_THINGS: [&str; 9] = ["заметк", "документ", "ворд", "блокнот", "файл", "папк", "текст", "браузер", "гугл"];
 
+/// Things of a smart home: «закрой окно», «открой шторы», «выключи свет» are
+/// Alice's (Home Assistant and the like), not a window or a program on the PC —
+/// unless the PC is named («закрой окно на компьютере»).
+const HOME_THINGS: [&str; 22] = [
+    "окн", "форточк", "штор", "жалюз", "рольставн", "ворот", "калитк", "двер", "замок", "замк", "кран", "вентил",
+    "розетк", "ламп", "люстр", "гирлянд", "кондиционер", "обогревател", "увлажнител", "пылесос", "чайник", "бойлер",
+];
+
+fn home_thing(words: &[&str]) -> bool {
+    words.iter().any(|w| HOME_THINGS.iter().any(|s| w.starts_with(s)) || matches!(*w, "свет" | "света" | "подсветку" | "подсветка"))
+}
+
 /// «включи компьютер», «открой телеграм на компьютере», «усыпи комп»,
 /// «открой ютуб в профиле работа», «запиши в заметки купить молоко», …
 fn pc(text: &str) -> Option<PcAction> {
+    pc_named(text).map(|(a, _)| a)
+}
+
+/// The PC command and whether the PC was named in it («на компьютере», «комп»).
+fn pc_named(text: &str) -> Option<(PcAction, bool)> {
     const PLACES: [&str; 8] = [
         " на компьютере ",
         " на компе ",
@@ -593,6 +682,10 @@ fn pc(text: &str) -> Option<PcAction> {
     if !found {
         // Without «на компьютере»: things Alice cannot do on this speaker anyway.
         let has = |stems: &[&str]| words.iter().skip(1).any(|w| stems.iter().any(|s| w.starts_with(s)));
+        // «закрой окно», «открой шторы»: the smart home's, unless it is the browser's window.
+        if home_thing(&words[1..]) && !has(&PC_THINGS) {
+            return None;
+        }
         let plain = match verb {
             // «открой стим», «закрой хром», «открой ютуб в профиле работа»; her skills stay hers.
             "открой" | "закрой" => !object.is_empty() && !has(&["навык"]),
@@ -611,8 +704,12 @@ fn pc(text: &str) -> Option<PcAction> {
             _ if has(&["впн", "vpn"]) => matches!(verb, "подключи" | "подключись" | "включи" | "отключи" | "выключи" | "запусти"),
             _ => false,
         };
-        return plain.then(|| PcAction::Command(all));
+        return plain.then(|| (PcAction::Command(all), false));
     }
+    pc_said(verb, object, all).map(|a| (a, true))
+}
+
+fn pc_said(verb: &str, object: &[&str], all: String) -> Option<PcAction> {
     if all.contains("спящ") || all.contains(" сон") || verb == "усыпи" {
         return Some(PcAction::Sleep);
     }
@@ -1141,11 +1238,16 @@ fn intent_plain(text: &str, keyword_only: bool) -> Option<Intent> {
     if let Some(ms) = seek_command(&normalize(text)) {
         return Some(Intent::Seek(ms));
     }
-    if let Some(action) = pc_question(&normalize(text)) {
+    let rules = pc_rules();
+    if let Some(action) = pc_question(&normalize(text)).filter(|a| pc_allowed(&normalize(text), a, true, &rules)) {
         return Some(Intent::Pc(action));
     }
-    if let Some(action) = pc(&normalize(text)) {
-        return Some(Intent::Pc(action));
+    if let Some((action, named)) = pc_named(&normalize(text)) {
+        // «Закрой окно» for Home Assistant, «выключи компьютер» by his own automation:
+        // what the «Компьютер» menu leaves to Alice stays hers.
+        if pc_allowed(&normalize(text), &action, named, &rules) {
+            return Some(Intent::Pc(action));
+        }
     }
     // «Включи бонобо в яндекс музыке», «продолжи в яндекс музыке»: Alice's, whatever the mode.
     if names_yandex(&normalize(text)) {
@@ -1572,6 +1674,8 @@ fn speak(text: &str) -> io::Result<()> {
     let _done = Done;
     socket.write_all(&frames)?;
     let started = std::time::Instant::now();
+    // Waiting for her to start: 5 s (not 15) — a phrase she took starts within a second or two.
+    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut speaking = false;
     let mut data = Vec::new();
     // A read timeout (EAGAIN on Linux) is not a failure once she started speaking: some
@@ -1579,11 +1683,15 @@ fn speak(text: &str) -> io::Result<()> {
     let quiet = |e: io::Error, speaking: bool| -> io::Result<()> {
         match e.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut if speaking => Ok(()),
-            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Err(io::Error::other("Алиса не начала говорить за 15 с")),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Err(io::Error::other("Алиса не сказала, что говорит (5 с)")),
             _ => Err(e),
         }
     };
     while started.elapsed() < Duration::from_secs(30) {
+        if speaking {
+            // Speaking: a long phrase may send nothing for a while — it is not cut short.
+            let _ = socket.set_read_timeout(Some(Duration::from_secs(15)));
+        }
         let mut len = [0u8; 4];
         if let Err(e) = socket.read_exact(&mut len) {
             return quiet(e, speaking);
@@ -1598,6 +1706,14 @@ fn speak(text: &str) -> io::Result<()> {
         }
         if number(&data, 253) != Some(3) {
             continue;
+        }
+        // Alice's state on the same connection: some firmwares (the Lite) send no TTS events,
+        // and every phrase waited 15 s for one — the long pauses between the morning's phrases.
+        // Speaking (2), then back to idle (0 / 6): done, the next phrase goes at once.
+        match alice_state(&data) {
+            Some(2) => speaking = true,
+            Some(0 | 6) if speaking => return Ok(()),
+            _ => {}
         }
         let Some(event) = bytes(&data, 252).and_then(|r| bytes(r, 18)) else {
             continue;
@@ -1706,7 +1822,9 @@ fn read_frames(
                 let _ = tx.send(Cmd::Control(format!("macro run {phrase}"), dtx));
                 continue;
             }
-            let intent = message_to_contact(&text, &shared.contact_names())
+            let intent = contact_allowed(&text)
+                .then(|| message_to_contact(&text, &shared.contact_names()))
+                .flatten()
                 .or_else(|| intent(&text, shared.keyword_only()));
             let Some(intent) = intent else {
                 // «Включи радио», «включи яндекс музыку»…: her music from now on.
@@ -1996,6 +2114,46 @@ mod tests {
         assert_eq!(to("напиши пете привет"), None);
         assert_eq!(to("напиши стих про осень"), None);
         assert_eq!(message_to_contact("напиши лизе привет", &[]), None);
+    }
+
+    #[test]
+    fn smart_home_and_the_pc_menu_leave_phrases_to_alice() {
+        // «Закрой окно» is Home Assistant's window, not Windows' («закрываются не физическое»).
+        for t in ["закрой окно", "открой окно в спальне", "открой шторы", "закрой жалюзи", "открой ворота", "выключи свет"] {
+            assert_eq!(pc_named(t), None, "{t}");
+        }
+        assert_eq!(pc_named("закрой окно на компьютере"), Some((PcAction::Command("закрой окно".into()), true)));
+        assert_eq!(pc_named("закрой окно браузера"), Some((PcAction::Command("закрой окно браузера".into()), false)));
+        assert_eq!(pc_named("открой стим"), Some((PcAction::Command("открой стим".into()), false)));
+
+        let all = PcRules::default();
+        let off = |f: fn(&mut PcRules)| {
+            let mut r = PcRules::default();
+            f(&mut r);
+            r
+        };
+        let ok = |t: &str, r: &PcRules| pc_named(t).is_some_and(|(a, named)| pc_allowed(t, &a, named, r));
+        // Everything as before by default.
+        for t in ["выключи компьютер", "открой стим", "загугли курс доллара", "отправь маме в телеграм привет"] {
+            assert!(ok(t, &all), "{t}");
+        }
+        // Power by Home Assistant: «выключи компьютер» stays Alice's, apps are still ours.
+        let r = off(|r| r.power = false);
+        assert!(!ok("выключи компьютер", &r) && !ok("включи комп", &r) && ok("открой стим", &r));
+        let r = off(|r| r.apps = false);
+        assert!(!ok("открой стим", &r) && !ok("закрой хром на компе", &r) && ok("выключи компьютер", &r));
+        let r = off(|r| r.tg = false);
+        assert!(!ok("отправь маме в телеграм привет", &r) && ok("открой телеграм", &r));
+        let r = off(|r| r.search = false);
+        assert!(!ok("загугли курс доллара", &r) && !ok("запиши в заметки купить хлеб", &r) && ok("открой стим", &r));
+        // Only with the PC named.
+        let r = off(|r| r.plain = false);
+        assert!(!ok("открой стим", &r) && ok("открой стим на компьютере", &r) && ok("выключи компьютер", &r));
+        // The user's own list.
+        let r = PcRules { keep: keep_list("Окно, выключи компьютер; ТЕРМОСТАТ"), ..PcRules::default() };
+        assert_eq!(r.keep, ["окно", "выключи компьютер", "термостат"]);
+        assert!(!ok("выключи компьютер", &r) && ok("усыпи компьютер", &r) && !ok("закрой окно на компьютере", &r));
+        assert!(!ok("открой термостат", &r) && ok("открой стим", &r));
     }
 
     #[test]
