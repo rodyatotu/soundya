@@ -709,6 +709,7 @@ function injectModsCard() {
 }
 
 function selectModsSub() {
+  injectModsCard();
   document.querySelectorAll('#tab-settings .subnav button').forEach(b => {
     b.classList.toggle('on', b.id === 'subnav-mods-btn' || b.dataset.sub === 'mods');
   });
@@ -720,29 +721,12 @@ function selectModsSub() {
 
 function createModsCardHtml() {
   return `
-    <h2 class="section" style="margin-top:0;padding-top:0;border-top:0">Моды и дополнения</h2>
-    <p class="hint">Установка и управление автономными плагинами (матрица Станции 2, оформление, пульт ТВ, телеметрия). Модули работают на лету без перекомпиляции Soundya.</p>
-    
-    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 12px 0; width: 100%; box-sizing: border-box;">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <div>
-          <b style="font-size:15px; color:var(--ink);">Сборка Soundya (форк Gemeur)</b>
-          <div class="hint" style="font-size:13px; margin-top:2px;">Репозиторий обновлений: <a href="https://github.com/Gemeur/soundya" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:none;">github.com/Gemeur/soundya</a></div>
-        </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button type="button" class="sm" onclick="checkUpdate()" id="btnCheckFirmware">Проверить на GitHub</button>
-          <label class="btn sm" style="cursor:pointer; display:inline-flex; align-items:center; background:rgba(255,255,255,0.08); border:1px solid var(--line); border-radius:10px; padding:6px 12px; font-weight:600;">
-            <span>Загрузить soundya-armv7.tar</span>
-            <input type="file" accept=".tar" style="display:none;" onchange="uploadFirmwareTar(this)">
-          </label>
-        </div>
-      </div>
-      <div class="msg" id="firmwareMsg" style="margin-top:8px;"></div>
-    </div>
+    <h2 class="section" style="margin-top:0;padding-top:0;border-top:0">МОДЫ И ДОПОЛНЕНИЯ</h2>
+    <p class="hint">Установка и управление автономными плагинами.</p>
 
-    <div class="mods-container" style="background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 12px 0; width: 100%; box-sizing: border-box;">
+    <div class="mods-container" style="background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 16px; padding: 16px; width: 100%; box-sizing: border-box;">
       <div style="font-size:14px; font-weight:600; margin-bottom:10px; color:var(--ink);">Установленные плагины и моды:</div>
-      <div id="modsList" class="mods-list" style="display:flex; flex-direction:column; gap:10px; width: 100%; box-sizing: border-box;">
+      <div id="modsList" class="mods-list" style="display:flex; flex-direction:column; gap:10px; width:100%; box-sizing:border-box; max-height:420px; overflow-y:auto; overflow-x:hidden; padding-right:2px;">
         <div class="hint">Загрузка дополнений…</div>
       </div>
       <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
@@ -755,33 +739,6 @@ function createModsCardHtml() {
       <div class="msg mods-msg" id="modsMsg"></div>
     </div>
   `;
-}
-
-async function uploadFirmwareTar(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  const msg = document.getElementById('firmwareMsg');
-  if (msg) {
-    msg.textContent = 'Отправляю прошивку на колонку (5–7 МБ)…';
-    msg.className = 'msg';
-  }
-  try {
-    const res = await fetch('/api/update/upload', {
-      method: 'POST',
-      body: file
-    });
-    const text = await res.text();
-    if (msg) {
-      msg.textContent = text;
-      msg.className = text.startsWith('error') ? 'msg err' : 'msg ok';
-    }
-  } catch (err) {
-    if (msg) {
-      msg.textContent = 'Ошибка загрузки: ' + err.message;
-      msg.className = 'msg err';
-    }
-  }
-  input.value = '';
 }
 
 async function loadMods(forceRefresh = false) {
@@ -810,15 +767,19 @@ async function loadMods(forceRefresh = false) {
             : '';
           const verBadge = m.version ? `<span style="font-size:11px; opacity:0.7;">v${m.version}</span>` : '';
           return `
-            <div style="display:flex; justify-content:space-between; align-items:flex-start; padding:12px; border-radius:10px; background:rgba(255,255,255,0.03); border:1px solid var(--line); width:100%; box-sizing:border-box; gap:12px;">
-              <label class="check" style="display:flex; align-items:flex-start; gap:10px; margin:0; flex:1 1 0%; min-width:0; cursor:pointer;">
-                <input type="checkbox" data-mod="${m.id}" ${isChecked} onchange="toggleMod('${m.id}', this.checked)" style="flex-shrink:0; margin-top:3px;">
-                <span style="flex:1 1 0%; min-width:0; display:block;">
-                  <b style="font-size:15px;">${m.name}</b> ${verBadge} ${backendBadge}<br>
-                  <span class="hint" style="font-size:13px; display:block; word-break:normal; overflow-wrap:break-word;">${m.description || m.id}</span>
-                </span>
-              </label>
-              <button type="button" class="sm ghost" onclick="deleteMod('${m.id}')" title="Удалить" style="opacity:0.6; padding:4px 8px; flex-shrink:0;">✕</button>
+            <div style="position:relative; width:100%; box-sizing:border-box; padding:14px 16px; border-radius:12px; background:rgba(255,255,255,0.03); border:1px solid var(--line); display:flex; align-items:flex-start; gap:14px; margin-bottom:2px;">
+              <input type="checkbox" data-mod="${m.id}" ${isChecked} onchange="toggleMod('${m.id}', this.checked)" style="margin-top:2px; flex:none; cursor:pointer; accent-color:var(--accent); width:18px; height:18px;">
+              <div style="flex:1; min-width:0; padding-right:28px;">
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <b style="font-size:15px; color:var(--ink);">${m.name}</b>
+                  ${verBadge}
+                  ${backendBadge}
+                </div>
+                <div class="hint" style="font-size:13px; line-height:1.45; margin-top:6px; color:var(--muted); word-break:normal; overflow-wrap:break-word; white-space:normal;">
+                  ${m.description || m.id}
+                </div>
+              </div>
+              <button type="button" onclick="deleteMod('${m.id}')" title="Удалить" style="position:absolute; top:12px; right:12px; width:26px; height:26px; border-radius:50%; border:0; background:transparent; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--muted); font-size:13px; padding:0; margin:0; line-height:1; transition:all .15s;" onmouseover="this.style.color='var(--err)';this.style.background='rgba(255,59,48,0.12)'" onmouseout="this.style.color='var(--muted)';this.style.background='transparent'">✕</button>
             </div>
           `;
         }).join('');
@@ -956,20 +917,6 @@ async function uploadModFile(input) {
   }
 }
 
-async function emergencyResetMods() {
-  if (!confirm('Отключить все установленные моды и вернуть Soundya в чистый стоковый режим (Debug Reset)?')) return;
-  try {
-    await fetch('/api/mods/reset', { method: 'POST' });
-  } catch (e) {
-    console.warn('Reset error:', e);
-  }
-  try {
-    localStorage.removeItem('tab');
-    localStorage.removeItem('soundya-sub');
-  } catch (e) {}
-  window.location.href = window.location.pathname + '?reset=' + Date.now();
-}
-
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     loadMods();
@@ -987,17 +934,10 @@ if (document.readyState === 'loading') {
 }
 </script>"#;
 
-    let debug_bar = r#"<div id="soundya-debug-bar" style="position:fixed!important;bottom:12px!important;right:12px!important;z-index:2147483647!important;display:flex!important;gap:8px!important;align-items:center!important;pointer-events:auto!important;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif!important;">
-  <button id="soundya-reset-mods-btn" type="button" title="Аварийный сброс всех модов (Debug Mode)" style="background:#d32f2f!important;color:#ffffff!important;border:1px solid rgba(255,255,255,0.45)!important;border-radius:999px!important;padding:7px 15px!important;font-size:12px!important;font-weight:700!important;box-shadow:0 4px 16px rgba(0,0,0,0.55)!important;cursor:pointer!important;opacity:0.92!important;transition:opacity .15s,transform .15s!important;white-space:nowrap!important;outline:none!important;" onmouseover="this.style.opacity='1';this.style.transform='scale(1.03)'" onmouseout="this.style.opacity='0.92';this.style.transform='scale(1)'" onclick="emergencyResetMods()">
-    ⚡ Сбросить моды (Debug Mode)
-  </button>
-</div>"#;
-
-    let payload = format!("{debug_bar}\n{LOADER_SCRIPT}");
     if html.contains("</body>") {
-        html.replace("</body>", &format!("{payload}\n</body>"))
+        html.replace("</body>", &format!("{LOADER_SCRIPT}\n</body>"))
     } else {
-        format!("{html}\n{payload}")
+        format!("{html}\n{LOADER_SCRIPT}")
     }
 }
 
