@@ -542,6 +542,14 @@ impl Controller {
         settings["remote_tab"] = self.settings.remote_tab.into();
         settings["morning_on"] = self.settings.morning_on.into();
         settings["alarm_own"] = self.settings.alarm_own.into();
+        settings["alarm_volume"] = self.settings.alarm_volume.into();
+        settings["alarm_louder"] = self.settings.alarm_louder.into();
+        settings["pc_power"] = self.settings.pc_power.into();
+        settings["pc_apps"] = self.settings.pc_apps.into();
+        settings["pc_tg"] = self.settings.pc_tg.into();
+        settings["pc_search"] = self.settings.pc_search.into();
+        settings["pc_plain"] = self.settings.pc_plain.into();
+        settings["pc_keep"] = self.settings.pc_keep.clone().into();
         settings["morning_greet"] = self.settings.morning_greet.clone().into();
         settings["morning_news"] = self.settings.morning_news.clone().into();
         settings["morning_intro"] = self.settings.morning_intro.clone().into();
@@ -1027,6 +1035,8 @@ impl Controller {
         self.shared.tv.store(new.tv_configured(), Ordering::Release);
         alice::set_tv(new.tv_configured());
         alice::set_devices(device_names(&new));
+        new.pc_keep = new.pc_keep.trim().chars().take(500).collect();
+        alice::set_pc_rules(pc_rules(&new));
         new.morning_greet = new.morning_greet.trim().chars().take(200).collect();
         new.morning_intro = new.morning_intro.trim().chars().take(300).collect();
         new.morning_news = new.morning_news.trim().to_owned();
@@ -1035,6 +1045,8 @@ impl Controller {
         }
         alarm::set_morning(new.morning_on);
         alarm::set_own(new.alarm_own);
+        new.alarm_volume = new.alarm_volume.clamp(1, volume::MAX);
+        alarm::set_volume(new.alarm_volume, new.alarm_louder);
         self.shared.soundcloud.store(new.soundcloud, Ordering::Release);
         let proxy_changed = new.use_proxy() != self.settings.use_proxy();
         // Only a save that passed all checks switches ADB (turning it off touches the device).
@@ -3210,6 +3222,18 @@ fn client() -> Client {
 }
 
 /// The TVs' (true) and computers' (false) names, for voice.
+/// The «Компьютер» menu's choice of what soundya takes for the PC.
+fn pc_rules(s: &Settings) -> alice::PcRules {
+    alice::PcRules {
+        power: s.pc_power,
+        apps: s.pc_apps,
+        tg: s.pc_tg,
+        search: s.pc_search,
+        plain: s.pc_plain,
+        keep: alice::keep_list(&s.pc_keep),
+    }
+}
+
 fn device_names(settings: &Settings) -> Vec<(String, bool)> {
     let tvs = settings.tvs().into_iter().map(|d| (d.name, true));
     let pcs = settings.pcs().into_iter().map(|d| (d.name, false));
@@ -3491,8 +3515,10 @@ fn daemon() {
     adbkeep::configure(settings.adb_keep);
     alice::set_tv(settings.tv_configured());
     alice::set_devices(device_names(&settings));
+    alice::set_pc_rules(pc_rules(&settings));
     alarm::set_morning(settings.morning_on);
     alarm::set_own(settings.alarm_own);
+    alarm::set_volume(settings.alarm_volume, settings.alarm_louder);
     adbkeep::run();
     calendar::configure(settings.cal_on, &settings.cal_url, settings.cal_remind);
     apply_planner(&settings);

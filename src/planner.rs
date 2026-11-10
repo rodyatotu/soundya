@@ -1919,6 +1919,15 @@ fn warn_deadlines(now: i64, off: i64, local_on: bool) {
     }
 }
 
+/// The morning after the alarm already told today's plans: the timed brief
+/// keeps quiet today («в 12 часов доброе утро и шарманку по планам»).
+pub fn brief_told_today() {
+    let Some(dir) = DIR.lock().unwrap().clone() else { return };
+    let (today, _) = local(now(), offset());
+    let _ = crate::settings::write_synced(&dir.join("brief-day"), today.to_string().as_bytes());
+    eprintln!("planner: plans told by the morning after the alarm; no timed brief today");
+}
+
 /// The morning brief, once a day at its time (or up to two hours later if the
 /// speaker was off then); the day it was said is kept on flash.
 fn morning_brief(file: &Path) {

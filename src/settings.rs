@@ -264,6 +264,32 @@ pub struct Settings {
     /// soundya's own alarm takes «разбуди меня…» (off: Alice's stock alarm does).
     #[serde(default = "yes")]
     pub alarm_own: bool,
+    /// The alarm starts at this volume (1–10)…
+    #[serde(default = "alarm_volume")]
+    pub alarm_volume: i32,
+    /// …and gets one louder each round nobody answers.
+    #[serde(default = "yes")]
+    pub alarm_louder: bool,
+    /// «Компьютер» menu: which commands soundya takes for the PC; the rest
+    /// stay Alice's (a Home Assistant user: «выключи компьютер» is his automation).
+    /// «Включи / выключи / усыпи / перезагрузи компьютер».
+    #[serde(default = "yes")]
+    pub pc_power: bool,
+    /// «Открой / закрой / запусти …» programs and windows.
+    #[serde(default = "yes")]
+    pub pc_apps: bool,
+    /// «Напиши / отправь … в телеграм», messages to the contacts.
+    #[serde(default = "yes")]
+    pub pc_tg: bool,
+    /// «Загугли …», «найди в браузере …», «запиши в заметки …».
+    #[serde(default = "yes")]
+    pub pc_search: bool,
+    /// Commands without «на компьютере» («открой стим»); off: only with the PC named.
+    #[serde(default = "yes")]
+    pub pc_plain: bool,
+    /// Words and phrases always left to Alice, comma separated («окно, выключи компьютер»).
+    #[serde(default)]
+    pub pc_keep: String,
     #[serde(default = "default_greet")]
     pub morning_greet: String,
     #[serde(default = "default_news")]
@@ -388,6 +414,9 @@ pub struct Autostart {
 
 fn default_greet() -> String {
     crate::morning::DEFAULT_GREET.into()
+}
+fn alarm_volume() -> i32 {
+    5
 }
 fn default_news() -> String {
     "ria".into()
@@ -739,6 +768,14 @@ impl Default for Settings {
             remote_tab: false,
             morning_on: true,
             alarm_own: true,
+            alarm_volume: alarm_volume(),
+            alarm_louder: true,
+            pc_power: true,
+            pc_apps: true,
+            pc_tg: true,
+            pc_search: true,
+            pc_plain: true,
+            pc_keep: String::new(),
             morning_greet: default_greet(),
             morning_news: default_news(),
             morning_intro: String::new(),

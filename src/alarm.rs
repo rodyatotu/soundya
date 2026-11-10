@@ -306,8 +306,23 @@ fn question(seed: i64) -> (u8, u8) {
     (3 + (s % 7) as u8, 2 + (s / 7 % 8) as u8)
 }
 
+/// The alarm's volume from the settings: where it starts (1–10) and whether it grows by one
+/// each round nobody answers («он на фулл сразу орёт» — it started at 5 and grew to 10).
+static START_VOLUME: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(FIRST_VOLUME);
+static GROWS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_volume(start: i32, grows: bool) {
+    START_VOLUME.store(start.clamp(1, crate::volume::MAX), std::sync::atomic::Ordering::Release);
+    GROWS.store(grows, std::sync::atomic::Ordering::Release);
+}
+
 fn round_volume(round: u8) -> i32 {
-    (FIRST_VOLUME + i32::from(round.saturating_sub(1))).min(crate::volume::MAX)
+    volume_for(round, START_VOLUME.load(std::sync::atomic::Ordering::Acquire), GROWS.load(std::sync::atomic::Ordering::Acquire))
+}
+
+fn volume_for(round: u8, start: i32, grows: bool) -> i32 {
+    let step = if grows { i32::from(round.saturating_sub(1)) } else { 0 };
+    (start + step).clamp(1, crate::volume::MAX)
 }
 
 fn wake_words(now: i64, off: i64) -> String {
@@ -573,7 +588,13 @@ pub fn panel(arg: &str) -> String {
         "snooze" => Voice::Snooze,
         _ => return "usage: alarm json | add {…} | del <id> | awake | answer <n> | snooze".into(),
     };
-    format!("OK: {}", command(&v))
+    let text = command(&v);
+    // Pressed on the phone while it rings: the sum and «Правильно!» are said aloud too — the
+    // one in bed hears them (the panel's buttons only showed them on the screen).
+    if matches!(v, Voice::Awake | Voice::Answer(_) | Voice::Snooze) {
+        crate::alice::say(text.clone());
+    }
+    format!("OK: {text}")
 }
 
 pub fn run(dir: &Path, tx: Sender<Cmd>) {
@@ -610,6 +631,13 @@ mod tests {
     // Monday 2026-11-09 06:00 MSK.
     const OFF: i64 = 3 * 3600;
     const MON_6: i64 = 1_794_214_800 - 6 * 3600;
+
+    #[test]
+    fn the_alarm_volume_from_the_settings() {
+        assert_eq!((volume_for(1, 3, true), volume_for(3, 3, true), volume_for(9, 3, true)), (3, 5, 10));
+        assert_eq!((volume_for(1, 3, false), volume_for(6, 3, false)), (3, 3));
+        assert_eq!(volume_for(1, 0, false), 1);
+    }
 
     #[test]
     fn alices_own_alarm_when_soundyas_is_off() {

@@ -1500,6 +1500,12 @@
       <button data-alarm="alice" role="radio">Стандартный</button>
     </div>
     <p class="hint" id="alarmhint"></p>
+    <div id="alarmvolbox">
+      <div class="field">Громкость будильника: <span id="alarmvolv"></span></div>
+      <input type="range" id="alarmvol" min="1" max="10" step="1" value="5" oninput="$('alarmvolv').textContent = this.value" onchange="saveAlarmVolume()">
+      <label class="check"><input type="checkbox" id="alarmlouder" onchange="saveAlarmVolume()"><span>Становиться громче, если не встаю<br>
+        <span class="hint">Каждый круг — на одно деление громче, до 10. Выключено — всё время одна громкость.</span></span></label>
+    </div>
     <input type="checkbox" id="keyword" hidden>
     <button class="link bugbtn" onclick="openReport('yandex_music')">Сообщить об ошибке</button>
     <label class="check">
@@ -1764,6 +1770,24 @@
       <div id="contacts"></div>
       <button class="ghost" onclick="addContact()" id="addcontact">+ Добавить контакт</button>
     </div>
+    <div class="field">Какие команды выполняет soundya
+      <p class="hint">Выключенное остаётся Алисе: например, выключение компьютера или окна через Home Assistant.
+        Окна, шторы, свет и прочий умный дом без слов «на компьютере» всегда остаются Алисе.</p>
+      <label class="switch"><input type="checkbox" id="pcpower"><span><b>Питание</b>
+        <small>«включи / выключи / усыпи / перезагрузи компьютер»</small></span></label>
+      <label class="switch"><input type="checkbox" id="pcapps"><span><b>Программы и окна</b>
+        <small>«открой стим», «закрой хром»</small></span></label>
+      <label class="switch"><input type="checkbox" id="pctg"><span><b>Telegram</b>
+        <small>«напиши маме в телеграм …», сообщения контактам</small></span></label>
+      <label class="switch"><input type="checkbox" id="pcsearch"><span><b>Поиск и заметки</b>
+        <small>«загугли …», «запиши в заметки …»</small></span></label>
+      <label class="switch"><input type="checkbox" id="pcplain"><span><b>Без слов «на компьютере»</b>
+        <small>Выключите — и на компьютер пойдут только фразы, где он назван: «открой стим на компьютере»</small></span></label>
+    </div>
+    <label class="field">Всегда оставлять Алисе
+      <input type="text" id="pckeep" placeholder="например: окно, выключи компьютер, термостат" autocomplete="off">
+      <small class="hint">Слова и фразы через запятую: команды с ними soundya не трогает.</small>
+    </label>
     <div class="row">
       <button onclick="testPc()" id="pctestbtn">Проверить связь</button>
       <button onclick="pcMetrics()">Состояние ПК</button>
@@ -2344,7 +2368,8 @@ function mmss(ms) {
 function show(el, text, isErr) {
   const err = isErr ?? /^(error|timeout|nothing found)/i.test(text);
   // A bare «OK» says nothing the player itself does not show: no green «OK» left on the page.
-  if (!err && /^\s*ok\.?\s*$/i.test(text)) { el.className = 'msg'; el.textContent = ''; return; }
+  // Nor the player's own replies («OK playing: … [0:00/4:12] (1/322)», «OK paused», «OK 1:23»): the player shows them.
+  if (!err && /^\s*ok(\.?\s*$|\s+(playing|paused|stopped)\b|\s+\d+:\d\d)/i.test(text)) { el.className = 'msg'; el.textContent = ''; return; }
   el.textContent = text.replace(/^(error|ok):\s*/i, '');
   el.className = 'msg ' + (err ? 'err' : 'ok');
 }
@@ -4878,8 +4903,16 @@ function renderAlarmKind(own) {
     b.classList.toggle('on', b.dataset.alarm === k); b.setAttribute('aria-checked', String(b.dataset.alarm === k));
   });
   $('alarmhint').textContent = ALARM_HINT[k];
+  $('alarmvolbox').hidden = k === 'alice';
+  const st = settings || {};
+  if (document.activeElement !== $('alarmvol')) { $('alarmvol').value = st.alarm_volume || 5; $('alarmvolv').textContent = $('alarmvol').value; }
+  $('alarmlouder').checked = st.alarm_louder !== false;
   const w = document.querySelector('.widget[data-w="alarm"]');
   if (w) w.classList.toggle('alarmoff', k === 'alice');
+}
+async function saveAlarmVolume() {
+  show($('spkmsg'), await post('/api/settings', JSON.stringify({ alarm_volume: Number($('alarmvol').value), alarm_louder: $('alarmlouder').checked })));
+  settingsLoaded = false; refresh();
 }
 document.querySelectorAll('#alarmkind button').forEach(b => b.onclick = async () => {
   const own = b.dataset.alarm === 'own';
@@ -5174,6 +5207,8 @@ async function refresh() {
     maybeWizard(settings);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';
+    for (const [id, k] of [['pcpower', 'pc_power'], ['pcapps', 'pc_apps'], ['pctg', 'pc_tg'], ['pcsearch', 'pc_search'], ['pcplain', 'pc_plain']]) $(id).checked = settings[k] !== false;
+    $('pckeep').value = settings.pc_keep || '';
     $('pcname').value = settings.pc_name || '';
     $('tvname').value = settings.tv_name || '';
     renderDevs('pc', settings.pcs_more || []);
@@ -5299,6 +5334,8 @@ function settingsBody(extra) {
     pc_host: $('pchost').value, pc_token: $('pctoken').value, pc_mac: $('pcmac').value,
     pc_name: $('pcname').value, pcs_more: readDevs('pc'), tv_name: $('tvname').value, tvs_more: readDevs('tv'),
     pc_contacts: readContacts(),
+    pc_power: $('pcpower').checked, pc_apps: $('pcapps').checked, pc_tg: $('pctg').checked,
+    pc_search: $('pcsearch').checked, pc_plain: $('pcplain').checked, pc_keep: $('pckeep').value,
     airplay: $('airplay').checked, airplay_name: $('airplayname').value, airplay_icon: $('airplayicon').value,
     stats: $('stats').checked, share_heard: $('shareheard').checked,
     tv_host: $('tvhost').value,
