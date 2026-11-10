@@ -209,7 +209,7 @@ Google Календарь и Google Задачи, вкладка «Планы»)
 | Установщик с настоящим `install.sh` (фейковая колонка `--exec`, SIGHUP как у adbd) | `cargo build && (cd installer && cargo build) && python3 tests/installer_e2e.py` | 10 проверок |
 | Бот сообщества (фейковый Bot API) | `python3 tests/community_bot_test.py` | проходит |
 | Фейки для ручной проверки | `tests/fake_station.py`, `tests/fake_google.py` | — |
-| Панель | Playwright (скрипты были в сессии, не в репо): 390 и 1280 px, без ошибок JS, без горизонтальной прокрутки | ✅ |
+| Панель | Playwright (скрипты были в сессии, не в репо): 390 и 1280 px, без ошибок JS, без горизонтальной прокрутки | |
 
 Ключевые юнит-тесты: `alice::tests::priority_table`, `planner::tests::day_week_and_deadlines`
 (дословный текст сводок), `google::tests::*` (PKCE RFC 7636), `calendar::tests::*`,
