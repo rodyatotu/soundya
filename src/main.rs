@@ -46,6 +46,7 @@ mod voice;
 mod volume;
 mod zapret;
 mod web;
+mod mods;
 
 use std::{
     collections::HashSet,
@@ -3520,6 +3521,8 @@ fn daemon() {
     // One client for the player and the browser stream: proxy and token
     // changes from the settings reach both (they share their state).
     let client = client_with(&settings);
+    // Universal Mod & Plugin Runtime
+    mods::init();
     if port != 0 {
         web::serve(port, tx.clone(), shared.clone(), client.clone());
     }
