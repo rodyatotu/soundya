@@ -565,7 +565,7 @@ function injectModsCard() {
 
   const box = document.createElement('div');
   box.innerHTML = `
-    <h2 class="section" style="margin-top:28px">🧩 Моды и дополнения</h2>
+    <h2 class="section" style="margin-top:28px"> Моды и дополнения</h2>
     <p class="hint">Подключение независимых модулей (матрица Станции 2, оформление, пульт ТВ, телеметрия). Модули работают на лету.</p>
     <div id="modsContainer" style="background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 12px 0;">
       <div id="modsList" style="display:flex; flex-direction:column; gap:8px;">
