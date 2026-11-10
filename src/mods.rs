@@ -60,6 +60,7 @@ pub struct FrontendConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackendConfig {
+    #[serde(default, alias = "bin")]
     pub exec: String,
     #[serde(default = "default_socket")]
     pub socket: String,
@@ -151,13 +152,18 @@ impl ModManager {
         if let Ok(entries) = fs::read_dir(&self.dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                if name.starts_with('.') {
+                    continue;
+                }
+
                 if crate::fsx::is_dir(&path) {
                     let manifest_path = path.join("manifest.json");
                     if crate::fsx::is_file(&manifest_path) {
                         if let Some(s) = crate::fsx::read_string(&manifest_path) {
                             if let Ok(mut m) = serde_json::from_str::<ModManifest>(&s) {
                                 if m.id.is_empty() {
-                                    m.id = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                                    m.id = name.to_string();
                                 }
                                 new_manifests.insert(m.id.clone(), m);
                             }
@@ -165,41 +171,39 @@ impl ModManager {
                     }
                 } else if crate::fsx::is_file(&path) {
                     // Loose .js / .css mod backward compatibility
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if name.ends_with(".js") {
-                            let id = name.trim_end_matches(".js").to_string();
-                            if !new_manifests.contains_key(&id) && !new_manifests.contains_key(name) {
-                                let m = ModManifest {
-                                    id: name.to_string(),
-                                    name: name.to_string(),
-                                    version: "1.0.0".to_string(),
-                                    description: "Пользовательский скрипт".to_string(),
-                                    author: "".to_string(),
-                                    frontend: FrontendConfig {
-                                        scripts: vec![format!("/mods/{name}")],
-                                        styles: vec![],
-                                    },
-                                    backend: None,
-                                };
-                                new_manifests.insert(name.to_string(), m);
-                            }
-                        } else if name.ends_with(".css") {
-                            let id = name.trim_end_matches(".css").to_string();
-                            if !new_manifests.contains_key(&id) && !new_manifests.contains_key(name) {
-                                let m = ModManifest {
-                                    id: name.to_string(),
-                                    name: name.to_string(),
-                                    version: "1.0.0".to_string(),
-                                    description: "Пользовательские стили".to_string(),
-                                    author: "".to_string(),
-                                    frontend: FrontendConfig {
-                                        scripts: vec![],
-                                        styles: vec![format!("/mods/{name}")],
-                                    },
-                                    backend: None,
-                                };
-                                new_manifests.insert(name.to_string(), m);
-                            }
+                    if name.ends_with(".js") {
+                        let id = name.trim_end_matches(".js").to_string();
+                        if !new_manifests.contains_key(&id) && !new_manifests.contains_key(name) {
+                            let m = ModManifest {
+                                id: name.to_string(),
+                                name: name.to_string(),
+                                version: "1.0.0".to_string(),
+                                description: "Пользовательский скрипт".to_string(),
+                                author: "".to_string(),
+                                frontend: FrontendConfig {
+                                    scripts: vec![format!("/mods/{name}")],
+                                    styles: vec![],
+                                },
+                                backend: None,
+                            };
+                            new_manifests.insert(name.to_string(), m);
+                        }
+                    } else if name.ends_with(".css") {
+                        let id = name.trim_end_matches(".css").to_string();
+                        if !new_manifests.contains_key(&id) && !new_manifests.contains_key(name) {
+                            let m = ModManifest {
+                                id: name.to_string(),
+                                name: name.to_string(),
+                                version: "1.0.0".to_string(),
+                                description: "Пользовательские стили".to_string(),
+                                author: "".to_string(),
+                                frontend: FrontendConfig {
+                                    scripts: vec![],
+                                    styles: vec![format!("/mods/{name}")],
+                                },
+                                backend: None,
+                            };
+                            new_manifests.insert(name.to_string(), m);
                         }
                     }
                 }
@@ -336,7 +340,27 @@ impl ModManager {
         true
     }
 
+    pub fn reset_all(&self) {
+        // 1. Stop and wait for all running mod processes
+        {
+            let mut proc_guard = self.processes.lock().unwrap();
+            for (id, mut child) in proc_guard.drain() {
+                eprintln!("mods: stopping backend process for «{id}» (emergency reset)");
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        // 2. Clear all active mod configurations
+        {
+            let mut cfg = self.active_config.lock().unwrap();
+            cfg.clear();
+        }
+        self.save_config();
+        self.rescan();
+    }
+
     pub fn list_mods(&self) -> Vec<ModInfo> {
+        self.rescan();
         let manifests = self.manifests.lock().unwrap().clone();
         let config = self.active_config.lock().unwrap().clone();
         let mut proc_guard = self.processes.lock().unwrap();
@@ -521,7 +545,57 @@ impl ModManager {
             return Err("invalid filename".into());
         }
 
-        if clean_name.ends_with(".tar") || clean_name.ends_with(".tar.gz") || clean_name.ends_with(".tgz") {
+        let mod_id = clean_name
+            .trim_end_matches(".zip")
+            .trim_end_matches(".tar.gz")
+            .trim_end_matches(".tgz")
+            .trim_end_matches(".tar");
+        if !mod_id.is_empty() {
+            self.stop_backend(mod_id);
+            let _ = fs::remove_file(self.dir.join(mod_id).join(format!("{mod_id}-backend")));
+            let _ = fs::remove_file(self.dir.join(mod_id).join("backend"));
+        }
+
+        if clean_name.ends_with(".zip") {
+            let temp_zip = self.dir.join(".upload.zip");
+            fs::write(&temp_zip, bytes).map_err(|e| e.to_string())?;
+
+            let status = Command::new("unzip")
+                .arg("-o")
+                .arg(&temp_zip)
+                .arg("-d")
+                .arg(&self.dir)
+                .status()
+                .map_err(|e| format!("failed to unpack zip: {e}"))?;
+
+            let _ = fs::remove_file(temp_zip);
+
+            if !status.success() {
+                return Err("zip extraction failed".into());
+            }
+
+            // If the archive extracted directly into self.dir without a subfolder:
+            let root_manifest = self.dir.join("manifest.json");
+            if crate::fsx::exists(&root_manifest) && !mod_id.is_empty() {
+                let mod_sub = self.dir.join(mod_id);
+                ensure_dir_p(&mod_sub);
+                let _ = fs::rename(&root_manifest, mod_sub.join("manifest.json"));
+                for name in [
+                    "backend",
+                    &format!("{mod_id}-backend"),
+                    &format!("{mod_id}.js"),
+                    &format!("{mod_id}.css"),
+                ] {
+                    let loose = self.dir.join(name);
+                    if crate::fsx::exists(&loose) {
+                        let _ = fs::rename(&loose, mod_sub.join(name));
+                    }
+                }
+            }
+
+            self.rescan();
+            Ok("archive unpacked successfully".into())
+        } else if clean_name.ends_with(".tar") || clean_name.ends_with(".tar.gz") || clean_name.ends_with(".tgz") {
             let temp_tar = self.dir.join(".upload.tar");
             fs::write(&temp_tar, bytes).map_err(|e| e.to_string())?;
 
@@ -539,6 +613,25 @@ impl ModManager {
                 return Err("tar extraction failed".into());
             }
 
+            // If the archive extracted directly into self.dir without a subfolder:
+            let root_manifest = self.dir.join("manifest.json");
+            if crate::fsx::exists(&root_manifest) && !mod_id.is_empty() {
+                let mod_sub = self.dir.join(mod_id);
+                ensure_dir_p(&mod_sub);
+                let _ = fs::rename(&root_manifest, mod_sub.join("manifest.json"));
+                for name in [
+                    "backend",
+                    &format!("{mod_id}-backend"),
+                    &format!("{mod_id}.js"),
+                    &format!("{mod_id}.css"),
+                ] {
+                    let loose = self.dir.join(name);
+                    if crate::fsx::exists(&loose) {
+                        let _ = fs::rename(&loose, mod_sub.join(name));
+                    }
+                }
+            }
+
             self.rescan();
             Ok("archive unpacked successfully".into())
         } else {
@@ -550,6 +643,30 @@ impl ModManager {
     }
 }
 
+pub fn decode_base64(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0;
+    for &b in s.as_bytes() {
+        let val = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\r' | b'\n' | b' ' => continue,
+            _ => return None,
+        };
+        buf = (buf << 6) | (val as u32);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 pub fn inject_loader(html: &str) -> String {
     const LOADER_SCRIPT: &str = r#"<script>
 // ==================== Universal Mod & Plugin Loader ====================
@@ -557,39 +674,123 @@ let allInstalledMods = [];
 let activeModsConfig = {};
 
 function injectModsCard() {
-  if (document.getElementById('modsContainer')) return;
-  const speakerTab = document.querySelector('.sub[data-sub="speaker"]');
-  if (!speakerTab) return;
-  const probemsg = document.getElementById('probemsg');
-  const anchor = probemsg ? probemsg.nextSibling : null;
+  const settingsTab = document.getElementById('tab-settings');
+  if (!settingsTab) return;
 
-  const box = document.createElement('div');
-  box.innerHTML = `
-    <h2 class="section" style="margin-top:28px"> Моды и дополнения</h2>
-    <p class="hint">Подключение независимых модулей (матрица Станции 2, оформление, пульт ТВ, телеметрия). Модули работают на лету.</p>
-    <div id="modsContainer" style="background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 12px 0;">
-      <div id="modsList" style="display:flex; flex-direction:column; gap:8px;">
-        <div class="hint">Загрузка дополнений…</div>
-      </div>
-      <div style="margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-        <label class="btn sm" style="cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
-          <span>+ Загрузить пакет мода (.tar / .zip / .js)</span>
-          <input type="file" id="modFileInput" accept=".tar,.tar.gz,.tgz,.zip,.js,.css" style="display:none;" onchange="uploadModFile(this)">
-        </label>
-        <button type="button" class="sm" onclick="loadMods(true)">Обновить список</button>
-      </div>
-      <div class="msg" id="modsMsg"></div>
-    </div>
-  `;
-  if (anchor) {
-    speakerTab.insertBefore(box, anchor);
-  } else {
-    speakerTab.appendChild(box);
+  // 1. Add "Моды" into Settings subnav (same row with Соединение, Аккаунт, Колонка, etc.)
+  const subnav = settingsTab.querySelector('.subnav');
+  if (subnav && !document.getElementById('subnav-mods-btn')) {
+    const subBtn = document.createElement('button');
+    subBtn.id = 'subnav-mods-btn';
+    subBtn.type = 'button';
+    subBtn.dataset.sub = 'mods';
+    subBtn.textContent = 'Моды';
+    subBtn.onclick = () => selectModsSub();
+    subnav.appendChild(subBtn);
+
+    subnav.querySelectorAll('button:not(#subnav-mods-btn)').forEach(b => {
+      b.addEventListener('click', () => {
+        const sub = document.getElementById('sub-mods');
+        if (sub) sub.classList.remove('on');
+        subBtn.classList.remove('on');
+      });
+    });
+  }
+
+  // 2. Create dedicated .sub[data-sub="mods"] inside #tab-settings
+  if (!document.getElementById('sub-mods')) {
+    const subMods = document.createElement('div');
+    subMods.className = 'sub';
+    subMods.id = 'sub-mods';
+    subMods.dataset.sub = 'mods';
+    subMods.innerHTML = createModsCardHtml();
+    settingsTab.appendChild(subMods);
   }
 }
 
+function selectModsSub() {
+  document.querySelectorAll('#tab-settings .subnav button').forEach(b => {
+    b.classList.toggle('on', b.id === 'subnav-mods-btn' || b.dataset.sub === 'mods');
+  });
+  document.querySelectorAll('#tab-settings .sub').forEach(s => {
+    s.classList.toggle('on', s.id === 'sub-mods' || s.dataset.sub === 'mods');
+  });
+  try { localStorage.setItem('soundya-sub', 'mods'); } catch (e) {}
+}
+
+function createModsCardHtml() {
+  return `
+    <h2 class="section" style="margin-top:0;padding-top:0;border-top:0">Моды и дополнения</h2>
+    <p class="hint">Установка и управление автономными плагинами (матрица Станции 2, оформление, пульт ТВ, телеметрия). Модули работают на лету без перекомпиляции Soundya.</p>
+    
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 12px 0; width: 100%; box-sizing: border-box;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div>
+          <b style="font-size:15px; color:var(--ink);">Сборка Soundya (форк Gemeur)</b>
+          <div class="hint" style="font-size:13px; margin-top:2px;">Репозиторий обновлений: <a href="https://github.com/Gemeur/soundya" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:none;">github.com/Gemeur/soundya</a></div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button type="button" class="sm" onclick="checkUpdate()" id="btnCheckFirmware">Проверить на GitHub</button>
+          <label class="btn sm" style="cursor:pointer; display:inline-flex; align-items:center; background:rgba(255,255,255,0.08); border:1px solid var(--line); border-radius:10px; padding:6px 12px; font-weight:600;">
+            <span>Загрузить soundya-armv7.tar</span>
+            <input type="file" accept=".tar" style="display:none;" onchange="uploadFirmwareTar(this)">
+          </label>
+        </div>
+      </div>
+      <div class="msg" id="firmwareMsg" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="mods-container" style="background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 12px 0; width: 100%; box-sizing: border-box;">
+      <div style="font-size:14px; font-weight:600; margin-bottom:10px; color:var(--ink);">Установленные плагины и моды:</div>
+      <div id="modsList" class="mods-list" style="display:flex; flex-direction:column; gap:10px; width: 100%; box-sizing: border-box;">
+        <div class="hint">Загрузка дополнений…</div>
+      </div>
+      <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <label class="btn sm" style="cursor:pointer; display:inline-flex; align-items:center; gap:6px; background:var(--accent); color:var(--accent-ink); border-radius:10px; padding:8px 14px; font-weight:600;">
+          <span>+ Загрузить пакет мода (.tar / .zip / .js)</span>
+          <input type="file" accept=".tar,.tar.gz,.tgz,.zip,.js,.css" style="display:none;" onchange="uploadModFile(this)">
+        </label>
+        <button type="button" class="sm" onclick="loadMods(true)">Обновить список</button>
+      </div>
+      <div class="msg mods-msg" id="modsMsg"></div>
+    </div>
+  `;
+}
+
+async function uploadFirmwareTar(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const msg = document.getElementById('firmwareMsg');
+  if (msg) {
+    msg.textContent = 'Отправляю прошивку на колонку (5–7 МБ)…';
+    msg.className = 'msg';
+  }
+  try {
+    const res = await fetch('/api/update/upload', {
+      method: 'POST',
+      body: file
+    });
+    const text = await res.text();
+    if (msg) {
+      msg.textContent = text;
+      msg.className = text.startsWith('error') ? 'msg err' : 'msg ok';
+    }
+  } catch (err) {
+    if (msg) {
+      msg.textContent = 'Ошибка загрузки: ' + err.message;
+      msg.className = 'msg err';
+    }
+  }
+  input.value = '';
+}
+
 async function loadMods(forceRefresh = false) {
-  injectModsCard();
+  try {
+    injectModsCard();
+  } catch (e) {
+    console.warn('Error injecting mods card:', e);
+  }
+
   try {
     const res = await fetch('/api/mods');
     if (!res.ok) return;
@@ -609,15 +810,15 @@ async function loadMods(forceRefresh = false) {
             : '';
           const verBadge = m.version ? `<span style="font-size:11px; opacity:0.7;">v${m.version}</span>` : '';
           return `
-            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; padding:10px; border-radius:10px; background:rgba(255,255,255,0.02); border:1px solid var(--line);">
-              <label class="check" style="display:flex; align-items:flex-start; gap:8px; margin:0; flex:1; cursor:pointer;">
-                <input type="checkbox" data-mod="${m.id}" ${isChecked} onchange="toggleMod('${m.id}', this.checked)">
-                <span>
-                  <b>${m.name}</b> ${verBadge} ${backendBadge}<br>
-                  <span class="hint">${m.description || m.id}</span>
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; padding:12px; border-radius:10px; background:rgba(255,255,255,0.03); border:1px solid var(--line); width:100%; box-sizing:border-box; gap:12px;">
+              <label class="check" style="display:flex; align-items:flex-start; gap:10px; margin:0; flex:1 1 0%; min-width:0; cursor:pointer;">
+                <input type="checkbox" data-mod="${m.id}" ${isChecked} onchange="toggleMod('${m.id}', this.checked)" style="flex-shrink:0; margin-top:3px;">
+                <span style="flex:1 1 0%; min-width:0; display:block;">
+                  <b style="font-size:15px;">${m.name}</b> ${verBadge} ${backendBadge}<br>
+                  <span class="hint" style="font-size:13px; display:block; word-break:normal; overflow-wrap:break-word;">${m.description || m.id}</span>
                 </span>
               </label>
-              <button type="button" class="sm ghost" onclick="deleteMod('${m.id}')" title="Удалить" style="opacity:0.6; padding:4px 8px;">✕</button>
+              <button type="button" class="sm ghost" onclick="deleteMod('${m.id}')" title="Удалить" style="opacity:0.6; padding:4px 8px; flex-shrink:0;">✕</button>
             </div>
           `;
         }).join('');
@@ -696,9 +897,9 @@ async function toggleMod(id, enable) {
 
   const msg = document.getElementById('modsMsg');
   if (msg) {
-    msg.className = 'msg on';
+    msg.className = 'msg on mods-msg';
     msg.textContent = enable ? `Мод «${mod ? mod.name : id}» включён` : `Мод «${mod ? mod.name : id}» отключён`;
-    setTimeout(() => { if (msg) msg.className = 'msg'; }, 2500);
+    setTimeout(() => { if (msg) msg.className = 'msg mods-msg'; }, 2500);
   }
 }
 
@@ -719,39 +920,115 @@ async function uploadModFile(input) {
   const file = input.files[0];
   const msg = document.getElementById('modsMsg');
   if (msg) {
-    msg.className = 'msg on';
-    msg.textContent = `Загрузка ${file.name}…`;
+    msg.className = 'msg on mods-msg';
+    msg.textContent = `Чтение файла «${file.name}»…`;
+  }
+
+  try {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      if (msg) msg.textContent = `Загрузка пакета «${file.name}» на колонку…`;
+      try {
+        const base64 = reader.result.split(',')[1];
+        const res = await fetch('/api/mods/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: file.name, base64: base64 })
+        });
+        if (res.ok) {
+          if (msg) msg.textContent = `Пакет «${file.name}» успешно загружен и установлен!`;
+          input.value = '';
+          setTimeout(() => loadMods(true), 150);
+        } else {
+          const err = await res.text();
+          if (msg) msg.textContent = `Ошибка загрузки: ${err}`;
+        }
+      } catch (e) {
+        if (msg) msg.textContent = `Сбой сети: ${e.message || e}`;
+      }
+    };
+    reader.onerror = () => {
+      if (msg) msg.textContent = 'Ошибка чтения локального файла';
+    };
+    reader.readAsDataURL(file);
+  } catch (e) {
+    if (msg) msg.textContent = `Ошибка: ${e.message || e}`;
+  }
+}
+
+async function emergencyResetMods() {
+  if (!confirm('Отключить все установленные моды и вернуть Soundya в чистый стоковый режим (Debug Reset)?')) return;
+  try {
+    await fetch('/api/mods/reset', { method: 'POST' });
+  } catch (e) {
+    console.warn('Reset error:', e);
   }
   try {
-    const text = await file.text();
-    const res = await fetch('/api/mods/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: file.name, content: text })
-    });
-    if (res.ok) {
-      if (msg) msg.textContent = `Пакет «${file.name}» успешно загружен!`;
-      input.value = '';
-      await loadMods(true);
-    } else {
-      const err = await res.text();
-      if (msg) msg.textContent = `Ошибка загрузки: ${err}`;
-    }
-  } catch (e) {
-    if (msg) msg.textContent = `Сбой сети: ${e.message}`;
-  }
+    localStorage.removeItem('tab');
+    localStorage.removeItem('soundya-sub');
+  } catch (e) {}
+  window.location.href = window.location.pathname + '?reset=' + Date.now();
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => loadMods());
+  document.addEventListener('DOMContentLoaded', () => {
+    loadMods();
+    try {
+      if (localStorage.getItem('soundya-sub') === 'mods') selectModsSub();
+    } catch (e) {}
+  });
 } else {
-  setTimeout(loadMods, 50);
+  setTimeout(() => {
+    loadMods();
+    try {
+      if (localStorage.getItem('soundya-sub') === 'mods') selectModsSub();
+    } catch (e) {}
+  }, 50);
 }
 </script>"#;
 
+    let debug_bar = r#"<div id="soundya-debug-bar" style="position:fixed!important;bottom:12px!important;right:12px!important;z-index:2147483647!important;display:flex!important;gap:8px!important;align-items:center!important;pointer-events:auto!important;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif!important;">
+  <button id="soundya-reset-mods-btn" type="button" title="Аварийный сброс всех модов (Debug Mode)" style="background:#d32f2f!important;color:#ffffff!important;border:1px solid rgba(255,255,255,0.45)!important;border-radius:999px!important;padding:7px 15px!important;font-size:12px!important;font-weight:700!important;box-shadow:0 4px 16px rgba(0,0,0,0.55)!important;cursor:pointer!important;opacity:0.92!important;transition:opacity .15s,transform .15s!important;white-space:nowrap!important;outline:none!important;" onmouseover="this.style.opacity='1';this.style.transform='scale(1.03)'" onmouseout="this.style.opacity='0.92';this.style.transform='scale(1)'" onclick="emergencyResetMods()">
+    ⚡ Сбросить моды (Debug Mode)
+  </button>
+</div>"#;
+
+    let payload = format!("{debug_bar}\n{LOADER_SCRIPT}");
     if html.contains("</body>") {
-        html.replace("</body>", &format!("{LOADER_SCRIPT}\n</body>"))
+        html.replace("</body>", &format!("{payload}\n</body>"))
     } else {
-        format!("{html}\n{LOADER_SCRIPT}")
+        format!("{html}\n{payload}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_manifest_deserialization() {
+        let json_str = r#"{
+  "id": "lumya",
+  "name": "Подсветка Станции 2",
+  "version": "1.0.0",
+  "description": "88-LED матрица",
+  "author": "Gemeur",
+  "frontend": {
+    "scripts": ["lumya.js"],
+    "styles": ["lumya.css"]
+  },
+  "backend": {
+    "exec": "lumya-backend",
+    "socket": "mod.sock",
+    "routes": ["/api/live"]
+  }
+}"#;
+        let res = serde_json::from_str::<ModManifest>(json_str);
+        assert!(res.is_ok(), "Failed to deserialize: {:?}", res.err());
+        let m = res.unwrap();
+        assert_eq!(m.id, "lumya");
+        assert_eq!(m.name, "Подсветка Станции 2");
+        assert!(m.backend.is_some());
+        assert_eq!(m.backend.unwrap().exec, "lumya-backend");
     }
 }
