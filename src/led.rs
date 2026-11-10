@@ -81,9 +81,20 @@ pub enum Mode {
     Breathe,
     /// A comet running round the ring.
     Running,
+    /// Flickering flame in the two colours; the bass makes it flare.
+    Fire,
+    /// A flash of «Громко» on every bass hit, fading to «Тихо».
+    Beat,
+    /// The colour follows the sound: bassy warm, bright cold; louder — brighter.
+    Spectrum,
 }
 
-pub const MODES: [&str; 7] = ["solid", "pulse", "eq", "wave", "rainbow", "breathe", "running"];
+std::thread_local! {
+    /// Beat detection between frames: the bass's running average and the flash left.
+    static BEAT: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
+}
+
+pub const MODES: [&str; 10] = ["solid", "pulse", "eq", "wave", "rainbow", "breathe", "running", "fire", "beat", "spectrum"];
 
 /// «Подсветка» from the settings.
 #[derive(Clone, Copy, Debug)]
@@ -110,6 +121,9 @@ impl Light {
                 "rainbow" => Mode::Rainbow,
                 "breathe" => Mode::Breathe,
                 "running" => Mode::Running,
+                "fire" => Mode::Fire,
+                "beat" => Mode::Beat,
+                "spectrum" => Mode::Spectrum,
                 _ => Mode::Solid,
             },
             quiet: led_colour(&s.light_color).unwrap_or(ORANGE),
@@ -181,6 +195,42 @@ fn music_frame(light: &Light, zones: usize, heard: Option<[f32; 3]>, smooth: &mu
                     let behind = (head - i as f32).rem_euclid(z as f32);
                     let level = if behind < 1.0 { 1.0 } else { (1.0 - (behind - 1.0) / 2.5).max(0.05) };
                     scale(mix(light.quiet, light.loud, level), light.bright * level)
+                })
+                .collect()
+        }
+        Mode::Fire => {
+            let heat = 0.35 + 0.65 * smooth[0].powf(0.8);
+            (0..z)
+                .map(|i| {
+                    let k = i as f32;
+                    // Two unrelated wobbles per zone: a flicker that does not repeat visibly.
+                    let n = 0.5 + 0.25 * (t * 7.3 + k * 1.7).sin() + 0.25 * (t * 3.1 + k * 2.9).sin() * (t * 1.3 + k).cos();
+                    let level = (heat * (0.55 + 0.45 * n)).clamp(0.05, 1.0);
+                    scale(mix(light.quiet, light.loud, (level * 1.2 - 0.2).max(0.0)), light.bright * level)
+                })
+                .collect()
+        }
+        Mode::Beat => {
+            let flash = BEAT.with(|b| {
+                let (avg, flash) = b.get();
+                let bass = target[0];
+                // A hit: the bass jumps well above its recent level.
+                let hit = bass > 0.35 && bass > avg * 1.5 + 0.12;
+                let flash = if hit { 1.0 } else { flash * 0.86 };
+                b.set((avg * 0.92 + bass * 0.08, flash));
+                flash
+            });
+            vec![scale(mix(light.quiet, light.loud, flash), light.bright * (0.08 + 0.92 * flash)); z]
+        }
+        Mode::Spectrum => {
+            let loud = loudness(smooth);
+            let total = smooth[0] + smooth[1] + smooth[2];
+            // 0 — all bass (red), 1 — all treble (blue-violet).
+            let bright_share = if total > 0.01 { (0.5 * smooth[1] + smooth[2]) / total } else { 0.3 };
+            (0..z)
+                .map(|i| {
+                    let h = bright_share * 0.7 + i as f32 / z as f32 * 0.06 + t * 0.01;
+                    scale(hue(h), light.bright * (0.15 + 0.85 * loud))
                 })
                 .collect()
         }
@@ -927,6 +977,36 @@ mod tests {
         assert!(!set_order("xyz"));
         assert!(set_order("rgb"));
         assert_eq!(z.values((1, 2, 3)), [1, 2, 3]);
+    }
+
+    #[test]
+    fn fire_beat_and_spectrum_follow_the_music() {
+        let base = Light { mode: Mode::Fire, quiet: (255, 40, 0), loud: (255, 200, 0), bands: [(0, 0, 0); 3], bright: 1.0, speed: 1.0, intensity: 1.0 };
+        let sum = |f: &[Rgb]| f.iter().map(|c| c.0 as u32 + c.1 as u32 + c.2 as u32).sum::<u32>();
+        // Fire flickers by itself and flares with the bass.
+        let a = music_frame(&base, 3, None, &mut [0.0; 3], 0);
+        let b = music_frame(&base, 3, None, &mut [0.0; 3], 300);
+        assert_ne!(a, b, "fire flickers");
+        let hot = music_frame(&base, 3, Some([1.0, 0.0, 0.0]), &mut [0.0; 3], 300);
+        assert!(sum(&hot) > sum(&b), "the bass makes it flare");
+        // Beat: quiet, then a hit flashes, then it fades.
+        let beat = Light { mode: Mode::Beat, ..base };
+        let mut s = [0.0; 3];
+        for _ in 0..20 {
+            music_frame(&beat, 3, Some([0.05, 0.0, 0.0]), &mut s, 0);
+        }
+        let calm = music_frame(&beat, 3, Some([0.05, 0.0, 0.0]), &mut s, 0);
+        let hit = music_frame(&beat, 3, Some([0.9, 0.0, 0.0]), &mut s, 0);
+        let after = music_frame(&beat, 3, Some([0.1, 0.0, 0.0]), &mut s, 0);
+        assert!(sum(&hit) > sum(&calm) * 3 && sum(&after) < sum(&hit), "{calm:?} {hit:?} {after:?}");
+        // Spectrum: bass warm (red), treble cold (blue).
+        let sp = Light { mode: Mode::Spectrum, ..base };
+        let bass = music_frame(&sp, 3, Some([1.0, 0.0, 0.0]), &mut [0.0; 3], 0)[0];
+        let treble = music_frame(&sp, 3, Some([0.0, 0.0, 1.0]), &mut [0.0; 3], 0)[0];
+        assert!(bass.0 > bass.2 && treble.2 > treble.0, "{bass:?} {treble:?}");
+        for m in ["fire", "beat", "spectrum"] {
+            assert!(MODES.contains(&m));
+        }
     }
 
     #[test]

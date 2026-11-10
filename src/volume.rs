@@ -29,7 +29,28 @@ pub const MAX: i32 = 10;
 
 pub fn level() -> Option<i32> {
     let l = LEVEL.load(Ordering::Acquire);
-    (l >= 0).then_some(l)
+    if l >= 0 {
+        return Some(l);
+    }
+    // Not said or set since the start: once from the mixer (the page showed «?» and
+    // the Mac's small player no level at all), then followed as before.
+    static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if ASKED.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    let n = level_of(read_mixer()?, &learnt());
+    let _ = LEVEL.compare_exchange(-1, n, Ordering::AcqRel, Ordering::Acquire);
+    Some(LEVEL.load(Ordering::Acquire)).filter(|l| *l >= 0)
+}
+
+/// The mixer value (0–255) as Alice's level: the nearest one she was seen to use,
+/// else N×10 % as the slider writes it.
+fn level_of(value: u32, learnt: &[Option<u32>; 11]) -> i32 {
+    let near = learnt.iter().enumerate().filter_map(|(l, v)| v.map(|v| (l as i32, v.abs_diff(value)))).min_by_key(|(_, d)| *d);
+    match near {
+        Some((l, d)) if d <= 13 => l,
+        _ => ((value as f32 / 255.0 * 10.0).round() as i32).clamp(0, MAX),
+    }
 }
 
 fn nudge(by: i32) {
@@ -422,6 +443,17 @@ fn press_keys(up: bool, steps: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_level_from_the_mixer() {
+        // The owner's Lite: Master 77 of 255 (30 %) — level 3.
+        assert_eq!(level_of(77, &[None; 11]), 3);
+        assert_eq!(level_of(255, &[None; 11]), 10);
+        assert_eq!(level_of(0, &[None; 11]), 0);
+        let mut learnt = [None; 11];
+        learnt[4] = Some(140);
+        assert_eq!(level_of(138, &learnt), 4, "the value Alice was seen to use");
+    }
 
     #[test]
     fn follows_what_is_said() {

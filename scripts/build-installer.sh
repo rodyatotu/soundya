@@ -60,18 +60,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 python3 scripts/mac-dmg/check_app.py "$APP"
 if [ "$(uname -s)" = Darwin ]; then
-    # The widget (macOS 14+) in PlugIns, built by xcodebuild (needs Xcode). macOS shows widgets only from apps signed with a
-    # team's certificate: SOUNDYA_SIGN_ID="Apple Development: …" (Xcode, free Apple ID) or
-    # "Developer ID Application: …". Ad-hoc ("-", the default) builds it but it stays hidden.
-    sh scripts/mac-widget/build.sh "$APP" "$VERSION"
+    # Signed with a team's certificate when given: SOUNDYA_SIGN_ID="Apple Development: …" or
+    # "Developer ID Application: …"; ad-hoc ("-") otherwise. (The desktop widget is gone:
+    # soundya's own window under the menu bar icon replaced it.)
     SIGN_ID=${SOUNDYA_SIGN_ID:--}
-    [ "$SIGN_ID" != "-" ] || echo "ВНИМАНИЕ: подпись ad-hoc — виджет macOS не покажет (задайте SOUNDYA_SIGN_ID)" >&2
-    # Inside out: the widget with its sandbox, then the app (--deep would strip the widget's entitlements).
     xattr -cr "$APP"
-    codesign --force --options runtime --entitlements mac-widget/widget.entitlements --sign "$SIGN_ID" "$APP/Contents/PlugIns/SoundyaWidget.appex"
     codesign --force --options runtime --sign "$SIGN_ID" "$APP"
     codesign --verify --deep --strict "$APP"
-    # Again with the widget in place: Metadata.appintents, versions, minimum macOS.
     python3 scripts/mac-dmg/check_app.py "$APP"
 fi
 # The disk image: open it, drag soundya to Applications.

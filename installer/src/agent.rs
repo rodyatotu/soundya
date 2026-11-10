@@ -30,6 +30,8 @@ use crate::sha256;
 
 pub const PORT: u16 = 8766;
 pub const LABEL: &str = "io.github.rodyatotu.soundya-pc";
+/// The menu bar icon (`soundya tray`): started at login, not kept alive after «Выйти».
+pub const TRAY_LABEL: &str = "io.github.rodyatotu.soundya-tray";
 /// How old a signed request may be (clocks of the speaker and the Mac differ a little).
 const MAX_AGE: u64 = 120;
 const MAX_BODY: usize = 16 * 1024;
@@ -699,6 +701,71 @@ pub fn launch_agent_plist(exe: &Path, log: &Path) -> String {
     )
 }
 
+/// The launchd job for the menu bar icon: at login, in the user's session only.
+pub fn tray_plist(exe: &Path, log: &Path) -> String {
+    let esc = |p: &Path| p.to_string_lossy().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{TRAY_LABEL}</string>
+  <key>ProgramArguments</key><array><string>{}</string><string>tray</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>{}</string>
+  <key>StandardErrorPath</key><string>{}</string>
+</dict></plist>
+"#,
+        esc(exe),
+        esc(log),
+        esc(log)
+    )
+}
+
+/// This Mac is connected to a speaker (the PC agent's config is there): opening soundya.app
+/// shows soundya itself, not the installer.
+pub fn set_up(home: &Path) -> bool {
+    dir(home).join("config.json").exists()
+}
+
+/// The menu bar icon's login job, if a Mac connected before it existed has none.
+pub fn ensure_tray_plist(home: &Path, exe: &Path) {
+    let plist = home.join(format!("Library/LaunchAgents/{TRAY_LABEL}.plist"));
+    if !plist.exists() && installed_app(exe, home) {
+        let _ = std::fs::write(&plist, tray_plist(exe, &home.join("Library/Logs/soundya-tray.log")));
+    }
+}
+
+/// The running menu bar icon's pid file and the «show the window» note it watches.
+pub fn tray_pid_file(home: &Path) -> PathBuf {
+    dir(home).join("tray.pid")
+}
+pub fn tray_open_file(home: &Path) -> PathBuf {
+    dir(home).join("tray.open")
+}
+
+/// The speaker this Mac was connected to (for the menu bar icon); soundya.local if none.
+pub fn speaker_of(home: &Path) -> String {
+    std::fs::read_to_string(dir(home).join("config.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["speaker"].as_str().map(str::to_owned))
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':'))
+        .unwrap_or_else(|| "soundya.local".into())
+}
+
+/// Keeps the speaker's address in the agent's config (the key and the rest stay).
+pub fn remember_speaker(home: &Path, ip: &str) -> Result<(), String> {
+    let path = dir(home).join("config.json");
+    let mut v: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({}));
+    if !v.is_object() {
+        v = json!({});
+    }
+    v["speaker"] = json!(ip);
+    write_private(&path, &serde_json::to_string_pretty(&v).unwrap_or_default())
+}
+
 /// Where soundya.app must be for the agent to keep working (not a download or a
 /// temporary copy that macOS made: the job would point at nothing after it).
 pub fn installed_app(exe: &Path, home: &Path) -> bool {
@@ -735,6 +802,8 @@ pub fn write_files(home: &Path, exe: &Path) -> Result<String, String> {
     let log = home.join("Library/Logs/soundya-pc.log");
     let _ = std::fs::create_dir_all(home.join("Library/Logs"));
     std::fs::write(agents.join(format!("{LABEL}.plist")), launch_agent_plist(exe, &log)).map_err(|e| format!("не записался {LABEL}.plist: {e}"))?;
+    let tray_log = home.join("Library/Logs/soundya-tray.log");
+    std::fs::write(agents.join(format!("{TRAY_LABEL}.plist")), tray_plist(exe, &tray_log)).map_err(|e| format!("не записался {TRAY_LABEL}.plist: {e}"))?;
     Ok(key)
 }
 
@@ -789,12 +858,29 @@ pub fn mac_for(ifconfig: &str, ip: &str) -> Option<String> {
 /// Removes the launchd job and the agent's files (the log stays for a bug report).
 pub fn remove_files(home: &Path) {
     let _ = std::fs::remove_file(home.join(format!("Library/LaunchAgents/{LABEL}.plist")));
+    let _ = std::fs::remove_file(home.join(format!("Library/LaunchAgents/{TRAY_LABEL}.plist")));
     let _ = std::fs::remove_dir_all(dir(home));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_menu_bar_icon_finds_its_speaker_and_starts_at_login() {
+        let home = std::env::temp_dir().join(format!("soundya-tray-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(speaker_of(&home), "soundya.local", "not connected yet: found by its name");
+        std::fs::create_dir_all(dir(&home)).unwrap();
+        std::fs::write(dir(&home).join("config.json"), r#"{"key":"k1234567890123456","port":8766}"#).unwrap();
+        remember_speaker(&home, "192.168.0.112").unwrap();
+        assert_eq!(speaker_of(&home), "192.168.0.112");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(dir(&home).join("config.json")).unwrap()).unwrap();
+        assert_eq!(v["key"], "k1234567890123456", "the key stays");
+        let p = tray_plist(Path::new("/Applications/soundya.app/Contents/MacOS/soundya"), Path::new("/tmp/t.log"));
+        assert!(p.contains("<string>tray</string>") && p.contains(TRAY_LABEL) && !p.contains("KeepAlive"), "{p}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     #[derive(Default)]
     struct Fake {

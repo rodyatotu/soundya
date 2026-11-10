@@ -1239,12 +1239,40 @@ impl Client {
     fn hydrate(&self, tracks: Vec<Track>) -> Res<Vec<Track>> {
         let missing: Vec<u64> = tracks.iter().filter(|t| !t.hydrated()).map(|t| t.id).collect();
         let mut full = std::collections::HashMap::new();
-        for chunk in missing.chunks(50) {
-            let ids = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
-            let v = self.api("/tracks", &[("ids", ids.as_str())])?;
-            let got: Vec<Track> = serde_json::from_value(v)?;
-            for t in got {
-                full.insert(t.id, t);
+        // All the chunks at once, a few at a time: one by one, «качал очка» (336 tracks,
+        // 7 chunks) took 35 s to start. A chunk that fails is left out, not the playlist.
+        let chunks: Vec<&[u64]> = missing.chunks(50).collect();
+        let mut last_err = None;
+        let mut fetched = 0;
+        for group in chunks.chunks(4) {
+            let results: Vec<Res<Vec<Track>>> = std::thread::scope(|sc| {
+                let jobs: Vec<_> = group
+                    .iter()
+                    .map(|chunk| {
+                        let ids = chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+                        sc.spawn(move || -> Res<Vec<Track>> {
+                            let v = self.api("/tracks", &[("ids", ids.as_str())])?;
+                            Ok(serde_json::from_value(v)?)
+                        })
+                    })
+                    .collect();
+                jobs.into_iter().map(|j| j.join().unwrap_or_else(|_| Err("a track chunk failed".into()))).collect()
+            });
+            for r in results {
+                match r {
+                    Ok(got) => {
+                        fetched += 1;
+                        for t in got {
+                            full.insert(t.id, t);
+                        }
+                    }
+                    Err(e) => last_err = Some(e),
+                }
+            }
+        }
+        if fetched == 0 {
+            if let Some(e) = last_err {
+                return Err(e);
             }
         }
         Ok(tracks

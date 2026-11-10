@@ -980,7 +980,7 @@ fn pc_setup(ip: &str) -> Result<String, String> {
 /// Sets up the PC agent on this Mac (a launchd job of this app, no administrator
 /// rights) and fills the Mac's address, key and MAC into the speaker's settings.
 #[cfg(target_os = "macos")]
-fn pc_setup(ip: &str) -> Result<String, String> {
+pub(crate) fn pc_setup(ip: &str) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let home = agent::home();
     if !agent::installed_app(&exe, &home) {
@@ -1009,13 +1009,58 @@ fn pc_setup(ip: &str) -> Result<String, String> {
         .map_err(|e| format!("не понять адрес этого Mac: {e}"))?;
     let ifconfig = std::process::Command::new("/sbin/ifconfig").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     let mac = agent::mac_for(&ifconfig, &me).unwrap_or_default();
-    let patch = json!({ "pc_on": true, "pc_host": me, "pc_token": key, "pc_mac": mac });
+    // A Windows PC already there stays the first: this Mac is added as «мак» (it replaced it).
+    let current = match speaker_http(ip, "GET", "/api/status", "") {
+        Ok((200, body)) => serde_json::from_str::<Value>(&body).map(|v| v["settings"].clone()).unwrap_or_default(),
+        _ => Value::Null,
+    };
+    let patch = mac_patch(&current, &me, &key, &mac);
+    // The menu bar icon: soundya on this Mac without the browser (at login too).
+    let _ = agent::remember_speaker(&home, ip);
+    tray_start();
     match speaker_http(ip, "POST", "/api/settings", &patch.to_string()) {
-        Ok((200, body)) if body.starts_with("OK") => Ok(format!("Этот Mac ({me}) подключён к колонке")),
+        Ok((200, body)) if body.starts_with("OK") => Ok(if patch.get("pcs_more").is_some() {
+            format!("Этот Mac ({me}) подключён к колонке вторым компьютером — «Алиса, … на маке»; soundya — значок в строке меню")
+        } else {
+            format!("Этот Mac ({me}) подключён к колонке; soundya — значок в строке меню")
+        }),
         Ok((401, _)) => Err(format!("на панели колонки стоит PIN: впишите в «Устройства» адрес {me} и ключ из {}", agent::dir(&home).join("config.json").display())),
         Ok((_, body)) => Err(format!("колонка не приняла настройки: {body}")),
         Err(e) => Err(e),
     }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// The speaker's settings for this Mac: the first computer when there is none (or it is
+/// this Mac), else one of «Ещё компьютеры» named «мак» (the same address updated, not doubled).
+fn mac_patch(current: &Value, me: &str, key: &str, mac: &str) -> Value {
+    let first = current["pc_host"].as_str().unwrap_or("").trim();
+    if first.is_empty() || first == me {
+        return json!({ "pc_on": true, "pc_host": me, "pc_token": key, "pc_mac": mac });
+    }
+    // The others as they are (their keys come masked; the speaker keeps them by address).
+    let mut more: Vec<Value> = current["pcs_more"].as_array().cloned().unwrap_or_default();
+    match more.iter_mut().find(|p| p["host"].as_str() == Some(me)) {
+        Some(p) => {
+            p["token"] = json!(key);
+            p["mac"] = json!(mac);
+        }
+        None => {
+            let taken = |n: &str| more.iter().any(|p| p["name"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(n))) || current["pc_name"].as_str() == Some(n);
+            let name = ["мак", "макбук", "мак 2", "мак 3"].into_iter().find(|n| !taken(n)).unwrap_or("мак 4");
+            more.push(json!({ "name": name, "host": me, "token": key, "mac": mac }));
+        }
+    }
+    json!({ "pc_on": true, "pcs_more": more })
+}
+
+/// (Re)starts the menu bar icon's launchd job (written by agent::write_files).
+#[cfg(target_os = "macos")]
+fn tray_start() {
+    let domain = format!("gui/{}", unsafe { getuid() });
+    let plist = agent::home().join(format!("Library/LaunchAgents/{}.plist", agent::TRAY_LABEL));
+    let _ = std::process::Command::new("/bin/launchctl").args(["bootout", &format!("{domain}/{}", agent::TRAY_LABEL)]).output();
+    let _ = std::process::Command::new("/bin/launchctl").args(["bootstrap", &domain]).arg(&plist).output();
 }
 
 /// (Re)starts the launchd job from its plist.
@@ -1039,6 +1084,7 @@ fn launchctl_restart(home: &std::path::Path) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 extern "C" {
     fn getuid() -> u32;
+    fn kill(pid: i32, sig: i32) -> i32;
 }
 
 /// A signed ping to the agent on this Mac.
@@ -1062,6 +1108,7 @@ fn agent_ping(key: &str) -> Result<String, String> {
 fn pc_remove(ip: &str) -> Result<String, String> {
     let domain = format!("gui/{}", unsafe { getuid() });
     let _ = std::process::Command::new("/bin/launchctl").args(["bootout", &format!("{domain}/{}", agent::LABEL)]).output();
+    let _ = std::process::Command::new("/bin/launchctl").args(["bootout", &format!("{domain}/{}", agent::TRAY_LABEL)]).output();
     agent::remove_files(&agent::home());
     if !ip.is_empty() {
         let _ = speaker_http(ip, "POST", "/api/settings", &json!({ "pc_on": false }).to_string());
@@ -1265,6 +1312,38 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("agent") {
         agent::main();
     }
+    // soundya.app opened by hand on a Mac already connected: soundya's own window, not the
+    // installer (that is in the icon's menu: «Установщик и обновление…»).
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).is_none() && std::env::var("SOUNDYA_INSTALLER").is_err() && agent::set_up(&agent::home()) {
+        let home = agent::home();
+        // The icon runs already: it shows its window (one icon, not two).
+        let running = std::fs::read_to_string(agent::tray_pid_file(&home))
+            .ok()
+            .and_then(|t| t.trim().parse::<i32>().ok())
+            .is_some_and(|pid| pid != std::process::id() as i32 && unsafe { kill(pid, 0) } == 0);
+        if running && std::fs::write(agent::tray_open_file(&home), b"open").is_ok() {
+            std::process::exit(0);
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            agent::ensure_tray_plist(&home, &exe);
+        }
+        if let Err(e) = macwin::tray(&agent::speaker_of(&home), true) {
+            eprintln!("soundya: значок в строке меню не открылся: {e}");
+        } else {
+            std::process::exit(0);
+        }
+    }
+    // launchd (or «open soundya.app --args tray») starts it as the menu bar icon.
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).as_deref() == Some("tray") {
+        let speaker = std::env::args().nth(2).unwrap_or_else(|| agent::speaker_of(&agent::home()));
+        if let Err(e) = macwin::tray(&speaker, false) {
+            eprintln!("soundya: значок в строке меню не открылся: {e}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
     let listener = TcpListener::bind("127.0.0.1:0").expect("cannot listen on 127.0.0.1");
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let url = format!("http://127.0.0.1:{port}/");
@@ -1307,6 +1386,31 @@ fn main() {
         }
     });
     serve();
+}
+
+#[cfg(test)]
+mod mac_second {
+    use super::*;
+
+    #[test]
+    fn a_mac_joins_as_a_second_computer() {
+        // No computer yet, or this Mac: the first one.
+        let p = mac_patch(&json!({ "pc_host": "" }), "192.168.0.5", "k", "aa:bb");
+        assert_eq!(p["pc_host"], "192.168.0.5");
+        assert_eq!(mac_patch(&json!({ "pc_host": "192.168.0.5" }), "192.168.0.5", "k", "")["pc_host"], "192.168.0.5");
+        // A Windows PC there: it stays, the Mac is «мак» in «Ещё компьютеры».
+        let cur = json!({ "pc_host": "192.168.0.9", "pc_name": "", "pcs_more": [{ "name": "ноутбук", "host": "192.168.0.7", "token": "••••ab", "mac": "" }] });
+        let p = mac_patch(&cur, "192.168.0.5", "k", "aa:bb");
+        assert!(p.get("pc_host").is_none(), "the first computer is not touched");
+        let more = p["pcs_more"].as_array().unwrap();
+        assert_eq!(more.len(), 2);
+        assert_eq!(more[0]["token"], "••••ab", "the others as they were");
+        assert_eq!((more[1]["name"].as_str(), more[1]["host"].as_str(), more[1]["token"].as_str()), (Some("мак"), Some("192.168.0.5"), Some("k")));
+        // Connected again: updated, not doubled.
+        let again = mac_patch(&json!({ "pc_host": "192.168.0.9", "pcs_more": more }), "192.168.0.5", "k2", "aa:bb");
+        assert_eq!(again["pcs_more"].as_array().unwrap().len(), 2);
+        assert_eq!(again["pcs_more"][1]["token"], "k2");
+    }
 }
 
 #[cfg(test)]

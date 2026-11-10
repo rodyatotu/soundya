@@ -365,8 +365,21 @@ pub fn run(host: &str, dir: &Path, action: &TvAction) -> Result<String, String> 
             sh(&format!("input keyevent {keys}")).map(|_| "Готово".into())
         }
         TvAction::Search(q) => {
-            sh(&format!("am start -a android.search.action.GLOBAL_SEARCH --es query {}", adb::quote(q)))
-                .map(|_| format!("Ищу {q}"))
+            // «Алиса, найди фильм Колобок»: the TV on first, then the search (#SY-F351993A).
+            let asleep = sh("dumpsys power | grep -m1 mWakefulness=").map(|o| !o.contains("Awake")).unwrap_or(false);
+            if asleep {
+                let _ = sh("input keyevent KEYCODE_WAKEUP");
+                std::thread::sleep(Duration::from_millis(1500));
+            }
+            let app = SEARCH_APPS.lock().unwrap().get(host).cloned().unwrap_or_default();
+            if let Some(cmd) = search_script(&app, q) {
+                match sh(&cmd) {
+                    Ok(out) if !out.contains("Error") => return Ok(format!("Ищу {q} в {}", label(&app))),
+                    Ok(out) => eprintln!("tv: {app} does not search ({}); the TV's own search", out.trim()),
+                    Err(e) => eprintln!("tv: {app} search: {e}; the TV's own search"),
+                }
+            }
+            sh(&global_search(q)).map(|_| format!("Ищу {q}"))
         }
         TvAction::YouTube(q) => {
             let url = format!("https://www.youtube.com/results?search_query={}", percent_encode(q));
@@ -495,8 +508,26 @@ fn packages_of(out: &str) -> Vec<String> {
         .collect()
 }
 
+/// «Искать фильмы в», per TV (address → package); a TV not here: its own search.
+static SEARCH_APPS: std::sync::Mutex<std::collections::BTreeMap<String, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+pub fn set_search_apps(apps: std::collections::BTreeMap<String, String>) {
+    *SEARCH_APPS.lock().unwrap() = apps;
+}
+
+/// The search inside the chosen app (its SEARCH screen with the query), or the TV's
+/// own search when none is chosen or the app does not take it.
+fn search_script(app: &str, q: &str) -> Option<String> {
+    (!app.is_empty() && valid_package(app))
+        .then(|| format!("am start -a android.intent.action.SEARCH -p {app} --es query {}", adb::quote(q)))
+}
+
+fn global_search(q: &str) -> String {
+    format!("am start -a android.search.action.GLOBAL_SEARCH --es query {}", adb::quote(q))
+}
+
 /// A package name safe to put into a shell command.
-fn valid_package(p: &str) -> bool {
+pub fn valid_package(p: &str) -> bool {
     !p.is_empty() && p.len() < 200 && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
 }
 
@@ -595,6 +626,18 @@ mod tests {
         assert_eq!(find_package("ютуб музыку", &pk).as_deref(), Some("com.google.android.youtube.tvmusic"));
         let only_music: Vec<String> = vec!["com.google.android.youtube.tvmusic".into()];
         assert_eq!(find_package("ютуб", &only_music), None);
+    }
+
+    #[test]
+    fn searches_in_the_chosen_app() {
+        let script = search_script("ru.kinopoisk.tv", "колобок 2").unwrap();
+        assert_eq!(script, "am start -a android.intent.action.SEARCH -p ru.kinopoisk.tv --es query 'колобок 2'");
+        assert!(search_script("", "колобок").is_none(), "no app: the TV's own search");
+        assert!(search_script("x; reboot", "колобок").is_none(), "only a package name goes into the shell");
+        for s in [script, global_search("it's")] {
+            let ok = std::process::Command::new("sh").arg("-n").arg("-c").arg(&s).status().unwrap().success();
+            assert!(ok, "{s}");
+        }
     }
 
     #[test]

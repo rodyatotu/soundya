@@ -89,6 +89,17 @@ mod tests {
     fn only_soundcloud_covers_are_fetched() {
         assert_eq!(super::art_url("/art/i1/artworks-abc_D-t300x300.jpg").as_deref(), Some("https://i1.sndcdn.com/artworks-abc_D-t300x300.jpg"));
         assert_eq!(super::art_url("/art/i9/avatars-x-large.png").as_deref(), Some("https://i9.sndcdn.com/avatars-x-large.png"));
+        // The same picture from the other CDN names, its own first.
+        assert_eq!(
+            super::art_hosts("https://i3.sndcdn.com/artworks-a-t300x300.jpg"),
+            [
+                "https://i3.sndcdn.com/artworks-a-t300x300.jpg",
+                "https://i1.sndcdn.com/artworks-a-t300x300.jpg",
+                "https://i2.sndcdn.com/artworks-a-t300x300.jpg",
+                "https://i4.sndcdn.com/artworks-a-t300x300.jpg"
+            ]
+        );
+        assert_eq!(super::art_hosts("https://example.com/a.jpg"), ["https://example.com/a.jpg"]);
         for bad in ["/art/i1/", "/art/x1/a.jpg", "/art/i10/a.jpg", "/art/i1/a.jpg?x=1", "/art/i1/../a.jpg", "/art/i1/a/b.jpg",
                     "/art/i1/a.html", "/art/i1/a%2F.jpg", "/art/i1@evil.com/a.jpg", "/art/i1"] {
             assert!(super::art_url(bad).is_none(), "{bad}");
@@ -551,6 +562,8 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
 
     let (status, kind, reply) = match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", page().to_owned()),
+        // «/?app=1» (the Mac app's window) and the like: the same page.
+        ("GET", p) if p.starts_with("/?") => ("200 OK", "text/html; charset=utf-8", page().to_owned()),
         ("GET", "/manifest.webmanifest") => ("200 OK", "application/manifest+json", manifest().to_owned()),
         // The developer build: its scripts and the end of the log (secrets cut out;
         // POST, so only the panel itself and, with a PIN, only after it).
@@ -863,15 +876,117 @@ fn art_agent(shared: &Shared) -> Option<ureq::Agent> {
     Some(a)
 }
 
+/// The same picture is on i1…i4.sndcdn.com; the provider may filter one name and not
+/// another (owner's speaker: i1 stuck for 15 s, i2 and i4 answered in 0.1 s).
+fn art_hosts(url: &str) -> Vec<String> {
+    let Some(rest) = url.strip_prefix("https://") else { return vec![url.to_owned()] };
+    let Some((host, path)) = rest.split_once('/') else { return vec![url.to_owned()] };
+    let n = host.strip_suffix(".sndcdn.com").and_then(|h| h.strip_prefix('i')).filter(|d| d.len() == 1 && d.as_bytes()[0].is_ascii_digit());
+    let Some(n) = n else { return vec![url.to_owned()] };
+    let mut out = vec![url.to_owned()];
+    for d in ["1", "2", "3", "4"] {
+        if d != n {
+            out.push(format!("https://i{d}.sndcdn.com/{path}"));
+        }
+    }
+    out
+}
+
+/// Pictures that could not be fetched lately: asked again only after a while
+/// (every status poll asked again, and each try could hang for 15 s).
+static ART_MISSES: std::sync::Mutex<Vec<(String, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+/// Cover downloads under way: spare CDN names join only while few are, so a shelf of
+/// covers does not crowd out the music's own connections (the track hung at 0:00).
+static ART_INFLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const ART_SPARE_BELOW: usize = 6;
+const ART_MISS_FOR: Duration = Duration::from_secs(120);
+
+/// A cover from the CDN: its own host first; when it has not answered in 1.5 s the next
+/// one starts alongside, and so on — the first picture wins. (One try that hung held a
+/// cover for 13 s on the owner's speaker, while the next name answered in 0.1 s.)
+/// (type, bytes up to `max`); one line in the log when none gave it.
+fn fetch_art(agent: &ureq::Agent, url: &str, max: u64) -> Option<(String, Vec<u8>)> {
+    {
+        let mut misses = ART_MISSES.lock().unwrap();
+        misses.retain(|(_, at)| at.elapsed() < ART_MISS_FOR);
+        if misses.iter().any(|(u, _)| u == url) {
+            return None;
+        }
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(String, Vec<u8>), String>>();
+    let hosts = art_hosts(url);
+    let mut started = 0;
+    let mut done = 0;
+    let mut last = String::new();
+    let start = |u: String| {
+        let (agent, tx) = (agent.clone(), tx.clone());
+        ART_INFLIGHT.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        thread::spawn(move || {
+            struct Done;
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    ART_INFLIGHT.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                }
+            }
+            let _done = Done;
+            let r = match agent.get(&u).timeout(Duration::from_secs(8)).call() {
+                Ok(resp) => {
+                    let kind = resp.header("Content-Type").filter(|k| k.starts_with("image/")).unwrap_or("image/jpeg").to_owned();
+                    let mut bytes = Vec::new();
+                    match resp.into_reader().take(max).read_to_end(&mut bytes) {
+                        Ok(_) if !bytes.is_empty() => Ok((kind, bytes)),
+                        Ok(_) => Err("empty".to_owned()),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+                Err(ureq::Error::Status(code, _)) => Err(format!("{code}")),
+                Err(e) => {
+                    crate::dns::failed(&u);
+                    Err(e.to_string())
+                }
+            };
+            let _ = tx.send(r);
+        });
+    };
+    start(hosts[0].clone());
+    started += 1;
+    while done < started {
+        match rx.recv_timeout(Duration::from_millis(1500)) {
+            Ok(Ok(found)) => return Some(found),
+            Ok(Err(e)) => {
+                done += 1;
+                let gone = e == "404";
+                last = e;
+                if gone {
+                    break;
+                }
+                if started < hosts.len() {
+                    start(hosts[started].clone());
+                    started += 1;
+                }
+            }
+            Err(_) if started < hosts.len() && ART_INFLIGHT.load(std::sync::atomic::Ordering::Acquire) < ART_SPARE_BELOW => {
+                start(hosts[started].clone());
+                started += 1;
+            }
+            Err(_) => {}
+        }
+    }
+    eprintln!("web: cover not loaded from i1–i4.sndcdn.com: {}", last.chars().take(160).collect::<String>());
+    let mut misses = ART_MISSES.lock().unwrap();
+    misses.push((url.to_owned(), std::time::Instant::now()));
+    if misses.len() > 200 {
+        misses.remove(0);
+    }
+    None
+}
+
 fn art(shared: &Shared, url: &str) -> Option<(String, Vec<u8>)> {
     if let Some((_, kind, bytes)) = ARTS.lock().unwrap().iter().find(|a| a.0 == url) {
         return Some((kind.clone(), bytes.clone()));
     }
     let agent = art_agent(shared)?;
-    let resp = crate::sc::get_retry(&agent, url, Duration::from_secs(15)).map_err(|e| eprintln!("web: art: {e}")).ok()?;
-    let kind = resp.header("Content-Type").filter(|k| k.starts_with("image/"))?.to_owned();
-    let mut bytes = Vec::new();
-    resp.into_reader().take(512 << 10).read_to_end(&mut bytes).ok()?;
+    let (kind, bytes) = fetch_art(&agent, url, 512 << 10)?;
     let mut arts = ARTS.lock().unwrap();
     arts.push((url.to_owned(), kind.clone(), bytes.clone()));
     while arts.iter().map(|a| a.2.len()).sum::<usize>() > 3 << 20 {
@@ -892,18 +1007,10 @@ fn cover(shared: &Shared) -> Option<(String, Vec<u8>)> {
             return Some((kind.clone(), bytes.clone()));
         }
     }
-    let proxy = shared.proxy.lock().unwrap().clone();
-    let agent = crate::sc::build_agent(&proxy).ok()?;
-    let resp = match crate::sc::get_retry(&agent, &url, Duration::from_secs(15)) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("web: cover: {e}");
-            return None;
-        }
-    };
-    let kind = resp.header("Content-Type").filter(|k| k.starts_with("image/")).unwrap_or("image/jpeg").to_owned();
-    let mut bytes = Vec::new();
-    resp.into_reader().take(3 << 20).read_to_end(&mut bytes).ok()?;
+    // The covers' own agent (kept connections, the bypass) and the other CDN hosts:
+    // a new agent per cover went to the provider's stub again and hung for 15 s.
+    let agent = art_agent(shared)?;
+    let (kind, bytes) = fetch_art(&agent, &url, 3 << 20)?;
     *COVER.lock().unwrap() = Some((url, kind.clone(), bytes.clone()));
     Some((kind, bytes))
 }
