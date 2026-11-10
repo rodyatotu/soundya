@@ -160,6 +160,7 @@ fn source_word(source: &str) -> String {
         "recs" => "под рекомендации".into(),
         s if s.starts_with("playlist:") => format!("под плейлист {}", &s["playlist:".len()..]),
         s if s.starts_with("play:") => format!("под {}", &s["play:".len()..]),
+        s if s.starts_with("link:") => "под трек по ссылке".into(),
         _ => String::new(),
     }
 }
@@ -181,6 +182,11 @@ pub fn parse_source(words: &str) -> String {
     // From the panel it comes typed by hand: «Плейлист Утро» is a playlist too.
     let l = w.to_lowercase();
     let after = |prefix: &str| l.starts_with(prefix).then(|| w.chars().skip(prefix.chars().count()).collect::<String>());
+    // A SoundCloud link (a track, a playlist, an artist), pasted in the panel.
+    if l.starts_with("https://") && (l.contains("soundcloud.com/") || l.contains("on.soundcloud.com")) {
+        let link = w.split(['?', '#']).next().unwrap_or(w).trim_end_matches('/');
+        return format!("link:{link}");
+    }
     match l.as_str() {
         "" => String::new(),
         "лайки" | "мои лайки" | "любимое" | "мою музыку" | "мои треки" => "likes".into(),
@@ -519,7 +525,13 @@ pub fn execute(actions: Vec<Action>) {
         match a {
             Action::Music(src) => {
                 if let Some(tx) = &tx {
-                    let _ = tx.send(Cmd::Voice(source_intent(&src)));
+                    if let Some(link) = src.strip_prefix("link:") {
+                        // The same as a link pasted into the player.
+                        let (reply, _) = std::sync::mpsc::channel();
+                        let _ = tx.send(Cmd::Control(format!("play {link}"), reply));
+                    } else {
+                        let _ = tx.send(Cmd::Voice(source_intent(&src)));
+                    }
                 }
             }
             Action::StopMusic => {
@@ -792,6 +804,13 @@ mod tests {
         assert_eq!(parse_source("Плейлист Первый"), "playlist:Первый");
         assert_eq!(parse_source("Мои лайки"), "likes");
         assert_eq!(parse_source("Bonobo"), "play:Bonobo");
+        // A link from SoundCloud, «Поделиться» tail and all.
+        assert_eq!(
+            parse_source("https://soundcloud.com/jdilla/thank-you-jay-dee-act-3?utm_source=clipboard&si=x"),
+            "link:https://soundcloud.com/jdilla/thank-you-jay-dee-act-3"
+        );
+        assert_eq!(parse_source("https://on.soundcloud.com/AbC123"), "link:https://on.soundcloud.com/AbC123");
+        assert_eq!(source_word("link:https://soundcloud.com/a/b"), "под трек по ссылке");
     }
 
     #[test]

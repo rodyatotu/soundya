@@ -916,6 +916,39 @@ pub fn undated() -> Vec<Item> {
 }
 
 /// «a, b и c» with «и ещё N» past `max`.
+/// Tasks by their deadline, the same one said once: «отчёт до 15:00; до 23:00: видео, презентация и озвучка».
+fn tasks_spoken(tasks: &[&Item], off: i64, max: usize) -> String {
+    let mut sorted: Vec<&Item> = tasks.to_vec();
+    sorted.sort_by_key(|t| t.at.unwrap_or(i64::MIN));
+    let mut groups: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    for t in sorted.iter().take(max) {
+        let due = (t.kind == "task").then(|| t.at.map(|a| hm(a, off))).flatten();
+        let what = if t.kind == "task" { t.title.clone() } else { t.spoken(off) };
+        match groups.last_mut() {
+            Some((d, list)) if *d == due && due.is_some() => list.push(what),
+            _ => groups.push((due, vec![what])),
+        }
+    }
+    let merged = groups.iter().any(|(_, list)| list.len() > 1);
+    let mut parts: Vec<String> = groups
+        .into_iter()
+        .map(|(due, list)| match due {
+            Some(at) if list.len() > 1 => format!("до {at}: {}", list_of(&list, list.len())),
+            Some(at) => format!("{} до {at}", list[0]),
+            None => list_of(&list, list.len()),
+        })
+        .collect();
+    if !merged {
+        // No shared deadline: as a plain list, «a, b и c».
+        let more = sorted.len().saturating_sub(max);
+        return if more > 0 { format!("{} и ещё {more}", parts.join(", ")) } else { list_of(&parts, parts.len()) };
+    }
+    if sorted.len() > max {
+        parts.push(format!("и ещё {}", sorted.len() - max));
+    }
+    parts.join("; ")
+}
+
 fn list_of(items: &[String], max: usize) -> String {
     let shown: Vec<&str> = items.iter().take(max).map(String::as_str).collect();
     if items.len() > max {
@@ -971,8 +1004,7 @@ pub fn agenda_text(ask: Ask, now: i64, off: i64) -> String {
                 if tasks.is_empty() {
                     out.push(if d == 0 { "Задач на сегодня нет".into() } else { "Задач нет".into() });
                 } else {
-                    let what = tasks.iter().map(|t| t.spoken(off)).collect::<Vec<_>>();
-                    out.push(format!("{}: {}", if d == 0 { "Сделать сегодня" } else { "Сделать" }, list_of(&what, 8)));
+                    out.push(format!("{}: {}", if d == 0 { "Сделать сегодня" } else { "Сделать" }, tasks_spoken(&tasks, off, 8)));
                 }
                 if !late.is_empty() {
                     let what = late.iter().map(|t| t.title.clone()).collect::<Vec<_>>();
@@ -1007,8 +1039,14 @@ pub fn agenda_text(ask: Ask, now: i64, off: i64) -> String {
                     if events.is_empty() && tasks.is_empty() && late.is_empty() {
                         out.push(if d == 0 { "Планов нет, день свободен".into() } else { "Планов нет".into() });
                     } else {
-                        ev(&mut out);
-                        tk(&mut out);
+                        // Tasks first; the calendar only when it has something
+                        // («в календаре пусто» before the tasks said nothing).
+                        if !tasks.is_empty() || !late.is_empty() {
+                            tk(&mut out);
+                        }
+                        if !events.is_empty() {
+                            ev(&mut out);
+                        }
                     }
                 }
             }
@@ -1365,7 +1403,10 @@ pub fn voice(text: &str) -> Option<Voice> {
     }
     let (today, _) = local(now(), offset());
     let day = asked_day(text, today);
-    let has = |ws: &[&str]| ws.iter().any(|w| text.contains(w));
+    // The day is taken above; without it the words may go in any order:
+    // «какие у меня сегодня планы» is «какие у меня планы» (it went to Alice).
+    let bare = without_day(text);
+    let has = |ws: &[&str]| ws.iter().any(|w| text.contains(w) || bare.contains(w));
     // The next thing.
     if has(&["что у меня дальше", "что дальше по план", "что у меня следующ", "что следующее", "следующая встреча", "следующее событие", "куда мне дальше"]) {
         return Some(Voice::Ask(Ask::Next));
@@ -1386,10 +1427,25 @@ pub fn voice(text: &str) -> Option<Voice> {
         return Some(Voice::Ask(Ask::Todo(day)));
     }
     let plans = ["какие планы", "какие у меня планы", "что у меня сегодня", "что у меня завтра", "что у меня на", "что запланировано", "мои планы", "что по планам", "какие дела", "какие у меня дела"];
-    if plans.iter().any(|p| text.starts_with(p)) {
+    if plans.iter().any(|p| text.starts_with(p) || bare.starts_with(p)) {
         return Some(Voice::Ask(Ask::Plans(day)));
     }
     None
+}
+
+/// «а какие у меня на сегодня планы» → «какие у меня планы»: no day words, no «а / ну / скажи».
+fn without_day(text: &str) -> String {
+    const DAYS: [&str; 6] = ["сегодня", "завтра", "послезавтра", "сегодняшний", "завтрашний", "сейчас"];
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut out = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let next_is_day = words.get(i + 1).is_some_and(|n| DAYS.contains(n));
+        if DAYS.contains(w) || (*w == "на" && next_is_day) || (out.is_empty() && matches!(*w, "а" | "ну" | "скажи" | "подскажи")) {
+            continue;
+        }
+        out.push(*w);
+    }
+    out.join(" ")
 }
 
 /// «на час», «на 2 часа», «на полчаса», «на 45 минут» → seconds, and the phrase without it.
@@ -2238,6 +2294,13 @@ mod tests {
         assert_eq!(voice("какие планы на завтра"), Some(Voice::Ask(Ask::Plans(1))));
         assert_eq!(voice("какие у меня планы на сегодня"), Some(Voice::Ask(Ask::Plans(0))));
         assert_eq!(voice("что у меня сегодня"), Some(Voice::Ask(Ask::Plans(0))));
+        // Any order of the words (the owner's «какие у меня сегодня планы» went to Alice).
+        assert_eq!(voice("какие у меня сегодня планы"), Some(Voice::Ask(Ask::Plans(0))));
+        assert_eq!(voice("а какие сегодня планы"), Some(Voice::Ask(Ask::Plans(0))));
+        assert_eq!(voice("какие у меня завтра планы"), Some(Voice::Ask(Ask::Plans(1))));
+        assert_eq!(voice("какие у меня на сегодня дела"), Some(Voice::Ask(Ask::Plans(0))));
+        assert_eq!(voice("какие у меня сегодня задачи"), Some(Voice::Ask(Ask::Todo(0))));
+        assert_eq!(voice("какая сегодня погода"), None);
         assert_eq!(voice("какие у меня задачи"), Some(Voice::Ask(Ask::Todo(0))));
         assert_eq!(voice("что мне сегодня нужно сделать"), Some(Voice::Ask(Ask::Todo(0))));
         assert_eq!(voice("что надо сделать завтра"), Some(Voice::Ask(Ask::Todo(1))));
@@ -2334,16 +2397,26 @@ mod tests {
         let plans = agenda_text(Ask::Plans(0), NOW, MSK);
         assert_eq!(
             plans,
-            "Сегодня пятница, 6 ноября. В календаре 2 события: в 16:00 Встреча с командой и в 19:00 Спортзал. \
-             Сделать сегодня: Сдать отчёт до 18:00, Купить продукты до 20:00 и в 21:00 Выпить таблетку. Просрочено: Позвонить в банк."
+            "Сегодня пятница, 6 ноября. Сделать сегодня: Сдать отчёт до 18:00, Купить продукты до 20:00 и в 21:00 Выпить таблетку. \
+             Просрочено: Позвонить в банк. В календаре 2 события: в 16:00 Встреча с командой и в 19:00 Спортзал."
         );
+        // The same deadline said once (the brief read «до 23:00» five times).
+        add("Смонтировать видео", Some(at(0, 23, 0)), "", false, "", "normal");
+        add("Сделать презентацию", Some(at(0, 23, 0)), "", false, "", "normal");
+        add("Записать озвучку", Some(at(0, 23, 0)), "", false, "", "normal");
+        let plans = agenda_text(Ask::Plans(0), NOW, MSK);
+        assert!(
+            plans.contains("Сдать отчёт до 18:00; Купить продукты до 20:00; в 21:00 Выпить таблетку; до 23:00: Смонтировать видео, Сделать презентацию и Записать озвучку."),
+            "{plans}"
+        );
+        TASKS.lock().unwrap().as_mut().unwrap().retain(|t| t.due != Some(at(0, 23, 0)));
         let todo = agenda_text(Ask::Todo(0), NOW, MSK);
         assert!(todo.contains("Сделать сегодня: Сдать отчёт до 18:00") && todo.contains("Без срока: Прочитать книгу") && !todo.contains("Спортзал"), "{todo}");
         let sched = agenda_text(Ask::Schedule(0), NOW, MSK);
         assert!(sched.starts_with("Сегодня пятница, 6 ноября. Расписание: в 16:00 Встреча с командой, Сдать отчёт до 18:00, в 19:00 Спортзал"), "{sched}");
         assert_eq!(agenda_text(Ask::Next, NOW, MSK), "Дальше в 16:00 Встреча с командой — через час.");
         let tomorrow = agenda_text(Ask::Plans(1), NOW, MSK);
-        assert_eq!(tomorrow, "Завтра суббота, 7 ноября. В календаре 1 событие: День рождения Маши (весь день). Сделать: Подготовить презентацию.");
+        assert_eq!(tomorrow, "Завтра суббота, 7 ноября. Сделать: Подготовить презентацию. В календаре 1 событие: День рождения Маши (весь день).");
         let dl = agenda_text(Ask::Deadlines, NOW, MSK);
         assert_eq!(dl, "Просрочено: Позвонить в банк. Сроки: сегодня до 18:00 — Сдать отчёт, сегодня до 20:00 — Купить продукты и завтра — Подготовить презентацию.");
         let week = agenda_text(Ask::Week, NOW, MSK);

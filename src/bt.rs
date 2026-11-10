@@ -382,11 +382,20 @@ pub fn connect(mac: &str) -> Result<Device, String> {
     }
 }
 
-pub fn disconnect(mac: &str) -> Result<(), String> {
+/// Lets the device go: not trusted (it does not come back by itself) and disconnected,
+/// so a phone can take it. «Где играет → Колонка» used to keep it held (owner's Ditoo).
+pub fn release(mac: &str) -> Result<(), String> {
     if !valid_mac(mac) {
         return Err("неверный адрес устройства".into());
     }
-    ctl(&[(&format!("disconnect {mac}"), 2500)], Duration::from_secs(6)).map(|_| ())
+    ctl_until(
+        &[
+            (&format!("untrust {mac}"), 700, &["untrust succeeded", "not available"]),
+            (&format!("disconnect {mac}"), 3000, &["Successful disconnected", "not connected", "not available"]),
+        ],
+        Duration::from_secs(8),
+    )
+    .map(|_| ())
 }
 
 pub fn forget(mac: &str) -> Result<(), String> {

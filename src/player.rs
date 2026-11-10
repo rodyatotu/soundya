@@ -194,7 +194,9 @@ fn run(
     let mut buf: Option<SampleBuffer<i16>> = None;
     let mut buf_frames = 0usize;
     let mut pcm: Vec<i16> = Vec::new();
-    let mut gain = Gain(1.0);
+    // From the level it should be at now, not full: with the music in the browser a new
+    // track started loud and faded out over a second (half a second of it from the speaker).
+    let mut gain = Gain(duck.player_level());
     let mut eq = crate::eq::Eq::new();
     let mut frames_played: u64 = 0;
     // Since the card was opened: (when, track position then). A card takes sound only as fast
@@ -348,4 +350,22 @@ fn run(
 
 pub fn new_flags() -> Arc<Flags> {
     Arc::new(Flags::default())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_new_track_is_silent_while_the_browser_listens() {
+        let duck = super::Duck::new();
+        duck.set_listening(true);
+        let mut gain = super::Gain(duck.player_level());
+        let mut samples = vec![12_000i16; 4410 * 2];
+        gain.apply(&mut samples, 2, 44_100, duck.player_level());
+        assert!(samples.iter().all(|s| *s == 0), "the first 100 ms reached the speaker");
+        // Back on the speaker: it fades in from silence, not a jump.
+        duck.set_listening(false);
+        let mut samples = vec![12_000i16; 441 * 2];
+        gain.apply(&mut samples, 2, 44_100, duck.player_level());
+        assert!(samples[0].abs() < 100 && samples[samples.len() - 1] < 12_000);
+    }
 }

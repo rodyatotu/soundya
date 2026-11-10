@@ -46,8 +46,22 @@ impl Resolver {
     }
 }
 
-/// Asks all `servers` at once; the first with addresses wins. (One by one, two
-/// silent servers before a working one cost 6 s — longer than a check waits.)
+/// Yandex DNS hands out the provider's stub for blocked names (ER-Telecom: i1.sndcdn.com →
+/// 188.186.154.79, seen on the owner's speaker); Google's and Cloudflare's answers are real.
+fn trusted(server: &str) -> bool {
+    !server.starts_with("77.88.8.")
+}
+
+static REAL: Mutex<Option<std::collections::HashSet<IpAddr>>> = Mutex::new(None);
+
+fn is_real(ip: &IpAddr) -> bool {
+    REAL.lock().unwrap().as_ref().is_some_and(|s| s.contains(ip))
+}
+
+/// Asks all `servers` at once; the first answer wins (Yandex's is usually first and
+/// gives the nearest CloudFront — the music streams best from it), unless all of it is a
+/// known stub of the provider: then the next answer. (One by one, two silent servers
+/// before a working one cost 6 s — longer than a check waits.)
 fn lookup_any(host: &str, servers: &[String]) -> io::Result<Vec<IpAddr>> {
     let (tx, rx) = std::sync::mpsc::channel();
     for server in servers {
@@ -57,19 +71,32 @@ fn lookup_any(host: &str, servers: &[String]) -> io::Result<Vec<IpAddr>> {
                 Ok(ips) if ips.is_empty() => Err(io::Error::other(format!("{host}: no A records from {server}"))),
                 r => r,
             };
-            let _ = tx.send(r);
+            let _ = tx.send((trusted(&server), r));
         });
     }
     drop(tx);
     let mut last = io::Error::other("no DNS servers");
+    let mut stubs_only: Option<Vec<IpAddr>> = None;
     // Each query gives up by itself after 2 × 1.5 s.
-    while let Ok(r) = rx.recv() {
+    while let Ok((is_trusted, r)) = rx.recv() {
         match r {
-            Ok(ips) => return Ok(ips),
+            Ok(ips) => {
+                if is_trusted {
+                    REAL.lock().unwrap().get_or_insert_with(Default::default).extend(ips.iter().copied());
+                }
+                if ips.iter().all(is_stub) {
+                    stubs_only.get_or_insert(ips);
+                    continue;
+                }
+                return Ok(ips);
+            }
             Err(e) => last = e,
         }
     }
-    Err(last)
+    match stubs_only {
+        Some(ips) => Ok(ips),
+        None => Err(last),
+    }
 }
 
 // SoundCloud's names point at several servers, and a provider may let some of
@@ -100,6 +127,15 @@ pub fn stub(host: &str) {
     let host = host.trim_start_matches("https://").trim_start_matches("http://");
     let host = host.split(['/', ':', '?']).next().unwrap_or(host);
     let Some(ip) = FIRST.lock().unwrap().as_ref().and_then(|m| m.get(host).copied()) else { return };
+    // A real address (Google's or Cloudflare's answer): the provider filters the name there;
+    // writing the address off only took good servers away (CloudFront serves many names).
+    if is_real(&ip) {
+        static SAID: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+        if SAID.lock().unwrap().get_or_insert_with(Default::default).insert(host.to_owned()) {
+            eprintln!("dns: {host} at {ip}: wrong certificate on its real address — the provider filters the name; the address is kept");
+        }
+        return;
+    }
     if STUB.lock().unwrap().get_or_insert_with(Default::default).insert(ip) {
         eprintln!("dns: {host} at {ip} is the provider's stub (wrong certificate); public DNS from now on");
     }
@@ -158,6 +194,10 @@ fn choose(
                 if !v.contains(&a) {
                     v.push(a);
                 }
+            }
+            // A known stub never goes first, and not at all while there is anything else.
+            if v.iter().any(|a| !is_stub(&a.ip())) {
+                v.retain(|a| !is_stub(&a.ip()));
             }
             Ok(order(name, v))
         }
@@ -327,6 +367,26 @@ mod tests {
         // Another name on the same stub goes to public DNS at once, without failing first.
         let got = choose("cdn.stub-test", vec![stub_addr], || Ok(vec![real]), 443).unwrap();
         assert_eq!(got[0], SocketAddr::new(real, 443));
+    }
+
+    #[test]
+    fn a_real_address_is_not_written_off_and_a_stub_never_comes_back() {
+        // The owner's speaker: Yandex DNS gave i1.sndcdn.com the stub 188.186.154.79 again
+        // after it was marked, and a real CloudFront address (from 1.1.1.1) was marked a stub
+        // for the provider's name filtering. Covers hung for 15 s.
+        let real: IpAddr = "18.165.122.92".parse().unwrap();
+        REAL.lock().unwrap().get_or_insert_with(Default::default).insert(real);
+        FIRST.lock().unwrap().get_or_insert_with(HashMap::new).insert("cdn.real-test".into(), real);
+        stub("https://cdn.real-test/a.jpg");
+        assert!(!is_stub(&real), "a real address stays usable");
+        let stub_ip: IpAddr = "188.186.154.79".parse().unwrap();
+        FIRST.lock().unwrap().get_or_insert_with(HashMap::new).insert("cdn.stub2-test".into(), stub_ip);
+        stub("https://cdn.stub2-test/");
+        assert!(is_stub(&stub_ip));
+        // Public DNS (Yandex) hands the stub out again: it is dropped, the real one is used.
+        let got = choose("cdn.stub2-test", vec![SocketAddr::new(stub_ip, 443)], || Ok(vec![stub_ip, real]), 443).unwrap();
+        assert_eq!(got, vec![SocketAddr::new(real, 443)]);
+        assert!(trusted("1.1.1.1") && trusted("8.8.8.8") && !trusted("77.88.8.8") && !trusted("77.88.8.1"));
     }
 
     #[test]

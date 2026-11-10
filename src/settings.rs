@@ -145,6 +145,10 @@ pub struct Settings {
     /// Android TV / projector with network ADB: "192.168.0.50" or "host:port".
     #[serde(default)]
     pub tv_host: String,
+    /// «Искать фильмы в», per TV: its address → the app «найди фильм … на телевизоре»
+    /// searches in (package); a TV not here: its own search.
+    #[serde(default)]
+    pub tv_search: std::collections::BTreeMap<String, String>,
     /// Music service for requests that name none: "soundcloud" (as before
     /// 0.5.00) or "yandex" (Yandex Music; SoundCloud only when it is named).
     #[serde(default = "music_default")]
@@ -385,6 +389,10 @@ pub struct Settings {
     /// The panel's first-run wizard was gone through (or skipped).
     #[serde(default)]
     pub onboarded: bool,
+    /// The «Нас уже 100+ · Сообщество в Telegram» note was seen. Only a fresh install
+    /// shows it: a config written before it existed (an update) counts as seen.
+    #[serde(default = "yes")]
+    pub party_seen: bool,
     /// Say the panel's address after install and the version after an update.
     #[serde(default = "yes")]
     pub voice_hello: bool,
@@ -685,6 +693,7 @@ impl Default for Settings {
             stats: true,
             share_heard: false,
             tv_host: String::new(),
+            tv_search: Default::default(),
             macros: Vec::new(),
             bypass: String::new(),
             proxy_on: true,
@@ -794,6 +803,7 @@ impl Default for Settings {
             tz_offset: 180,
             panel_pin: String::new(),
             onboarded: false,
+            party_seen: false,
             voice_hello: true,
             extra: serde_json::Map::new(),
         }
@@ -1165,6 +1175,8 @@ mod tests {
         assert_eq!(s.led_order, "rgb");
         assert!(s.onboarded, "no wizard for existing users");
         assert!(!Settings::default().onboarded, "wizard on a fresh install");
+        assert!(s.party_seen, "no Telegram community note after an update");
+        assert!(!Settings::default().party_seen, "the note on a fresh install");
         assert!(!s.share_heard && !Settings::default().share_heard, "Alice's phrases are not shared unless allowed");
         // The old file is kept as it was.
         assert!(crate::fsx::read_string(&d.join("config.v0.json")).unwrap().contains("2-1-x"));

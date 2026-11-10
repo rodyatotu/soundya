@@ -489,6 +489,7 @@ impl Controller {
         settings["light_speed"] = self.settings.light_speed.into();
         settings["light_intensity"] = self.settings.light_intensity.into();
         settings["onboarded"] = self.settings.onboarded.into();
+        settings["party_seen"] = self.settings.party_seen.into();
         settings["pin_on"] = (!self.settings.panel_pin.is_empty()).into();
         settings["alice_voice"] = self.settings.alice_voice.into();
         settings["planner_on"] = self.settings.planner_on.into();
@@ -543,6 +544,7 @@ impl Controller {
         settings["alarm_own"] = self.settings.alarm_own.into();
         settings["alarm_volume"] = self.settings.alarm_volume.into();
         settings["alarm_louder"] = self.settings.alarm_louder.into();
+        settings["tv_search"] = serde_json::json!(self.settings.tv_search);
         settings["pc_power"] = self.settings.pc_power.into();
         settings["pc_apps"] = self.settings.pc_apps.into();
         settings["pc_tg"] = self.settings.pc_tg.into();
@@ -1033,6 +1035,17 @@ impl Controller {
         new.tv_host = new.tv_host.trim().to_owned();
         self.shared.tv.store(new.tv_configured(), Ordering::Release);
         alice::set_tv(new.tv_configured());
+        // Only the TVs there are, each with a package name (or none: its own search).
+        let hosts: Vec<String> = new.tvs().into_iter().map(|t| t.host).collect();
+        new.tv_search = std::mem::take(&mut new.tv_search)
+            .into_iter()
+            .map(|(h, p)| (h.trim().to_owned(), p.trim().to_owned()))
+            .filter(|(h, p)| hosts.contains(h) && !p.is_empty())
+            .collect();
+        if let Some((_, p)) = new.tv_search.iter().find(|(_, p)| !tv::valid_package(p)) {
+            return format!("error: «{p}» — не имя приложения (например ru.kinopoisk.tv)");
+        }
+        tv::set_search_apps(new.tv_search.clone());
         alice::set_devices(device_names(&new));
         new.pc_keep = new.pc_keep.trim().chars().take(500).collect();
         alice::set_pc_rules(pc_rules(&new));
@@ -1237,6 +1250,15 @@ impl Controller {
                 self.settings.bt_on = true;
                 let note = self.bt_save();
                 let connected = bt::connected(&self.settings.bt_mac);
+                // Let go when switched off: connect it again now.
+                if !connected {
+                    let mac = self.settings.bt_mac.clone();
+                    thread::spawn(move || {
+                        if let Err(e) = bt::connect(&mac) {
+                            eprintln!("bt: {mac}: not connected again: {e}");
+                        }
+                    });
+                }
                 // A plain «OK» (the page shows nothing): the switch itself shows where it plays.
                 send_to(&reply, if connected { if note.is_empty() { "OK".into() } else { format!("OK{note}") } }
                     else { format!("OK: музыка пойдёт в «{}», как только оно подключится{note}", self.settings.bt_name) });
@@ -1244,6 +1266,16 @@ impl Controller {
             "off" => {
                 self.settings.bt_on = false;
                 let note = self.bt_save();
+                // The music is back on the speaker; the device is let go for a phone.
+                let mac = self.settings.bt_mac.clone();
+                if bt::valid_mac(&mac) {
+                    bt::set_connected(&mac, false);
+                    thread::spawn(move || {
+                        if let Err(e) = bt::release(&mac) {
+                            eprintln!("bt: {mac}: not let go: {e}");
+                        }
+                    });
+                }
                 send_to(&reply, if note.is_empty() { "OK".into() } else { format!("OK{note}") });
             }
             "disconnect" | "forget" => {
@@ -1262,7 +1294,7 @@ impl Controller {
                     self.bt_save();
                 }
                 thread::spawn(move || {
-                    let r = if forget { bt::forget(&mac) } else { bt::disconnect(&mac) };
+                    let r = if forget { bt::forget(&mac) } else { bt::release(&mac) };
                     send_to(&reply, r.map_or_else(|e| format!("error: {e}"), |()| if forget { "OK: устройство забыто".into() } else { "OK: отключено, музыка на колонке".into() }));
                 });
             }
@@ -2137,6 +2169,19 @@ impl Controller {
             "tv" => {
                 let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
                 let rest = rest.trim();
+                // The panel's «Искать фильмы в» for one of several TVs: that TV's apps.
+                if what == "appsat" {
+                    let Some(host) = self.settings.tvs().into_iter().map(|t| t.host).find(|h| h == rest) else {
+                        send_to(&reply, "error: такого телевизора нет в настройках".into());
+                        return;
+                    };
+                    let dir = self.dir.clone();
+                    thread::spawn(move || match tv::run(&host, &dir, &alice::TvAction::Apps) {
+                        Ok(json) => send_to(&reply, json),
+                        Err(e) => send_to(&reply, serde_json::json!({ "error": e }).to_string()),
+                    });
+                    return;
+                }
                 let action = match what {
                     "ping" => Some(alice::TvAction::Ping),
                     "wake" | "on" => Some(alice::TvAction::Wake),
@@ -3513,6 +3558,7 @@ fn daemon() {
     alarm::run(&dir, tx.clone());
     adbkeep::configure(settings.adb_keep);
     alice::set_tv(settings.tv_configured());
+    tv::set_search_apps(settings.tv_search.clone());
     alice::set_devices(device_names(&settings));
     alice::set_pc_rules(pc_rules(&settings));
     alarm::set_morning(settings.morning_on);

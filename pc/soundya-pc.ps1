@@ -236,12 +236,60 @@ function Process-Names($app) {
     $names | Where-Object { $_ } | Select-Object -Unique
 }
 
+$FocusCode = @'
+using System;
+using System.Runtime.InteropServices;
+public static class SoundyaFocus {
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    public static bool Front(IntPtr h) {
+        if (IsIconic(h)) ShowWindow(h, 9); // SW_RESTORE
+        // Windows lets a background program raise a window only right after a key press: Alt.
+        keybd_event(0x12, 0, 0, UIntPtr.Zero);
+        keybd_event(0x12, 0, 2, UIntPtr.Zero);
+        return SetForegroundWindow(h);
+    }
+}
+'@
+
+# The app is running already: its window to the front (or, hidden in the tray, its own
+# .exe once more — single-instance apps show themselves). Telegram Portable's launcher
+# refused a second start: «Другой экземпляр Telegram Desktop уже запущен».
+function Focus-Running($app) {
+    $names = @(Process-Names $app) | Where-Object { $_.Length -ge 3 }
+    if ($names.Count -eq 0) { return $null }
+    $procs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $p = $_
+        $names | Where-Object { $p.ProcessName -eq $_ -or ($_.Length -ge 4 -and $p.ProcessName -like "$_*") }
+    })
+    if ($procs.Count -eq 0) { return $null }
+    if (-not ('SoundyaFocus' -as [type])) { Add-Type -TypeDefinition $FocusCode -Language CSharp }
+    $win = $procs | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
+    if ($win) {
+        [void][SoundyaFocus]::Front($win.MainWindowHandle)
+        Log "open '$($app.Name)': running, window to the front ($($win.ProcessName))"
+        return "Переключаю на $($app.Name)"
+    }
+    $exe = $procs | ForEach-Object { try { $_.Path } catch { $null } } | Where-Object { $_ } | Select-Object -First 1
+    if ($exe) {
+        Start-Process -FilePath $exe
+        Log "open '$($app.Name)': running in the tray, started its own exe $exe"
+        return "Открываю $($app.Name)"
+    }
+    $null
+}
+
 function Do-Open([string]$name) {
     if (-not $name) { return 'Скажите, что открыть' }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $app = Find-App $name
     Log ("find '{0}': {1:N1} s" -f $name, $clock.Elapsed.TotalSeconds)
     if (-not $app) { return "Не нашла на компьютере программу $name" }
+    if ($app.Path -notmatch '^(steam|shell):' -and $app.Path -ne $app.Name) {
+        try { $done = Focus-Running $app; if ($done) { return $done } } catch { Log "focus '$name' failed: $_" }
+    }
     try {
         if ($app.Path -match '\.(lnk|url|exe)$' -or $app.Path -match '^(steam|shell):') {
             # Through Explorer, exactly like a double click: works for programs that

@@ -254,6 +254,8 @@
   .modal-card.report { max-width: 560px; max-height: 92vh; overflow: auto; }
   .modal-card .field textarea { margin-top: 4px; min-height: 56px; }
   .hint, .msg, ul.reports li, pre.notes { overflow-wrap: anywhere; }
+  .ledrow { align-items: center; flex-wrap: nowrap; }
+  .ledrow button { flex: 0 0 auto; min-width: 110px; }
   .ledrow select { flex: 1; }
   .outrow { display: flex; align-items: center; gap: 10px; }
   .outrow .seg { flex: 1; margin-top: 0; }
@@ -288,6 +290,9 @@
     display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; font-size: 12px;
     color: var(--muted); border-radius: 999px;
   }
+  /* One dot for everything: green — fine, yellow — something to look at, red — broken; a tap opens «Сервисы». */
+  .netpill.statusdot { padding: 8px; background: transparent; border: 0; }
+  .netpill.statusdot .dot { width: 10px; height: 10px; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
   .dot.good { background: #2f9e5b; } .dot.slow { background: #e0a100; } .dot.bad { background: var(--err); }
   h2.section { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
@@ -369,6 +374,10 @@
   input[type=text], input[type=password], label.field select, .bypassbox select, .bypassbox textarea, ol.steps input, ol.steps select, #macroadd {
     background: var(--field); border: 1px solid var(--glass-edge); border-radius: 14px;
   }
+  /* Every list dressed like the text fields: the ring's colour check showed white system lists. */
+  select { font: inherit; color: var(--ink); background: var(--field, var(--bg)); border: 1px solid var(--glass-edge, var(--line));
+    border-radius: 14px; padding: 10px 12px; min-width: 0; }
+  select option { color: #111; }
   input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255, 106, 31, .18); }
   .bar { height: 5px; border-radius: 3px; background: var(--line); }
   .bar i { background: linear-gradient(90deg, #ff7a1a, #ff3d5a); border-radius: 3px; }
@@ -396,7 +405,8 @@
   .ambi-ring i:nth-child(1) { --n: 0; } .ambi-ring i:nth-child(2) { --n: 1; } .ambi-ring i:nth-child(3) { --n: 2; }
   .ambi-ring i:nth-child(4) { --n: 3; } .ambi-ring i:nth-child(5) { --n: 4; } .ambi-ring i:nth-child(6) { --n: 5; }
   .ambi-ring[data-mode=pulse] i { animation: ambipulse 1.1s ease-in-out infinite; }
-  #lightmode { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  #lightmode { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  @media (max-width: 560px) { #lightmode { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   #lightmode button { font-size: 13px; padding: 9px 4px; }
   .ambi-ring[data-mode=rainbow] { background: conic-gradient(#ff2a2a, #ffd22a, #2aff6a, #2ad4ff, #7b3bff, #ff2a9a, #ff2a2a);
     -webkit-mask: radial-gradient(circle, transparent 52%, #000 53%); mask: radial-gradient(circle, transparent 52%, #000 53%);
@@ -412,6 +422,15 @@
     animation: ambispin calc(1.2s * var(--spd, 1)) linear infinite; }
   .ambi-ring[data-mode=running] i { display: none; }
   @keyframes ambispin { to { transform: rotate(360deg); } }
+  .ambi-ring[data-mode=fire] i { animation: ambifire calc(.5s * var(--spd, 1)) ease-in-out infinite alternate;
+    background: conic-gradient(from calc(var(--n) * 60deg), var(--c2) 0 20deg, var(--c1) 20deg 52deg, transparent 52deg 360deg); }
+  .ambi-ring[data-mode=fire] i:nth-child(2n) { animation-duration: calc(.37s * var(--spd, 1)); }
+  .ambi-ring[data-mode=fire] i:nth-child(3n) { animation-duration: calc(.61s * var(--spd, 1)); }
+  @keyframes ambifire { 0% { opacity: calc(var(--b) * .45); } 60% { opacity: var(--b); } 100% { opacity: calc(var(--b) * .7); } }
+  .ambi-ring[data-mode=beat] i { animation: ambibeat .55s ease-out infinite; background: conic-gradient(from calc(var(--n) * 60deg), var(--c2) 0 52deg, transparent 52deg 360deg); }
+  @keyframes ambibeat { 0% { opacity: var(--b); } 100% { opacity: .1; } }
+  .ambi-ring[data-mode=spectrum] i { animation: ambihue calc(6s * var(--spd, 1)) linear infinite; }
+  @keyframes ambihue { to { filter: hue-rotate(360deg) drop-shadow(0 0 10px var(--c1)); } }
   @keyframes ambibreathe { 0%, 100% { opacity: .15; } 50% { opacity: var(--b); } }
   .ambi-ring[data-mode=eq] i { animation: ambieq .9s ease-in-out infinite alternate; }
   .ambi-ring[data-mode=eq] i:nth-child(2n) { animation-duration: .6s; } .ambi-ring[data-mode=eq] i:nth-child(3n) { animation-duration: .75s; }
@@ -468,9 +487,49 @@
     50% { transform: translate(8vw, 6vh) scale(1.12); }
     100% { transform: translate(-6vw, 10vh) scale(.94); }
   }
-  html.bg-static .bg i { animation: none; }
+  /* «Движение»: other ways for the same four spots to move — still only transform/opacity (GPU, no blur). */
+  html.bgm-aurora .bg i { animation-name: bgaurora; }
+  @keyframes bgaurora {
+    0% { transform: translate(-10vw, 0) scale(1.7, .55) rotate(-10deg); }
+    50% { transform: translate(14vw, 5vh) scale(2, .6) rotate(6deg); }
+    100% { transform: translate(-4vw, -4vh) scale(1.5, .5) rotate(-3deg); }
+  }
+  html.bgm-swirl .bg { inset: -35vmax; animation: bgswirl calc(80s / var(--bg-speed)) linear infinite; }
+  html.bgm-swirl .bg i { animation-name: bgswirlspot; }
+  @keyframes bgswirl { to { transform: rotate(360deg); } }
+  @keyframes bgswirlspot { 0% { transform: scale(1); } 100% { transform: scale(1.2) translate(4vw, 3vh); } }
+  html.bgm-pulse .bg i { animation-name: bgpulse; animation-duration: calc(9s / var(--bg-speed)); }
+  html.bgm-pulse .bg i:nth-child(2) { animation-duration: calc(11s / var(--bg-speed)); }
+  html.bgm-pulse .bg i:nth-child(3) { animation-duration: calc(13s / var(--bg-speed)); }
+  @keyframes bgpulse { 0% { transform: scale(.8); opacity: calc(var(--bg-int) * .55); } 100% { transform: scale(1.25); opacity: var(--bg-int); } }
+  html.bgm-lava .bg i { animation-name: bglava; animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  @keyframes bglava {
+    0% { transform: translate(0, 30vh) scale(.9, 1.1); }
+    50% { transform: translate(5vw, -10vh) scale(1.15, .9); }
+    100% { transform: translate(-3vw, -35vh) scale(.95, 1.2); }
+  }
+  html.bg-static .bg, html.bg-static .bg i { animation: none; }
+  /* «#glass»: the Mac menu bar's window — the whole soundya as it is, only without the
+     page's own background: the popover's glass shows through. */
+  html.glass, html.glass body { background: transparent !important; }
+  html.glass .bg, html.glass body::before, html.glass body::after { display: none !important; }
+  /* The Mac window shows only the blocks chosen under its gear (glassPick): no tabs, nothing else asked for. */
+  html.glass:not(.glass-full) main > nav, html.glass:not(.glass-full) main > section.tab:not(#tab-home) { display: none !important; }
+  html.glass:not(.glass-full) #tab-home { display: block !important; }
+  html.glass:not(.glass-noplayer) .glasshide-player { display: none; }
+  html.glass.glass-noplayer section.player { display: none !important; }
+  /* Nothing that only takes room: the switch shows where it plays, the gear chooses the blocks. */
+  html.glass #listennote, html.glass .homeedit, html.glass #tab-home .msg:empty, html.glass .msg:empty { display: none !important; }
+  html.glass #tab-home { padding-bottom: 4px; }
+  html.glass #tab-home .widget { margin-bottom: 10px; }
+  .glassbtn { display: none; }
+  html.glass .glassbtn { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0;
+    border-radius: 50%; background: transparent; border: 0; color: var(--muted); }
+  .glasspick { position: fixed; top: 52px; right: 12px; z-index: 60; width: min(300px, calc(100vw - 24px)); max-height: calc(100vh - 70px);
+    overflow: auto; padding: 12px; border-radius: 16px; background: var(--solid); border: 1px solid var(--glass-edge); box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+  .glasspick label { display: flex; align-items: center; gap: 8px; padding: 6px 2px; font-size: 14px; }
   html.bg-off .bg { display: none; }
-  @media (prefers-reduced-motion: reduce) { .bg i { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .bg, .bg i { animation: none !important; } }
   section, .modalcard, .modal-card, nav {
     position: relative;
     background: linear-gradient(160deg, rgba(255,255,255,.16), rgba(255,255,255,.04) 40%), var(--card);
@@ -713,9 +772,6 @@
   /* iPhone-like wheels: scroll, the middle row is the choice. */
 
   /* ---- Главная, витрины, очередь, поиск (2026-11 redesign) ---- */
-  .statusrow { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; margin-bottom: 12px; border-radius: 18px; cursor: pointer;
-    background: color-mix(in srgb, var(--ink) 5%, transparent); border: 1px solid var(--line); }
-  .statusrow:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
   .spill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 13px;
     background: var(--field, var(--bg)); border: 1px solid var(--glass-edge); white-space: nowrap; }
   .spill small { color: var(--muted); }
@@ -925,6 +981,9 @@
   #gcals .check { display: flex; margin: 4px 0; }
   #tab-plans .row input[type=date], #tab-plans .row input[type=time], #tab-plans .row select { flex: 1 1 130px; min-width: 0; width: auto; appearance: auto; }
   .palettes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
+  #bgmotion { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  #bgmotion button { font-size: 13px; padding: 9px 4px; }
+  @media (max-width: 560px) { #bgmotion { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   .palettes button { height: 44px; border-radius: 14px; border: 2px solid transparent; padding: 0; }
   .palettes button.on { border-color: var(--ink); }
 </style>
@@ -935,10 +994,13 @@
   <header>
     <h1>sound<span>ya</span></h1>
     <div class="headright">
-      <button class="netpill" id="netpill" onclick="openSettings('net')" title="Соединение с SoundCloud">
-        <i class="dot" id="netdot"></i><span id="nettext">сеть…</span>
+      <button class="netpill statusdot" id="netpill" onclick="openStatus()" title="Состояние" aria-label="Состояние">
+        <i class="dot" id="netdot"></i><span id="nettext" hidden></span>
       </button>
       <div class="state" id="state">…</div>
+      <button class="glassbtn" id="glassbtn" onclick="toggleGlassPick()" title="Что показывать в этом окне" aria-label="Что показывать в этом окне">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      </button>
     </div>
   </header>
 
@@ -1111,17 +1173,23 @@
       <select id="plandue"><option value="720">в 12:00</option><option value="900">в 15:00</option><option value="1080">в 18:00</option>
         <option value="1200">в 20:00</option><option value="1380">в 23:00</option><option value="1440">без времени (не предупреждать)</option></select>
     </label>
-    <label class="switch"><input type="checkbox" id="briefon"><span><b>Утренняя сводка по времени</b>
-      <small>Алиса сама расскажет расписание, задачи и сроки на день.</small></span></label>
-    <label class="switch"><input type="checkbox" id="briefphrase"><span><b>Сводка по фразе «Алиса, доброе утро»</b>
-      <small>Пока выключено, «доброе утро» остаётся Алисе.</small></span></label>
-    <div class="row">
-      <input type="time" id="briefat" value="08:00">
-      <select id="briefdays"><option value="all">Каждый день</option><option value="weekdays">По будням</option></select>
-    </div>
     <div class="row"><button class="primary" onclick="savePlanSettings()">Сохранить</button></div>
     <div class="msg" id="plansetmsg"></div>
+    </details>
 
+    <details class="psect"><summary>Сводка</summary>
+    <p class="hint">Колонка расскажет задачи на день — сначала что сделать и к какому сроку, потом встречи из календаря.
+      Если утро после будильника уже рассказало планы, сводка в этот день молчит.</p>
+    <label class="switch"><input type="checkbox" id="briefon"><span><b>Сводка по времени</b>
+      <small>Каждый день в выбранное время.</small></span></label>
+    <div class="row">
+      <input type="time" id="briefat" value="08:00" aria-label="Время сводки">
+      <select id="briefdays" aria-label="Дни"><option value="all">Каждый день</option><option value="weekdays">По будням</option></select>
+    </div>
+    <label class="switch"><input type="checkbox" id="briefphrase"><span><b>Сводка по фразе «Алиса, доброе утро»</b>
+      <small>Пока выключено, «доброе утро» остаётся Алисе. «Какие у меня сегодня планы» работает всегда.</small></span></label>
+    <div class="row"><button class="primary" onclick="savePlanSettings('briefmsg')">Сохранить</button></div>
+    <div class="msg" id="briefmsg"></div>
     </details>
     <details class="psect"><summary>Google Календарь и Задачи <span class="chip" id="gchip"></span></summary>
     <p class="hint" id="gstate"></p>
@@ -1229,8 +1297,6 @@
   </section>
 
   <section class="tab on" id="tab-home">
-    <div class="statusrow" id="statusrow" role="button" tabindex="0" onclick="openStatus()" onkeydown="if (event.key === 'Enter') openStatus()"
-      title="Сервисы и устройства"></div>
     <div class="widget" data-w="weather">
       <div class="whead"><b>Погода</b><span class="hint" id="wcity"></span></div>
       <div id="wweather" class="wwx"><p class="hint">Загружаю…</p></div>
@@ -1326,6 +1392,16 @@
       <button data-bg="anim" role="radio">Живой</button>
       <button data-bg="static" role="radio">Без движения</button>
       <button data-bg="off" role="radio">Простой</button>
+    </div>
+    <div id="bgmotionbox">
+      <div class="field">Движение</div>
+      <div class="seg" id="bgmotion" role="radiogroup">
+        <button data-motion="float" role="radio">Плавание</button>
+        <button data-motion="aurora" role="radio">Сияние</button>
+        <button data-motion="swirl" role="radio">Вихрь</button>
+        <button data-motion="pulse" role="radio">Дыхание</button>
+        <button data-motion="lava" role="radio">Лава-лампа</button>
+      </div>
     </div>
     <div class="field">Палитра</div>
     <div class="palettes" id="bgpal"></div>
@@ -1660,6 +1736,9 @@
       <button data-mode="rainbow" role="radio">Радуга</button>
       <button data-mode="breathe" role="radio">Дыхание</button>
       <button data-mode="running" role="radio">Бегущий огонь</button>
+      <button data-mode="fire" role="radio">Огонь</button>
+      <button data-mode="beat" role="radio">Вспышки</button>
+      <button data-mode="spectrum" role="radio">Спектр</button>
     </div>
     <p class="hint" id="lightmodehint"></p>
     <div class="field">Палитра</div>
@@ -1815,7 +1894,7 @@
     <p class="hint">Голосом: «Алиса, включи музыку в наушниках», «верни музыку на колонку». В плеере — значок Bluetooth в «Где играет».</p>
 
     <h2 class="section" id="tvsection">Телевизор / проектор</h2>
-    <p class="hint">Android TV голосом: «включи проектор», «открой ютуб на проекторе», «найди фильм дюна на телевизоре»,
+    <p class="hint">Android TV голосом: «включи проектор», «открой ютуб на проекторе», «найди фильм дюна на телевизоре» (сам включит телевизор),
       «включи на ютубе котиков на проекторе», «пауза на проекторе», «сделай громче на телевизоре».
       На телевизоре: «Настройки» → «Об устройстве» → 7 раз нажмите на «Сборка», затем в «Для разработчиков» включите
       «Отладку по USB» (и «Отладку по сети», если такой пункт есть). Адрес — в «Сеть» → ваша сеть.</p>
@@ -1833,6 +1912,12 @@
     </div>
     <div class="row">
       <button class="primary" onclick="testTv()" id="tvtestbtn">Сохранить и подключить</button>
+    </div>
+    <div class="field">Поиск фильмов
+      <p class="hint">«Алиса, найди фильм Колобок на телевизоре»: телевизор включится и найдёт фильм в выбранном приложении.
+        Если приложение не примет поиск — откроется общий поиск телевизора. У каждого телевизора — своё.</p>
+      <div id="tvsearch"></div>
+      <div class="msg" id="tvsearchmsg"></div>
     </div>
     <label class="check">
       <input type="checkbox" id="remotetab" onchange="saveRemoteTab()">
@@ -2286,6 +2371,12 @@
       </div>
     </div>
   </div>
+  <div class="glasspick" id="glasspick" hidden>
+    <b>Что показывать в этом окне</b>
+    <p class="hint">Только для этого Mac. Выключенное не загружается с колонки.</p>
+    <div id="glasslist"></div>
+    <label><input type="checkbox" id="glassfull"><span>Вся панель с вкладками</span></label>
+  </div>
 </main>
 
 <div class="modal" id="updmodal" role="dialog" aria-modal="true" aria-labelledby="updmodaltitle" hidden>
@@ -2345,6 +2436,23 @@
     <div class="row"><button onclick="closeEdit()">Отмена</button><button class="primary" onclick="saveEdit()">Сохранить</button></div>
   </div>
 </div>
+<script>
+// The Mac app's menu bar window opens the page as «/#glass»: no background of its own,
+// and only the blocks chosen under its gear (kept in this Mac's WebKit storage).
+const GLASS = location.hash === '#glass';
+if (GLASS) document.documentElement.classList.add('glass');
+const GLASS_DEFAULT = { player: true, show: ['scenes'], full: false };
+function glassPrefs() {
+  try { return Object.assign({}, GLASS_DEFAULT, JSON.parse(localStorage.getItem('soundya-glass') || '{}')); } catch (e) { return Object.assign({}, GLASS_DEFAULT); }
+}
+function glassApply() {
+  if (!GLASS) return;
+  const g = glassPrefs();
+  document.documentElement.classList.toggle('glass-full', !!g.full);
+  document.documentElement.classList.toggle('glass-noplayer', !g.player);
+}
+glassApply();
+</script>
 <script>
 
 const $ = id => document.getElementById(id);
@@ -2620,7 +2728,6 @@ function renderNet(n) {
   const labels = { good: 'хорошее', slow: 'медленное', bad: 'плохое', down: 'нет связи', unknown: 'проверяю…' };
   const short = { good: 'сеть ок', slow: 'сеть медленная', bad: 'сеть плохая', down: 'нет связи', unknown: 'сеть…' };
   const cls = { good: 'good', slow: 'slow', bad: 'bad', down: 'bad' }[level] || '';
-  $('netdot').className = 'dot ' + cls;
   $('nettext').textContent = short[level];
   $('netverdict').textContent = labels[level];
   $('netverdict').className = cls;
@@ -2660,6 +2767,9 @@ const LIGHT_HINTS = {
   rainbow: 'Радуга медленно вращается, громкая музыка делает её ярче.',
   breathe: 'Кольцо спокойно дышит цветом «Тихо».',
   running: 'Огонёк с хвостом бежит по кругу.',
+  fire: 'Кольцо мерцает как пламя из двух цветов и разгорается на басе.',
+  beat: 'Вспышка цвета «Громко» на каждом ударе баса, между ними — тихий «Тихо».',
+  spectrum: 'Цвет сам следует за музыкой: бас — тёплый, звонкое — холодный; громче — ярче.',
 };
 let lightMode = 'solid';
 function renderLight(s) {
@@ -2942,6 +3052,46 @@ async function loadMacros() {
     }, '', right));
   }
 }
+// «Поиск фильмов»: per TV (by its address) the app to search in; '' — the TV's own search.
+const tvSearchApps = {};
+function renderTvSearch(st) {
+  const box = $('tvsearch'), map = st.tv_search || {};
+  const tvs = [];
+  if ((st.tv_host || '').trim()) tvs.push({ host: st.tv_host.trim(), label: st.tv_name || 'Телевизор' });
+  for (const t of st.tvs_more || []) if ((t.host || '').trim()) tvs.push({ host: t.host.trim(), label: t.name || t.host });
+  box.replaceChildren();
+  if (!tvs.length) { const p = document.createElement('p'); p.className = 'hint'; p.textContent = 'Сначала добавьте телевизор выше.'; box.append(p); return; }
+  for (const t of tvs) {
+    const row = document.createElement('div'); row.className = 'row devrow';
+    const name = document.createElement('b'); name.textContent = t.label;
+    const sel = document.createElement('select'); sel.className = 'tvsearchapp'; sel.dataset.host = t.host;
+    const list = tvSearchApps[t.host];
+    const cur = map[t.host] || '';
+    const opts = [['', 'Общий поиск телевизора']];
+    const pkgs = list ? [...list.apps].sort((x, y) => (list.names[x] || x).localeCompare(list.names[y] || y, 'ru')) : [];
+    if (cur && !pkgs.includes(cur)) pkgs.unshift(cur);
+    for (const p of pkgs) opts.push([p, list && list.names[p] ? list.names[p] : p]);
+    sel.replaceChildren(...opts.map(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; return o; }));
+    sel.value = cur;
+    sel.onchange = saveTvSearch;
+    const b = document.createElement('button'); b.className = 'ghost'; b.textContent = list ? 'Обновить список' : 'Загрузить приложения';
+    b.onclick = async () => {
+      busy($('tvsearchmsg'), `Спрашиваю «${t.label}»…`);
+      const r = await postJSON('tv appsat ' + t.host);
+      if (r.error || !r.apps) { show($('tvsearchmsg'), 'error: ' + (r.error || 'телевизор не ответил')); return; }
+      tvSearchApps[t.host] = { apps: r.apps, names: r.names || {} };
+      busy($('tvsearchmsg'), ''); renderTvSearch(settings);
+    };
+    row.append(name, sel, b);
+    box.append(row);
+  }
+}
+async function saveTvSearch() {
+  const map = {};
+  document.querySelectorAll('#tvsearch .tvsearchapp').forEach(s => { if (s.value) map[s.dataset.host] = s.value; });
+  show($('tvsearchmsg'), await post('/api/settings', JSON.stringify({ tv_search: map })));
+  settingsLoaded = false; refresh();
+}
 async function loadTvApps() {
   busy($('macromsg'), 'Спрашиваю телевизор…');
   const r = await postJSON('tv apps');
@@ -2973,6 +3123,49 @@ let listening = false, listenTrack = null, listenOffset = 0, listenGen = null, l
 // and a moment late. After that only a real jump (seek, new track) restarts it.
 let listenBase = null, listenAlign = null;
 const la = () => $('listenaudio');
+// Safari and the Mac app's window (WebKit) do not play the speaker's stream from a plain
+// address: it has no length and no byte ranges. There the page fetches it itself and hands
+// it to the player through MediaSource (Chrome keeps the plain address).
+const APPLE_WEBKIT = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|OPR/.test(navigator.userAgent);
+let mseCtl = null;
+function stopListenAudio() {
+  if (mseCtl) { mseCtl.abort(); mseCtl = null; }
+  const a = la(); a.pause(); a.removeAttribute('src'); a.load();
+}
+function streamInto(a, url) {
+  if (mseCtl) { mseCtl.abort(); mseCtl = null; }
+  if (!APPLE_WEBKIT || !window.MediaSource) { a.src = url; return; }
+  const ms = new MediaSource(), ctl = new AbortController();
+  mseCtl = ctl;
+  a.src = URL.createObjectURL(ms);
+  ms.addEventListener('sourceopen', async () => {
+    try {
+      const r = await fetch(url, { signal: ctl.signal });
+      if (!r.ok) throw new Error('stream ' + r.status);
+      const mime = (r.headers.get('Content-Type') || 'audio/mp4').split(';')[0].trim();
+      const type = mime === 'audio/mp4' ? 'audio/mp4; codecs="mp4a.40.2"' : mime;
+      if (!MediaSource.isTypeSupported(type)) { ctl.abort(); mseCtl = null; a.src = url; return; }
+      const sb = ms.addSourceBuffer(type);
+      sb.mode = 'sequence';
+      const idle = () => new Promise(res => sb.updating ? sb.addEventListener('updateend', res, { once: true }) : res());
+      const reader = r.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done || ctl.signal.aborted) break;
+        await idle();
+        // Not the whole track in memory: what played more than a minute ago goes.
+        if (a.currentTime > 120 && sb.buffered.length && sb.buffered.start(0) < a.currentTime - 90) {
+          try { sb.remove(0, a.currentTime - 60); await idle(); } catch (e) {}
+        }
+        sb.appendBuffer(value);
+      }
+      await idle();
+      if (ms.readyState === 'open' && !ctl.signal.aborted) ms.endOfStream();
+    } catch (e) {
+      if (e.name !== 'AbortError') notePageError('listen (MediaSource): ' + e);
+    }
+  }, { once: true });
+}
 async function beat(on) {
   try { const r = await authed('/api/listen', { method: 'POST', body: JSON.stringify({ id: tabId, on }) }); return r.ok; } catch (e) { return false; }
 }
@@ -2980,7 +3173,7 @@ async function setOutput(where) {
   document.querySelectorAll('#outseg button').forEach(b => b.classList.toggle('on', b.dataset.out === where));
   // Bluetooth: the speaker sends its music to the chosen device (bt.rs); «Колонка» takes it back.
   if (where === 'bt' || (where === 'speaker' && settings && settings.bt_on)) {
-    if (listening) { listening = false; clearInterval(listenBeat); la().pause(); la().removeAttribute('src'); la().load(); beat(false); }
+    if (listening) { listening = false; clearInterval(listenBeat); stopListenAudio(); beat(false); }
     // The switch itself shows where it plays: only a failure is worth a message.
     const res = await post('/api/cmd', where === 'bt' ? 'bt on' : 'bt off');
     if (res.startsWith('error')) show($('actmsg'), res);
@@ -2988,13 +3181,14 @@ async function setOutput(where) {
     return;
   }
   if (where === 'here' && !listening) {
-    if (!(await beat(true))) { setOutput('speaker'); return; }
+    // At once, before the speaker answers: a status in between put the switch back on «Колонка».
     listening = true; listenTrack = null; listenGen = null;
+    if (!(await beat(true))) { listening = false; setOutput('speaker'); return; }
     listenBeat = setInterval(() => beat(true), 5000);
     refresh();
   } else if (where === 'speaker' && listening) {
     listening = false; clearInterval(listenBeat);
-    la().pause(); la().removeAttribute('src'); la().load();
+    stopListenAudio();
     beat(false); refresh();
   }
 }
@@ -3030,7 +3224,7 @@ function syncListen(s) {
     listenOffset = L.seekable ? s.position_ms : 0;
     listenBase = null; listenAlign = null;
     a.addEventListener('playing', () => { listenBase = a.currentTime; }, { once: true });
-    a.src = `/api/stream?id=${s.current_id}&t=${listenOffset}`;
+    streamInto(a, `/api/stream?id=${s.current_id}&t=${listenOffset}`);
     if (!L.seekable) note.append(' Этот трек в браузере начнётся с начала.');
   }
   if (s.state === 'playing' && a.paused) a.play().catch(e => notePageError('listen: ' + e));
@@ -3047,8 +3241,21 @@ const PALETTES = {
   aurora: ['#3cffb4', '#2ad4ff', '#a45cff', '#ff5ca8'],
   sunset: ['#ffb347', '#ff5f6d', '#ffc371', '#c94b4b'],
   mono: ['#8e8e9a', '#c9c9d3', '#5e5e6a', '#a8a8b8'],
+  neon: ['#ff00e6', '#00f0ff', '#7a00ff', '#00ff8c'],
+  lava: ['#ff2a00', '#ff7a00', '#b3001b', '#ffcc00'],
+  forest: ['#2ecc71', '#0b6e4f', '#a8e063', '#1abc9c'],
+  candy: ['#ff9a9e', '#fad0c4', '#a18cd1', '#fbc2eb'],
+  night: ['#1e3c72', '#2a5298', '#6a11cb', '#0f4c75'],
+  mint: ['#43e97b', '#38f9d7', '#4facfe', '#b2fefa'],
+  gold: ['#f7971e', '#ffd200', '#c79a00', '#fff1a8'],
+  cyber: ['#f5ff00', '#ff007c', '#00ffea', '#5d00ff'],
+  berry: ['#8e2de2', '#ff0080', '#4a00e0', '#ff5e62'],
+  ice: ['#e0f7ff', '#74ebd5', '#9face6', '#5ee7df'],
 };
-const BG_DEFAULT = { mode: 'anim', pal: 'soundya', speed: 1, int: 0.6, glass: true };
+const PALETTE_NAMES = { soundya: 'soundya', ocean: 'Океан', aurora: 'Сияние', sunset: 'Закат', mono: 'Графит', neon: 'Неон', lava: 'Лава',
+  forest: 'Лес', candy: 'Сладкое', night: 'Ночь', mint: 'Мята', gold: 'Золото', cyber: 'Кибер', berry: 'Ягоды', ice: 'Лёд' };
+const BG_DEFAULT = { mode: 'anim', motion: 'float', pal: 'soundya', speed: 1, int: 0.6, glass: true };
+const BG_MOTIONS = ['float', 'aurora', 'swirl', 'pulse', 'lava'];
 function bgLoad() { try { return Object.assign({}, BG_DEFAULT, JSON.parse(localStorage.getItem('soundya-bg') || '{}')); } catch (e) { return Object.assign({}, BG_DEFAULT); } }
 function bgApply(b) {
   const r = document.documentElement;
@@ -3059,23 +3266,27 @@ function bgApply(b) {
   r.classList.toggle('bg-static', b.mode === 'static');
   r.classList.toggle('bg-off', b.mode === 'off');
   r.classList.toggle('glass-lite', !b.glass);
+  for (const m of BG_MOTIONS) r.classList.toggle('bgm-' + m, (b.motion || 'float') === m);
 }
 function bgSave(b) { try { localStorage.setItem('soundya-bg', JSON.stringify(b)); } catch (e) {} bgApply(b); bgRender(b); }
 function bgRender(b) {
   document.querySelectorAll('#bgmode button').forEach(x => x.classList.toggle('on', x.dataset.bg === b.mode));
   document.querySelectorAll('#bgpal button').forEach(x => x.classList.toggle('on', x.dataset.pal === b.pal));
+  document.querySelectorAll('#bgmotion button').forEach(x => x.classList.toggle('on', x.dataset.motion === (b.motion || 'float')));
+  $('bgmotionbox').hidden = b.mode !== 'anim';
   $('bgspeed').value = b.speed; $('bgspeedv').textContent = '×' + b.speed;
   $('bgint').value = b.int; $('bgintv').textContent = Math.round(b.int * 100) + '%';
   $('bgglass').checked = b.glass;
 }
 (function () {
   for (const [k, c] of Object.entries(PALETTES)) {
-    const btn = document.createElement('button'); btn.dataset.pal = k; btn.title = k;
+    const btn = document.createElement('button'); btn.dataset.pal = k; btn.title = PALETTE_NAMES[k] || k; btn.setAttribute('aria-label', btn.title);
     btn.style.background = `linear-gradient(135deg, ${c[0]}, ${c[1]} 45%, ${c[2]})`;
     btn.onclick = () => bgSave(Object.assign(bgLoad(), { pal: k }));
     $('bgpal').appendChild(btn);
   }
   document.querySelectorAll('#bgmode button').forEach(x => x.onclick = () => bgSave(Object.assign(bgLoad(), { mode: x.dataset.bg })));
+  document.querySelectorAll('#bgmotion button').forEach(x => x.onclick = () => bgSave(Object.assign(bgLoad(), { motion: x.dataset.motion })));
   $('bgspeed').oninput = () => bgSave(Object.assign(bgLoad(), { speed: Number($('bgspeed').value) }));
   $('bgint').oninput = () => bgSave(Object.assign(bgLoad(), { int: Number($('bgint').value) }));
   $('bgglass').onchange = () => bgSave(Object.assign(bgLoad(), { glass: $('bgglass').checked }));
@@ -3201,13 +3412,43 @@ function saveHomePrefs(p) {
   settings.home_hidden = p.off; settings.home_order = p.order;
   post('/api/settings', JSON.stringify({ home_hidden: p.off, home_order: p.order }));
 }
+/// Is the home block `k` shown here: the speaker's choice, or in the Mac window its own.
+function wantWidget(k) {
+  if (GLASS && !glassPrefs().full) return glassPrefs().show.includes(k);
+  return !homePrefs().off.includes(k);
+}
+function toggleGlassPick() {
+  const box = $('glasspick');
+  box.hidden = !box.hidden;
+  if (box.hidden) return;
+  const g = glassPrefs(), list = $('glasslist');
+  list.replaceChildren();
+  const row = (label, on, fn) => {
+    const l = document.createElement('label'); const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = on;
+    cb.onchange = () => { fn(cb.checked); };
+    const t = document.createElement('span'); t.textContent = label; l.append(cb, t); list.appendChild(l);
+  };
+  const save = p => { try { localStorage.setItem('soundya-glass', JSON.stringify(p)); } catch (e) {} glassApply(); homeWidgets(); loadHome(true); };
+  row('Плеер', g.player, on => save(Object.assign(glassPrefs(), { player: on })));
+  for (const k of Object.keys(WIDGETS)) {
+    row(WIDGETS[k][0], g.show.includes(k), on => {
+      const p = glassPrefs(); p.show = on ? p.show.concat([k]) : p.show.filter(x => x !== k); save(p);
+    });
+  }
+  $('glassfull').checked = !!g.full;
+  $('glassfull').onchange = () => save(Object.assign(glassPrefs(), { full: $('glassfull').checked }));
+}
+document.addEventListener('click', e => {
+  const box = $('glasspick');
+  if (box && !box.hidden && !box.contains(e.target) && !$('glassbtn').contains(e.target)) box.hidden = true;
+});
 function homeWidgets() {
-  const { off, order } = homePrefs();
+  const { order } = homePrefs();
   const home = $('tab-home'), anchor = $('homemsg2');
   for (const k of order) {
     const w = home.querySelector(`.widget[data-w="${k}"]`);
     if (!w) continue;
-    w.hidden = off.includes(k) || !widgetReady(k);
+    w.hidden = !wantWidget(k) || !widgetReady(k);
     home.insertBefore(w, anchor);
   }
 }
@@ -3621,19 +3862,21 @@ async function loadHome(force) {
   if (!statusIn) return;
   if (!force && Date.now() - homeLoaded < 60000) return;
   homeLoaded = Date.now();
-  loadShelves(force);
+  // Only what is shown is asked for (the Mac window: «не нагружать колонку»).
+  if (wantWidget('sc')) loadShelves(force);
   // «Моя музыка» ahead, quietly: its covers are there before the tab is opened.
-  setTimeout(() => { if (settings.token && !$('mylists').children.length) library(); }, 2500);
+  if (!GLASS || glassPrefs().full) setTimeout(() => { if (settings.token && !$('mylists').children.length) library(); }, 2500);
   homeWidgets();
   renderScenes();
-  loadWidgets(force);
+  if (wantWidget('weather') || wantWidget('pc')) loadWidgets(force);
+  if (wantWidget('recent') || wantWidget('foryou')) loadHistory();
+  if (!wantWidget('plans')) return;
   const p = await postJSON('plan json');
   if (!p.error) {
     $('homeplantext').textContent = p.today || '';
     const items = (p.items || []).filter(i => !i.overdue && (i.day === 0 || i.day === null || i.day === undefined)).slice(0, 4);
     $('homeplans').replaceChildren(...items.map(i => { const li = planRow(i); li.querySelectorAll('.del').forEach(b => b.remove()); return li; }));
   } else $('homeplantext').textContent = 'Планы недоступны: ' + p.error;
-  loadHistory();
 }
 // The SoundCloud shelves do not wait for the plans (those can take seconds).
 // A failed try (the speaker restarting, SoundCloud not reachable yet, settings not in yet)
@@ -3654,24 +3897,24 @@ async function loadShelves(force) {
   shelvesRetry = 0;
   $('homeshelves').replaceChildren(...h.shelves.map(sh => shelf(sh.title, sh.items.map(x => plCard(x, $('homemsg2'))))));
 }
-// The row of small statuses on top; a tap opens them all, like an iPhone's control centre.
+// One dot in the player instead of the row of statuses: green, yellow when something
+// needs a look, red when something is broken; hover — what, a tap — «Сервисы».
+// Only what is switched on counts: AirPlay off is not a warning.
+function statusProblems(s) {
+  const st = s.settings || {}, net = s.net || {}, bad = [], warn = [];
+  if (st.soundcloud && s.login === 'refused') bad.push('SoundCloud: вход устарел');
+  if (net.level === 'bad' || net.level === 'down') bad.push(net.level === 'down' ? 'Сеть: нет связи' : 'Сеть: плохая');
+  else if (net.level === 'slow') warn.push('Сеть: медленная');
+  if (st.airplay && s.airplay && s.airplay.error) bad.push('AirPlay: ' + s.airplay.error);
+  if (s.update && s.update.available) warn.push('Есть обновление ' + s.update.latest);
+  return { bad, warn };
+}
 function renderStatusRow(s) {
-  const st = s.settings || {}, net = s.net || {};
-  const pill = (name, cls, text) => `<span class="spill"><i class="dot ${cls}"></i>${name}${text ? ' <small>' + text + '</small>' : ''}</span>`;
-  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const parts = [
-    pill('SoundCloud', !st.soundcloud ? '' : s.login === 'refused' ? 'bad' : s.user ? 'good' : 'slow', ''),
-    pill('Сеть', net.level === 'good' ? 'good' : net.level === 'slow' ? 'slow' : net.level === 'unknown' || !net.level ? '' : 'bad', ''),
-  ];
-  // Green when the receiver is up (ready to take a phone), red on its error; «играет» while it plays.
-  if (st.airplay) { const ap = s.airplay || {}; parts.push(pill('AirPlay', ap.error ? 'bad' : ap.active || ap.ready ? 'good' : 'slow', ap.active ? 'играет' : '')); }
-  const nPc = (st.pc_host || st.pc_mac ? 1 : 0) + (st.pcs_more || []).length, nTv = (st.tv_host ? 1 : 0) + (st.tvs_more || []).length;
-  if (st.pc_on && nPc) parts.push(pill(nPc > 1 ? 'ПК ×' + nPc : 'ПК', 'good', ''));
-  if (st.tv_on && nTv) parts.push(pill(nTv > 1 ? 'ТВ ×' + nTv : 'ТВ', 'good', ''));
-  if (s.update && s.update.available) parts.push(pill('Обновление', 'slow', esc(s.update.latest)));
-  parts.push('<span class="spill more" aria-hidden="true">›</span>');
-  const html = parts.join('');
-  if ($('statusrow').dataset.sig !== html) { $('statusrow').dataset.sig = html; $('statusrow').innerHTML = html; }
+  const { bad, warn } = statusProblems(s), net = s.net || {};
+  const netWord = { good: 'сеть хорошая', slow: 'сеть медленная', bad: 'сеть плохая', down: 'нет связи' }[net.level] || 'сеть проверяется';
+  $('netdot').className = 'dot ' + (bad.length ? 'bad' : warn.length ? 'slow' : net.level === 'good' ? 'good' : net.level ? 'good' : '');
+  const title = bad.concat(warn).join('\n') || 'Всё в порядке · ' + netWord;
+  $('netpill').title = title; $('netpill').setAttribute('aria-label', 'Состояние: ' + title.replace(/\n/g, '; '));
 }
 function openStatus() { $('statussheet').hidden = false; }
 function closeStatus() { $('statussheet').hidden = true; }
@@ -3798,7 +4041,8 @@ function renderHome(s) {
     stat('Соединение', { good: 'хорошее', slow: 'медленное', bad: 'плохое', down: 'нет связи', unknown: 'проверяю' }[net.level] || '—',
       net.level === 'good' ? 'good' : net.level === 'slow' ? 'slow' : net.level === 'unknown' ? '' : 'bad', () => openSettings('net')),
     stat('Музыка по умолчанию', st.music_default === 'yandex' ? 'Яндекс Музыка' : 'SoundCloud', 'good', () => openSettings('speaker')),
-    stat('AirPlay', !st.airplay ? 'выключен' : s.airplay && s.airplay.active ? 'играет' : 'готов', st.airplay ? 'good' : '', () => openSettings('speaker', 'airplay')),
+    stat('AirPlay', !st.airplay ? 'выключен' : s.airplay && s.airplay.error ? 'ошибка' : s.airplay && s.airplay.active ? 'играет' : 'готов',
+      !st.airplay ? '' : s.airplay && s.airplay.error ? 'bad' : 'good', () => openSettings('speaker', 'airplay')),
     stat('Приглушение', { smart: 'умное', calls: 'звонки', notify: 'уведомления', manual: 'вручную', off: 'выключено' }[st.duck_mode] || '—',
       st.duck_mode === 'off' ? '' : 'good', () => openSettings('speaker', 'ducksection')),
     stat('Обновления', s.update && s.update.available ? 'есть ' + s.update.latest : 'последняя версия', s.update && s.update.available ? 'slow' : 'good', () => openSettings('speaker', 'updsection')),
@@ -4316,9 +4560,9 @@ async function addPlan() {
   show($('planmsg'), r);
   if (!r.startsWith('error')) { $('plantitle').value = ''; $('plantime').value = ''; $('planwhen').textContent = whenLabel($('planday').value, ''); setTimeout(loadPlans, 300); }
 }
-async function savePlanSettings() {
+async function savePlanSettings(msg = 'plansetmsg') {
   const [h, m] = ($('briefat').value || '08:00').split(':').map(Number);
-  show($('plansetmsg'), await post('/api/settings', JSON.stringify({
+  show($(msg), await post('/api/settings', JSON.stringify({
     plan_warn: Number($('planwarn').value), plan_due_time: Number($('plandue').value),
     brief_on: $('briefon').checked, brief_phrase: $('briefphrase').checked, brief_at: h * 60 + m, brief_days: $('briefdays').value,
   })));
@@ -4385,7 +4629,8 @@ async function setPlanMode(m) {
   const msg = $('tab-plans').classList.contains('on') ? $('planmsg') : $('planmodemsg');
   busy(msg, '…');
   const r = await post('/api/settings', JSON.stringify({ plan_mode: m }));
-  show(msg, r.startsWith('error') ? r : 'OK: режим «' + (m === 'work' ? 'Рабочий' : 'Обычный') + '»');
+  // The switch shows the mode itself: only a failure is worth a line.
+  if (r.startsWith('error')) show(msg, r); else { msg.className = 'msg'; msg.textContent = ''; }
   settingsLoaded = false; await refresh(); if ($('tab-plans').classList.contains('on')) loadPlans();
 }
 document.querySelectorAll('.planmodeseg button').forEach(b => b.onclick = () => setPlanMode(b.dataset.m));
@@ -4849,8 +5094,12 @@ function maybeWizard(st) {
 }
 
 // ---- «Нас уже 100+» (число — с сервера статистики через колонку) ----
-async function loadParty() {
-  try { if (localStorage.getItem('soundya-party') === 'off') return; } catch (e) {}
+// Only after a fresh install (the speaker keeps «seen»; an update counts as seen).
+let partyAsked = false;
+async function loadParty(st) {
+  if (partyAsked || !st || st.party_seen !== false) return;
+  partyAsked = true;
+  try { if (localStorage.getItem('soundya-party') === 'off') { post('/api/settings', JSON.stringify({ party_seen: true })); return; } } catch (e) {}
   let c;
   try { c = await (await fetch('/api/community')).json(); } catch (e) { return; }
   if (!c.ok || !(c.ever >= 100)) return;
@@ -4860,8 +5109,8 @@ async function loadParty() {
 function closeParty() {
   $('party').hidden = true;
   try { localStorage.setItem('soundya-party', 'off'); } catch (e) {}
+  post('/api/settings', JSON.stringify({ party_seen: true }));
 }
-loadParty();
 
 // ---- «На экран Домой»: на телефоне панель открывается как приложение ----
 function appHint() {
@@ -5001,7 +5250,9 @@ document.querySelectorAll('nav button').forEach(b => {
   };
 });
 try {
-  const saved = localStorage.getItem('tab');
+  // «/#plans» (the Mac widget's «+») opens that tab.
+  const hashTab = /^#(plans|mine|home|settings)$/.exec(location.hash);
+  const saved = hashTab ? hashTab[1] : (GLASS && !glassPrefs().full) ? 'home' : localStorage.getItem('tab');
   const btn = saved && document.querySelector('nav button[data-tab="' + saved + '"]');
   if (btn) setTimeout(() => btn.click(), 0);
 } catch (e) {}
@@ -5091,7 +5342,8 @@ async function refresh() {
     st.append(busyText);
   } else if (s.airplay && s.airplay.active) {
     st.textContent = s.state === 'paused' ? 'играет AirPlay · SoundCloud на паузе' : 'играет AirPlay';
-  } else st.textContent = names[s.state] || s.state;
+  // «Играет / остановлено» is what the play button already shows: only what it does not.
+  } else st.textContent = '';
   renderAirplay(s.airplay);
   lastStatus = s;
   renderUpdate(s.update);
@@ -5205,6 +5457,7 @@ async function refresh() {
     renderCal(settings);
     renderDisp(settings, s.device);
     maybeWizard(settings);
+    loadParty(settings);
     renderEq(settings);
     $('pchost').value = settings.pc_host || '';
     for (const [id, k] of [['pcpower', 'pc_power'], ['pcapps', 'pc_apps'], ['pctg', 'pc_tg'], ['pcsearch', 'pc_search'], ['pcplain', 'pc_plain']]) $(id).checked = settings[k] !== false;
@@ -5221,6 +5474,7 @@ async function refresh() {
     $('stats').checked = settings.stats !== false;
     $('shareheard').checked = settings.share_heard === true;
     $('tvhost').value = settings.tv_host || '';
+    renderTvSearch(settings);
     $('fsc').checked = settings.soundcloud !== false;
     $('fpc').checked = settings.pc_on !== false;
     $('ftv').checked = settings.tv_on !== false;
@@ -5815,7 +6069,8 @@ post('/api/cmd', 'update auto').then(refresh);
   const DAYS = { once: 'один раз', daily: 'каждый день', weekdays: 'по будням', weekend: 'по выходным' };
   const STAGE = { Music: 'играет музыка', Alice: 'говорит Алиса', Check: 'спрашивает «Вы проснулись?»', Question: 'ждёт ответ на пример', Snoozed: 'отложен на 5 минут' };
   const srcWord = s => !s ? 'ваша музыка' : s === 'likes' ? 'лайки' : s === 'recs' ? 'рекомендации'
-    : s.startsWith('playlist:') ? 'плейлист «' + s.slice(9) + '»' : s.startsWith('play:') ? '«' + s.slice(5) + '»' : s;
+    : s.startsWith('playlist:') ? 'плейлист «' + s.slice(9) + '»' : s.startsWith('play:') ? '«' + s.slice(5) + '»'
+    : s.startsWith('link:') ? '«' + (s.split('soundcloud.com/')[1] || 'ссылка').split('/').filter(Boolean).join(' — ').replace(/-/g, ' ') + '»' : s;
   const send = (cmd) => fetch('/api/cmd', { method: 'POST', body: cmd }).then(r => r.text()).catch(e => 'error: ' + e);
 
   const box = document.createElement('div');
@@ -5836,10 +6091,9 @@ post('/api/cmd', 'update auto').then(refresh);
     <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:8px">
       <input type="time" id="altime" value="07:00">
       <select id="aldays" style="${FIELD}">${Object.entries(DAYS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
-      <input type="text" id="alsrc" placeholder="Под что: лайки, рекомендации, плейлист утро" style="flex:1;min-width:180px">
+      <input type="text" id="alsrc" placeholder="Под что: лайки, рекомендации, плейлист утро или ссылка SoundCloud" style="flex:1;min-width:180px">
       <button class="primary" id="aladd">Поставить</button>
     </div>
-    <p class="hint">Выключается только словами «Алиса, я проснулся» и ответом на пример. «Стоп», пауза и ▶‖ его не выключают.</p>
     <details class="donelist" id="almorning"><summary>Утро после будильника</summary>
       <label class="check"><input type="checkbox" id="mon"><span>После верного ответа — приветствие, погода, планы и новости</span></label>
       <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:6px">

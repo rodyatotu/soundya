@@ -21,12 +21,10 @@
 - DMG: раздавать только образ, собранный на Mac: `sh scripts/build-installer.sh` там сам подписывает
   бандл и собирает UDZO через `hdiutil` (`build_dmg.py::build_mac`, alias фона с тома в /Volumes).
   Образ xorriso с Linux — черновик: после скачивания не монтируется без предупреждения.
-- Виджет Mac: `mac-widget/` (Swift, WidgetKit, macOS 14+), собирается `scripts/mac-widget/build.sh`
-  (`xcodebuild` проекта `mac-widget/xcode`, нужен полный Xcode; `SOUNDYA_XCODE=/Applications/Xcode-beta.app` — выбрать) и в
-  `build-installer.sh` подписывается изнутри наружу (виджет с `widget.entitlements`, потом приложение — без `--deep`).
-  Виден только при подписи с Team ID: `SOUNDYA_SIGN_ID="Apple Development: …" sh scripts/build-installer.sh`.
-  `swiftc` вручную не годится: нет точки входа `_NSExtensionMain` и `Metadata.appintents`.
-  `check_app.py` проверяет и виджет (`python3 tests/check_app_test.py` — тест на поддельных бандлах).
+- Mac: значок в строке меню — тот же soundya.app с аргументом `tray` (`installer/src/macwin.rs::tray`): по клику
+  стеклянное окно с панелью колонки (`/#glass`, блоки выбираются шестерёнкой), правый клик — меню. Ставится в автозапуск
+  (`agent::TRAY_LABEL`) при «Подключить этот Mac». Виджет WidgetKit удалён (0.5.8): окно его заменило.
+  Подпись: `SOUNDYA_SIGN_ID="Apple Development: …" sh scripts/build-installer.sh`.
 - `scripts/build-mac.sh` начинает с `rm -rf dist` — сохраняйте нужные артефакты заранее (`--dev` трогает только `dist/soundya`).
 - Версия разработчика: фича `dev` в обоих крейтах (`src/devpage.rs`, `dev/*.js`, `installer/src/dev.rs`).
   В обычной сборке её кода быть не должно — проверяет `tests/dev_feedback_e2e.js` (второй бинарник).
