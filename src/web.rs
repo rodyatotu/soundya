@@ -720,11 +720,28 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
                 ("400 Bad Request", "text/plain", "invalid json".into())
             }
         }
+        ("POST", "/api/mods/reset") => {
+            if let Some(mgr) = crate::mods::get_manager() {
+                mgr.reset_all();
+                ("200 OK", "application/json", r#"{"status":"ok","message":"all mods reset"}"#.into())
+            } else {
+                ("500 Internal Server Error", "text/plain", "mods not initialized".into())
+            }
+        }
         ("POST", "/api/mods/upload") => {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
-                if let (Some(filename), Some(content)) = (val["filename"].as_str(), val["content"].as_str()) {
+                let filename = val["filename"].as_str().unwrap_or("");
+                let bytes = if let Some(b64) = val["base64"].as_str() {
+                    crate::mods::decode_base64(b64)
+                } else if let Some(content) = val["content"].as_str() {
+                    Some(content.as_bytes().to_vec())
+                } else {
+                    None
+                };
+
+                if let (false, Some(data)) = (filename.is_empty(), bytes) {
                     if let Some(mgr) = crate::mods::get_manager() {
-                        match mgr.handle_upload(filename, content.as_bytes()) {
+                        match mgr.handle_upload(filename, &data) {
                             Ok(msg) => ("200 OK", "application/json", serde_json::json!({"status": "ok", "message": msg}).to_string()),
                             Err(e) => ("500 Internal Server Error", "text/plain", e),
                         }
@@ -732,7 +749,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
                         ("500 Internal Server Error", "text/plain", "mods not initialized".into())
                     }
                 } else {
-                    ("400 Bad Request", "text/plain", "missing filename or content".into())
+                    ("400 Bad Request", "text/plain", "missing filename or valid content/base64".into())
                 }
             } else {
                 ("400 Bad Request", "text/plain", "invalid json".into())
