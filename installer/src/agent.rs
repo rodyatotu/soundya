@@ -723,6 +723,28 @@ pub fn tray_plist(exe: &Path, log: &Path) -> String {
     )
 }
 
+/// This Mac is connected to a speaker (the PC agent's config is there): opening soundya.app
+/// shows soundya itself, not the installer.
+pub fn set_up(home: &Path) -> bool {
+    dir(home).join("config.json").exists()
+}
+
+/// The menu bar icon's login job, if a Mac connected before it existed has none.
+pub fn ensure_tray_plist(home: &Path, exe: &Path) {
+    let plist = home.join(format!("Library/LaunchAgents/{TRAY_LABEL}.plist"));
+    if !plist.exists() && installed_app(exe, home) {
+        let _ = std::fs::write(&plist, tray_plist(exe, &home.join("Library/Logs/soundya-tray.log")));
+    }
+}
+
+/// The running menu bar icon's pid file and the «show the window» note it watches.
+pub fn tray_pid_file(home: &Path) -> PathBuf {
+    dir(home).join("tray.pid")
+}
+pub fn tray_open_file(home: &Path) -> PathBuf {
+    dir(home).join("tray.open")
+}
+
 /// The speaker this Mac was connected to (for the menu bar icon); soundya.local if none.
 pub fn speaker_of(home: &Path) -> String {
     std::fs::read_to_string(dir(home).join("config.json"))

@@ -518,6 +518,7 @@
   html.glass:not(.glass-full) #tab-home { display: block !important; }
   html.glass:not(.glass-noplayer) .glasshide-player { display: none; }
   html.glass.glass-noplayer section.player { display: none !important; }
+  html.glass:not(.glass-alarm) .widget[data-w="alarm"] { display: none !important; }
   /* Nothing that only takes room: the switch shows where it plays, the gear chooses the blocks. */
   html.glass #listennote, html.glass .homeedit, html.glass #tab-home .msg:empty, html.glass .msg:empty { display: none !important; }
   html.glass #tab-home { padding-bottom: 4px; }
@@ -2450,6 +2451,7 @@ function glassApply() {
   const g = glassPrefs();
   document.documentElement.classList.toggle('glass-full', !!g.full);
   document.documentElement.classList.toggle('glass-noplayer', !g.player);
+  document.documentElement.classList.toggle('glass-alarm', g.show.includes('alarm'));
 }
 glassApply();
 </script>
@@ -3041,7 +3043,7 @@ async function loadMacros() {
     run.title = 'Запустить'; run.onclick = async e => { e.stopPropagation(); show($('macromsg'), await post('/api/cmd', 'macro run ' + m.phrase)); };
     run.className = 'mrun'; run.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>';
     const del = document.createElement('button'); del.className = 'link sdel'; del.textContent = '✕'; del.title = 'Удалить';
-    del.onclick = async e => { e.stopPropagation(); if (!confirm('Удалить сценарий «' + m.phrase + '»?')) return; show($('macromsg'), await post('/api/cmd', 'macro del ' + m.phrase)); loadMacros(); };
+    del.onclick = async e => { e.stopPropagation(); show($('macromsg'), await post('/api/cmd', 'macro del ' + m.phrase)); loadMacros(); };
     const right = document.createElement('span'); right.append(run, del);
     const kinds = [...new Set(m.script.split('\n').map(x => x.trim()).filter(Boolean).map(l => stepGroup(parseLine(l).kind)))];
     const icons = document.createElement('span'); icons.className = 'micons'; icons.innerHTML = kinds.map(k => `<i class="${k}">${STEP_ICON[k]}</i>`).join('');
@@ -3430,6 +3432,9 @@ function toggleGlassPick() {
   };
   const save = p => { try { localStorage.setItem('soundya-glass', JSON.stringify(p)); } catch (e) {} glassApply(); homeWidgets(); loadHome(true); };
   row('Плеер', g.player, on => save(Object.assign(glassPrefs(), { player: on })));
+  row('Будильник', g.show.includes('alarm'), on => {
+    const p = glassPrefs(); p.show = on ? p.show.concat(['alarm']) : p.show.filter(x => x !== 'alarm'); save(p);
+  });
   for (const k of Object.keys(WIDGETS)) {
     row(WIDGETS[k][0], g.show.includes(k), on => {
       const p = glassPrefs(); p.show = on ? p.show.concat([k]) : p.show.filter(x => x !== k); save(p);
@@ -3999,7 +4004,7 @@ async function btCmd(c) {
   settingsLoaded = false; refresh();
 }
 function btToggle(on) { btCmd(on ? 'on' : 'off'); }
-function btForget() { if (confirm('Забыть «' + (settings.bt_name || settings.bt_mac) + '»? Чтобы подключить снова, понадобится режим сопряжения.')) btCmd('forget ' + settings.bt_mac); }
+function btForget() { btCmd('forget ' + settings.bt_mac); }
 async function btConnect(mac, name) {
   busy($('btmsg'), 'Подключаю ' + (name || mac) + '… (до 30 секунд; первый раз — режим сопряжения на устройстве)');
   const r = await post('/api/cmd', 'bt connect ' + mac);
@@ -4025,7 +4030,9 @@ function btNotAudio(d, list) {
   if (twin) { show($('btmsg'), '«' + d.name + '» — не для звука. Подключаю «' + twin.name + '»…'); btConnect(twin.mac, twin.name); return; }
   const msg = '«' + (d.name || d.mac) + '» не похоже на наушники или колонку — это, например, браслет или управление лампой.'
     + ' У некоторых колонок (Divoom Ditoo и др.) для звука отдельное устройство с «audio» в имени: включите на колонке режим Bluetooth и нажмите «Найти».';
-  if (confirm(msg + '\n\nВсё равно подключить?')) btConnect(d.mac, d.name); else show($('btmsg'), 'error: ' + msg);
+  // Connected as asked; the note says why it may not play.
+  btConnect(d.mac, d.name);
+  show($('btmsg'), msg);
 }
 function renderHome(s) {
   renderStatusRow(s);
@@ -4315,7 +4322,6 @@ function planRow(i) {
     };
     const del = document.createElement('button'); del.className = 'link del'; del.textContent = '✕'; del.title = 'Удалить';
     del.onclick = async () => {
-      if (!confirm('Удалить «' + i.title + '»?')) return;
       show($('planmsg'), await post('/api/cmd', i.source === 'google' ? `plan gdel ${i.list} ${i.id}` : `plan del ${i.id}`));
       loadPlans();
     };
@@ -4658,7 +4664,7 @@ function renderTeams(st) {
     const name = document.createElement('input'); name.type = 'text'; name.placeholder = i ? 'Название: маркетинг' : 'Название: команда'; name.value = t.name || '';
     name.oninput = () => { t.name = name.value; teamsDirty = true; };
     const del = document.createElement('button'); del.className = 'link sdel'; del.textContent = '✕'; del.title = 'Удалить команду';
-    del.onclick = () => { if (confirm('Удалить команду «' + (t.name || 'без названия') + '»?')) { teams.splice(i, 1); teamsDirty = true; teamsSig = ''; renderTeams(settings); } };
+    del.onclick = () => { { teams.splice(i, 1); teamsDirty = true; teamsSig = ''; renderTeams(settings); } };
     head.append(name, del);
     const mails = document.createElement('textarea'); mails.placeholder = 'Почты участников — по одной в строке или через запятую';
     mails.value = (t.emails || []).join('\n');
@@ -4912,7 +4918,6 @@ async function saveGoogle() {
   settingsLoaded = false; refresh(); setTimeout(() => loadPlans(true), 1500);
 }
 async function googleOff() {
-  if (!confirm('Отключить Google? Вход будет удалён с колонки (ключ клиента останется).')) return;
   show($('gmsg'), await post('/api/cmd', 'google off'));
   settingsLoaded = false; refresh();
 }
@@ -4988,7 +4993,6 @@ async function takeTokenFromHash() {
   // Old tokens: 2-123456-…; since 2026 a JWT (eyJ….….…, ~900 characters).
   const t = decodeURIComponent(m[1]).trim(), rf = m[2] ? decodeURIComponent(m[2]).trim() : '';
   if (!/^[\w.-]{10,4000}$/.test(t)) { alert('Это не похоже на вход SoundCloud.'); return; }
-  if (!confirm('Сохранить вход SoundCloud из браузера на колонке?')) return;
   const r = await post('/api/settings', JSON.stringify(Object.assign({ token: t }, /^[\w.-]{8,4000}$/.test(rf) ? { sc_refresh: rf } : {})));
   openSettings('account');
   show($('loginmsg'), r);
@@ -5010,7 +5014,6 @@ async function setPin() {
   $('pinnew').value = ''; settingsLoaded = false; refresh();
 }
 async function offPin() {
-  if (!confirm('Выключить PIN? Управлять колонкой снова сможет любой в вашей сети.')) return;
   show($('pinmsg'), await post('/api/pin', ''));
   settingsLoaded = false; refresh();
 }
@@ -5231,7 +5234,6 @@ async function loadHistory() {
 }
 
 async function clearHistory() {
-  if (!confirm('Очистить историю прослушивания?')) return;
   await post('/api/cmd', 'history clear');
   loadHistory();
 }
@@ -5251,7 +5253,7 @@ document.querySelectorAll('nav button').forEach(b => {
 });
 try {
   // «/#plans» (the Mac widget's «+») opens that tab.
-  const hashTab = /^#(plans|mine|home|settings)$/.exec(location.hash);
+  const hashTab = /^#(plans|mine|home|settings|remote)$/.exec(location.hash);
   const saved = hashTab ? hashTab[1] : (GLASS && !glassPrefs().full) ? 'home' : localStorage.getItem('tab');
   const btn = saved && document.querySelector('nav button[data-tab="' + saved + '"]');
   if (btn) setTimeout(() => btn.click(), 0);
@@ -5725,8 +5727,15 @@ function renderUpdate(u) {
   if (updWaitFor && !u.installing && l && l.status === 'failed' && !l.to) updWaitFor = null;
 }
 
+// No browser dialog: the first press asks on the button itself, the second removes.
+let uninstallArmed = 0;
 async function uninstallSoundya() {
-  if (!confirm('Удалить soundya с колонки вместе с настройками? SoundCloud и AirPlay перестанут работать.')) return;
+  if (Date.now() - uninstallArmed > 5000) {
+    uninstallArmed = Date.now();
+    show($('uninstmsg'), 'error: нажмите ещё раз, чтобы удалить soundya с колонки вместе с настройками');
+    return;
+  }
+  uninstallArmed = 0;
   busy($('uninstmsg'), 'Удаляю…');
   show($('uninstmsg'), await post('/api/cmd', 'uninstall'));
 }

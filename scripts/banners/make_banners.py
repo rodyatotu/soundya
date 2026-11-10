@@ -182,7 +182,7 @@ def paste_icon(img, cx, cy, size):
     img.alpha_composite(icon, (int(cx - size / 2), int(cy - size / 2)))
 
 
-VERSION = "0.5.8"
+VERSION = "0.5.9"
 FEATURES = ["Голосом Алисы", "Mac: строка меню", "Пульт ТВ", "Планы + Google", "Будильник", "AirPlay", "Ambilight"]
 
 

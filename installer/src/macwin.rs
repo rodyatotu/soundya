@@ -485,6 +485,31 @@ unsafe fn set_size(i: usize) {
     rt.send_id(win, "makeKeyAndOrderFront:", std::ptr::null_mut());
 }
 
+/// Show the window (not toggle): soundya.app opened again, or right after the start.
+extern "C" fn show_panel(_this: Id, _sel: Sel, _sender: Id) {
+    unsafe {
+        let Ok(rt) = Rt::load() else { return };
+        let win = GLASS.load(Ordering::Acquire) as Id;
+        if !win.is_null() && rt.send_u64_ret(win, "isVisible") != 0 {
+            let app = rt.send(rt.class("NSApplication").unwrap_or(std::ptr::null_mut()), "sharedApplication");
+            rt.send_bool(app, "activateIgnoringOtherApps:", true);
+            rt.send_id(win, "makeKeyAndOrderFront:", std::ptr::null_mut());
+            return;
+        }
+        *HIDDEN_AT.lock().unwrap() = None;
+        if let Err(e) = toggle_popover(&rt) {
+            eprintln!("soundya: окно: {e}");
+        }
+    }
+}
+
+/// «Установщик и обновление…»: the installer's window (update the speaker, another speaker).
+extern "C" fn open_installer(_this: Id, _sel: Sel, _sender: Id) {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe).env("SOUNDYA_INSTALLER", "1").spawn();
+    }
+}
+
 extern "C" fn size_small(_this: Id, _sel: Sel, _sender: Id) {
     unsafe { set_size(0) }
 }
@@ -616,8 +641,11 @@ extern "C" fn open_panel(_this: Id, _sel: Sel, _sender: Id) {
 
 /// The menu bar icon: what plays, play/pause, next, the panel in its own window.
 /// Runs until «Выйти»; closing the panel's window keeps it.
-pub fn tray(speaker_host: &str) -> Result<(), String> {
+pub fn tray(speaker_host: &str, open_now: bool) -> Result<(), String> {
     *SPEAKER.lock().unwrap() = speaker_host.to_owned();
+    let home = crate::agent::home();
+    let _ = std::fs::write(crate::agent::tray_pid_file(&home), std::process::id().to_string());
+    let _ = std::fs::remove_file(crate::agent::tray_open_file(&home));
     unsafe {
         let rt = Rt::load()?;
         let app = rt.send(rt.class("NSApplication")?, "sharedApplication");
@@ -644,6 +672,8 @@ pub fn tray(speaker_host: &str) -> Result<(), String> {
             (rt.add_method)(k, rt.s("connectMac:"), connect_mac as *mut c_void, t.as_ptr());
             (rt.add_method)(k, rt.s("sizeSmall:"), size_small as *mut c_void, t.as_ptr());
             (rt.add_method)(k, rt.s("windowDidResignKey:"), window_resigned as *mut c_void, t.as_ptr());
+            (rt.add_method)(k, rt.s("showPanel:"), show_panel as *mut c_void, t.as_ptr());
+            (rt.add_method)(k, rt.s("openInstaller:"), open_installer as *mut c_void, t.as_ptr());
             (rt.add_method)(k, rt.s("sizeMedium:"), size_medium as *mut c_void, t.as_ptr());
             (rt.add_method)(k, rt.s("sizeLarge:"), size_large as *mut c_void, t.as_ptr());
             (rt.register)(k);
@@ -695,7 +725,7 @@ pub fn tray(speaker_host: &str) -> Result<(), String> {
         rt.send_id(size_item, "setSubmenu:", sizes);
         rt.send_id(menu, "addItem:", size_item);
         // As on Windows: the data for the speaker, the log, the settings folder.
-        for (t, a) in [("Подключить этот Mac к колонке", "connectMac:"), ("Данные для колонки (адрес, ключ, MAC)…", "showSetup:"), ("Открыть лог", "openLog:"), ("Открыть папку настроек", "openFolder:")] {
+        for (t, a) in [("Установщик и обновление…", "openInstaller:"), ("Подключить этот Mac к колонке", "connectMac:"), ("Данные для колонки (адрес, ключ, MAC)…", "showSetup:"), ("Открыть лог", "openLog:"), ("Открыть папку настроек", "openFolder:")] {
             let i = rt.item(t, a, "")?;
             rt.send_id(i, "setTarget:", target);
             rt.send_id(menu, "addItem:", i);
@@ -709,6 +739,22 @@ pub fn tray(speaker_host: &str) -> Result<(), String> {
         rt.send_id(button, "setTarget:", target);
         rt.send_sel(button, "setAction:", rt.s("iconClicked:"));
         rt.send_ulong(button, "sendActionOn:", (1 << 2) | (1 << 4)); // left and right mouse up
+        // soundya.app opened again while the icon runs: that copy leaves a note, the window shows.
+        let watch_target = target as usize;
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let note = crate::agent::tray_open_file(&crate::agent::home());
+            if std::fs::remove_file(&note).is_ok() {
+                if let Ok(rt) = Rt::load() {
+                    let f: unsafe extern "C" fn(Id, Sel, Sel, Id, i8) = std::mem::transmute(rt.msg);
+                    f(watch_target as Id, rt.s("performSelectorOnMainThread:withObject:waitUntilDone:"), rt.s("showPanel:"), std::ptr::null_mut(), 0);
+                }
+            }
+        });
+        if open_now {
+            let f: unsafe extern "C" fn(Id, Sel, Sel, Id, f64) = std::mem::transmute(rt.msg);
+            f(target, rt.s("performSelector:withObject:afterDelay:"), rt.s("showPanel:"), std::ptr::null_mut(), 0.3);
+        }
         rt.send(app, "run");
     }
     Ok(())

@@ -1084,6 +1084,7 @@ fn launchctl_restart(home: &std::path::Path) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 extern "C" {
     fn getuid() -> u32;
+    fn kill(pid: i32, sig: i32) -> i32;
 }
 
 /// A signed ping to the agent on this Mac.
@@ -1311,11 +1312,33 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("agent") {
         agent::main();
     }
+    // soundya.app opened by hand on a Mac already connected: soundya's own window, not the
+    // installer (that is in the icon's menu: «Установщик и обновление…»).
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).is_none() && std::env::var("SOUNDYA_INSTALLER").is_err() && agent::set_up(&agent::home()) {
+        let home = agent::home();
+        // The icon runs already: it shows its window (one icon, not two).
+        let running = std::fs::read_to_string(agent::tray_pid_file(&home))
+            .ok()
+            .and_then(|t| t.trim().parse::<i32>().ok())
+            .is_some_and(|pid| pid != std::process::id() as i32 && unsafe { kill(pid, 0) } == 0);
+        if running && std::fs::write(agent::tray_open_file(&home), b"open").is_ok() {
+            std::process::exit(0);
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            agent::ensure_tray_plist(&home, &exe);
+        }
+        if let Err(e) = macwin::tray(&agent::speaker_of(&home), true) {
+            eprintln!("soundya: значок в строке меню не открылся: {e}");
+        } else {
+            std::process::exit(0);
+        }
+    }
     // launchd (or «open soundya.app --args tray») starts it as the menu bar icon.
     #[cfg(target_os = "macos")]
     if std::env::args().nth(1).as_deref() == Some("tray") {
         let speaker = std::env::args().nth(2).unwrap_or_else(|| agent::speaker_of(&agent::home()));
-        if let Err(e) = macwin::tray(&speaker) {
+        if let Err(e) = macwin::tray(&speaker, false) {
             eprintln!("soundya: значок в строке меню не открылся: {e}");
             std::process::exit(1);
         }

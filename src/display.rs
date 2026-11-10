@@ -143,7 +143,10 @@ impl Clock {
         let complete = (0..DIGITS).all(|d| "ABCDEFG".chars().all(|p| paths.contains_key(&format!("{p}{d}"))));
         let dots = paths.contains_key("H0");
         // Its brightest (the Mini 2's segments go to 170, not 255).
-        let max = paths.values().next().and_then(|p| crate::fsx::read_string(&p.with_file_name("max_brightness"))).and_then(|t| t.trim().parse().ok()).unwrap_or(255);
+        // From a digit's segment, not «the first» of the map: its order is random, and the degree
+        // sign (no max_brightness of its own) gave 255 now and then.
+        let max_of = |p: &PathBuf| crate::fsx::read_string(&p.with_file_name("max_brightness")).and_then(|t| t.trim().parse().ok());
+        let max = ["A0", "B0", "G0"].iter().filter_map(|k| paths.get(*k)).find_map(max_of).or_else(|| paths.values().find_map(max_of)).unwrap_or(255);
         complete.then_some(Clock { paths, dots, max })
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "soundya-installer"
-version = "0.5.8"
+version = "0.5.9"
 edition = "2021"
 license = "MIT"
 description = "Installs soundya on a Yandex Station: a step-by-step wizard in the browser"
