@@ -134,7 +134,10 @@ const PAGE: &str = include_str!("web.html");
 /// The panel; in the developer build with the feedback mode (src/devpage.rs).
 #[cfg(not(feature = "dev"))]
 fn page() -> &'static str {
-    PAGE
+    static MODDED_PAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MODDED_PAGE.get_or_init(|| {
+        crate::mods::inject_loader(PAGE)
+    })
 }
 
 /// The web app manifest: «На экран Домой» on a phone opens the panel as an app of its own,
@@ -323,6 +326,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
     let mut origin = String::new();
     let mut cookie = String::new();
     let mut headers = 0;
+    let mut raw_headers = String::new();
     loop {
         let mut line = String::new();
         headers += 1;
@@ -332,6 +336,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         if line.is_empty() || line == "\r\n" || line == "\n" {
             break;
         }
+        raw_headers.push_str(&line);
         if let Some((k, v)) = line.split_once(':') {
             if k.eq_ignore_ascii_case("content-length") {
                 length = v.trim().parse().unwrap_or(0);
@@ -535,6 +540,15 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             }
         }
     }
+
+    // Universal Mod Dynamic API Gateway
+    if let Some(mgr) = crate::mods::get_manager() {
+        if let Some((sock_path, target_path)) = mgr.find_socket_for_route(&path) {
+            let _ = mgr.proxy_unix(&sock_path, &method, &target_path, &raw_headers, &body, &conn);
+            return Ok(());
+        }
+    }
+
     let (status, kind, reply) = match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", page().to_owned()),
         ("GET", "/manifest.webmanifest") => ("200 OK", "application/manifest+json", manifest().to_owned()),
@@ -644,87 +658,78 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         }
 
         // Mod static assets: /mods/...
-        _ if method == "GET" && path.starts_with("/mods/") => {
+        _ if (method == "GET" || method == "HEAD") && path.starts_with("/mods/") => {
             let rel = path.trim_start_matches("/mods/");
-            if !rel.contains("..") && !rel.starts_with('/') {
-                let file_path = std::path::Path::new("/data/opt/soundya/mods").join(rel);
-                if file_path.is_file() {
-                    if let Ok(content) = std::fs::read_to_string(&file_path) {
-                        let kind = if rel.ends_with(".css") {
-                            "text/css; charset=utf-8"
-                        } else if rel.ends_with(".js") {
-                            "application/javascript; charset=utf-8"
-                        } else if rel.ends_with(".json") {
-                            "application/json; charset=utf-8"
-                        } else {
-                            "text/plain; charset=utf-8"
-                        };
-                        ("200 OK", kind, content)
-                    } else {
-                        ("500 Internal Server Error", "text/plain", "failed to read mod file".into())
+            if let Some(mgr) = crate::mods::get_manager() {
+                if let Some((status, mime, bytes)) = mgr.serve_static(rel, &method) {
+                    let mut out = &conn;
+                    write!(
+                        out,
+                        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+                        bytes.len()
+                    )?;
+                    if method != "HEAD" {
+                        out.write_all(&bytes)?;
                     }
+                    return out.flush();
                 } else {
-                    ("404 Not Found", "text/plain", "mod file not found".into())
+                    return reply(&conn, "404 Not Found", "text/plain", "mod file not found");
                 }
             } else {
-                ("403 Forbidden", "text/plain", "invalid path".into())
+                return reply(&conn, "500 Internal Server Error", "text/plain", "mods not initialized");
             }
         }
 
         // Mod manager endpoints
         ("GET", "/api/mods") => {
-            let dir = std::path::Path::new("/data/opt/soundya/mods");
-            let mut installed = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            if name.ends_with(".js") || name.ends_with(".css") {
-                                installed.push(name.to_string());
-                            }
-                        }
+            if let Some(mgr) = crate::mods::get_manager() {
+                ("200 OK", "application/json", mgr.list_mods_json())
+            } else {
+                ("500 Internal Server Error", "text/plain", "mods not initialized".into())
+            }
+        }
+        ("POST", "/api/mods/toggle") => {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let (Some(id), Some(enabled)) = (val["id"].as_str(), val["enabled"].as_bool()) {
+                    if let Some(mgr) = crate::mods::get_manager() {
+                        mgr.toggle_mod(id, enabled);
+                        ("200 OK", "application/json", r#"{"status":"ok"}"#.into())
+                    } else {
+                        ("500 Internal Server Error", "text/plain", "mods not initialized".into())
                     }
+                } else {
+                    ("400 Bad Request", "text/plain", "missing id or enabled".into())
                 }
-            }
-            installed.sort();
-            let config_path = dir.join("mods.json");
-            let active: serde_json::Value = std::fs::read_to_string(&config_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_else(|| serde_json::json!({}));
-
-            let res = serde_json::json!({
-                "installed": installed,
-                "active": active
-            });
-            ("200 OK", "application/json", res.to_string())
-        }
-
-        ("POST", "/api/mods") => {
-            let dir = std::path::Path::new("/data/opt/soundya/mods");
-            let _ = std::fs::create_dir_all(dir);
-            let path = dir.join("mods.json");
-            match std::fs::write(path, &body) {
-                Ok(_) => ("200 OK", "application/json", r#"{"status":"ok"}"#.into()),
-                Err(e) => ("500 Internal Server Error", "text/plain", e.to_string()),
+            } else {
+                ("400 Bad Request", "text/plain", "invalid json".into())
             }
         }
-
+        ("POST", "/api/mods/delete") => {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let Some(id) = val["id"].as_str() {
+                    if let Some(mgr) = crate::mods::get_manager() {
+                        mgr.delete_mod(id);
+                        ("200 OK", "application/json", r#"{"status":"ok"}"#.into())
+                    } else {
+                        ("500 Internal Server Error", "text/plain", "mods not initialized".into())
+                    }
+                } else {
+                    ("400 Bad Request", "text/plain", "missing id".into())
+                }
+            } else {
+                ("400 Bad Request", "text/plain", "invalid json".into())
+            }
+        }
         ("POST", "/api/mods/upload") => {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
                 if let (Some(filename), Some(content)) = (val["filename"].as_str(), val["content"].as_str()) {
-                    let filename = std::path::Path::new(filename).file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if !filename.is_empty() && (filename.ends_with(".js") || filename.ends_with(".css") || filename.ends_with(".json")) {
-                        let dir = std::path::Path::new("/data/opt/soundya/mods");
-                        let _ = std::fs::create_dir_all(dir);
-                        let file_path = dir.join(filename);
-                        match std::fs::write(file_path, content) {
-                            Ok(_) => ("200 OK", "application/json", r#"{"status":"ok"}"#.into()),
-                            Err(e) => ("500 Internal Server Error", "text/plain", e.to_string()),
+                    if let Some(mgr) = crate::mods::get_manager() {
+                        match mgr.handle_upload(filename, content.as_bytes()) {
+                            Ok(msg) => ("200 OK", "application/json", serde_json::json!({"status": "ok", "message": msg}).to_string()),
+                            Err(e) => ("500 Internal Server Error", "text/plain", e),
                         }
                     } else {
-                        ("400 Bad Request", "text/plain", "invalid filename".into())
+                        ("500 Internal Server Error", "text/plain", "mods not initialized".into())
                     }
                 } else {
                     ("400 Bad Request", "text/plain", "missing filename or content".into())
