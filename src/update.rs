@@ -17,12 +17,12 @@ use std::{
 
 use serde_json::Value;
 
-const RELEASES: &str = "https://api.github.com/repos/Gemeur/soundya/releases/latest";
+const RELEASES: &str = "https://api.github.com/repos/rodyatotu/soundya/releases/latest";
 /// The same without the API: GitHub answers the API 60 times an hour per address, and many
 /// speakers behind one provider's address got «status code 403» and never saw an update.
-const LATEST_PAGE: &str = "https://github.com/Gemeur/soundya/releases/latest";
-const DOWNLOAD: &str = "https://github.com/Gemeur/soundya/releases/download";
-const CHANGELOG: &str = "https://raw.githubusercontent.com/Gemeur/soundya";
+const LATEST_PAGE: &str = "https://github.com/rodyatotu/soundya/releases/latest";
+const DOWNLOAD: &str = "https://github.com/rodyatotu/soundya/releases/download";
+const CHANGELOG: &str = "https://raw.githubusercontent.com/rodyatotu/soundya";
 const ASSET: &str = "soundya-armv7.tar";
 const TAR: &str = "/tmp/soundya-update.tar";
 const DIR: &str = "/tmp/soundya-update";
