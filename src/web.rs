@@ -145,7 +145,10 @@ const PAGE: &str = include_str!("web.html");
 /// The panel; in the developer build with the feedback mode (src/devpage.rs).
 #[cfg(not(feature = "dev"))]
 fn page() -> &'static str {
-    PAGE
+    static MODDED_PAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MODDED_PAGE.get_or_init(|| {
+        crate::mods::inject_loader(PAGE)
+    })
 }
 
 /// The web app manifest: «На экран Домой» on a phone opens the panel as an app of its own,
@@ -334,6 +337,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
     let mut origin = String::new();
     let mut cookie = String::new();
     let mut headers = 0;
+    let mut raw_headers = String::new();
     loop {
         let mut line = String::new();
         headers += 1;
@@ -343,6 +347,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         if line.is_empty() || line == "\r\n" || line == "\n" {
             break;
         }
+        raw_headers.push_str(&line);
         if let Some((k, v)) = line.split_once(':') {
             if k.eq_ignore_ascii_case("content-length") {
                 length = v.trim().parse().unwrap_or(0);
@@ -363,6 +368,8 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         8 << 20
     } else if path == "/api/update/upload" {
         crate::update::UPLOAD_MAX
+    } else if path == "/api/mods/upload" {
+        2 << 20
     } else {
         64 * 1024
     };
@@ -544,6 +551,15 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             }
         }
     }
+
+    // Universal Mod Dynamic API Gateway
+    if let Some(mgr) = crate::mods::get_manager() {
+        if let Some((sock_path, target_path)) = mgr.find_socket_for_route(&path) {
+            let _ = mgr.proxy_unix(&sock_path, &method, &target_path, &raw_headers, &body, &conn);
+            return Ok(());
+        }
+    }
+
     let (status, kind, reply) = match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", page().to_owned()),
         // «/?app=1» (the Mac app's window) and the like: the same page.
@@ -652,6 +668,105 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         ("POST", "/api/test") => {
             let proxy = serde_json::from_str::<Settings>(&body).map(|s| s.proxy).unwrap_or_default();
             ("200 OK", "text/plain; charset=utf-8", ask(tx, |r| Cmd::TestProxy(proxy, r), 40))
+        }
+
+        // Mod static assets: /mods/...
+        _ if (method == "GET" || method == "HEAD") && path.starts_with("/mods/") => {
+            let rel = path.trim_start_matches("/mods/");
+            if let Some(mgr) = crate::mods::get_manager() {
+                if let Some((status, mime, bytes)) = mgr.serve_static(rel, &method) {
+                    let mut out = &conn;
+                    write!(
+                        out,
+                        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+                        bytes.len()
+                    )?;
+                    if method != "HEAD" {
+                        out.write_all(&bytes)?;
+                    }
+                    return out.flush();
+                } else {
+                    return reply(&conn, "404 Not Found", "text/plain", "mod file not found");
+                }
+            } else {
+                return reply(&conn, "500 Internal Server Error", "text/plain", "mods not initialized");
+            }
+        }
+
+        // Mod manager endpoints
+        ("GET", "/api/mods") => {
+            if let Some(mgr) = crate::mods::get_manager() {
+                ("200 OK", "application/json", mgr.list_mods_json())
+            } else {
+                ("500 Internal Server Error", "text/plain", "mods not initialized".into())
+            }
+        }
+        ("POST", "/api/mods/toggle") => {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let (Some(id), Some(enabled)) = (val["id"].as_str(), val["enabled"].as_bool()) {
+                    if let Some(mgr) = crate::mods::get_manager() {
+                        mgr.toggle_mod(id, enabled);
+                        ("200 OK", "application/json", r#"{"status":"ok"}"#.into())
+                    } else {
+                        ("500 Internal Server Error", "text/plain", "mods not initialized".into())
+                    }
+                } else {
+                    ("400 Bad Request", "text/plain", "missing id or enabled".into())
+                }
+            } else {
+                ("400 Bad Request", "text/plain", "invalid json".into())
+            }
+        }
+        ("POST", "/api/mods/delete") => {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let Some(id) = val["id"].as_str() {
+                    if let Some(mgr) = crate::mods::get_manager() {
+                        mgr.delete_mod(id);
+                        ("200 OK", "application/json", r#"{"status":"ok"}"#.into())
+                    } else {
+                        ("500 Internal Server Error", "text/plain", "mods not initialized".into())
+                    }
+                } else {
+                    ("400 Bad Request", "text/plain", "missing id".into())
+                }
+            } else {
+                ("400 Bad Request", "text/plain", "invalid json".into())
+            }
+        }
+        ("POST", "/api/mods/reset") => {
+            if let Some(mgr) = crate::mods::get_manager() {
+                mgr.reset_all();
+                ("200 OK", "application/json", r#"{"status":"ok","message":"all mods reset"}"#.into())
+            } else {
+                ("500 Internal Server Error", "text/plain", "mods not initialized".into())
+            }
+        }
+        ("POST", "/api/mods/upload") => {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+                let filename = val["filename"].as_str().unwrap_or("");
+                let bytes = if let Some(b64) = val["base64"].as_str() {
+                    crate::mods::decode_base64(b64)
+                } else if let Some(content) = val["content"].as_str() {
+                    Some(content.as_bytes().to_vec())
+                } else {
+                    None
+                };
+
+                if let (false, Some(data)) = (filename.is_empty(), bytes) {
+                    if let Some(mgr) = crate::mods::get_manager() {
+                        match mgr.handle_upload(filename, &data) {
+                            Ok(msg) => ("200 OK", "application/json", serde_json::json!({"status": "ok", "message": msg}).to_string()),
+                            Err(e) => ("500 Internal Server Error", "text/plain", e),
+                        }
+                    } else {
+                        ("500 Internal Server Error", "text/plain", "mods not initialized".into())
+                    }
+                } else {
+                    ("400 Bad Request", "text/plain", "missing filename or valid content/base64".into())
+                }
+            } else {
+                ("400 Bad Request", "text/plain", "invalid json".into())
+            }
         }
         _ => ("404 Not Found", "text/plain", "not found".into()),
     };
