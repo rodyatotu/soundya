@@ -35,6 +35,8 @@ pub fn run(settings: &Settings, action: &PcAction) -> Result<String, String> {
         PcAction::Process(name) => ("process", name.as_str()),
         PcAction::Click(spec) => ("click", spec.as_str()),
         PcAction::Key(spec) => ("key", spec.as_str()),
+        PcAction::Type(text) => ("type", text.as_str()),
+        PcAction::Mouse => ("mouse", ""),
         PcAction::Wake => unreachable!(),
     };
     let address = if host.contains(':') { host.to_owned() } else { format!("{host}:{PORT}") };
@@ -174,6 +176,12 @@ pub fn key_spec(s: &str) -> Option<String> {
         return None;
     }
     Some(parts.join("+"))
+}
+
+/// Text a scenario types on the PC: one line, at most 300 characters, no control characters.
+pub fn type_spec(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty() && t.chars().count() <= 300 && !t.chars().any(char::is_control)).then(|| t.to_owned())
 }
 
 pub fn sign(key: &str, path: &str, body: &[u8]) -> (String, String, String) {
@@ -322,6 +330,10 @@ mod tests {
         assert_eq!(key_spec("Ctrl + Shift + Esc").as_deref(), Some("ctrl+shift+esc"));
         assert_eq!(key_spec("command+t").as_deref(), Some("cmd+t"));
         assert_eq!(key_spec("F5").as_deref(), Some("f5"));
+        assert_eq!(type_spec("  привет, мир ").as_deref(), Some("привет, мир"));
+        assert_eq!(type_spec(""), None);
+        assert_eq!(type_spec("две\nстроки"), None);
+        assert_eq!(type_spec(&"а".repeat(301)), None);
         assert_eq!(key_spec("ввод").as_deref(), Some("enter"));
         for bad in ["", "cmd+", "hello", "cmd+ctrl", "f13", "rm -rf", "cmd+t+x", "a\"; do shell script \"x"] {
             assert!(key_spec(bad).is_none(), "{bad}");
@@ -466,5 +478,134 @@ mod tests {
         assert_eq!(p.len(), 102);
         assert_eq!(&p[..6], &[0xFF; 6]);
         assert_eq!(&p[96..], &[1, 2, 3, 4, 5, 6]);
+    }
+}
+
+// ---------------------------------------------------------------- computers that say hello
+
+/// soundya on a computer (Mac agent, Windows app) tells the speaker it is there: POST
+/// /api/pc/hello. The panel lists those not set up yet («Найдены компьютеры» → «Добавить»), so
+/// nothing is typed and the key never passes through a browser. Kept in memory only.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct Hello {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub mac: String,
+    #[serde(default)]
+    pub key: String,
+}
+
+/// (hello, the address it came from, when: unix s).
+static SEEN: std::sync::Mutex<Vec<(Hello, String, u64)>> = std::sync::Mutex::new(Vec::new());
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+fn valid_mac(m: &str) -> bool {
+    m.is_empty() || (m.len() == 17 && m.split([':', '-']).count() == 6 && m.split([':', '-']).all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit())))
+}
+
+/// Takes a hello from `ip` (the connection's own address: a computer cannot announce another).
+pub fn hello(h: Hello, ip: &str) -> Result<(), String> {
+    if h.key.trim().is_empty() || h.key.len() > 128 || h.name.chars().count() > 80 || !valid_mac(h.mac.trim()) {
+        return Err("неверные данные компьютера".into());
+    }
+    let h = Hello { name: h.name.trim().to_owned(), os: h.os.trim().chars().take(12).collect(), port: if h.port == 0 { PORT } else { h.port }, mac: h.mac.trim().to_owned(), key: h.key.trim().to_owned() };
+    let mut seen = SEEN.lock().unwrap();
+    seen.retain(|(_, a, _)| a != ip);
+    seen.push((h, ip.to_owned(), unix_now()));
+    // A day without a word: gone (switched off, another network).
+    let old = unix_now().saturating_sub(24 * 3600);
+    seen.retain(|(_, _, t)| *t >= old);
+    if seen.len() > 16 {
+        seen.remove(0);
+    }
+    Ok(())
+}
+
+fn host_of(h: &Hello, ip: &str) -> String {
+    if h.port == PORT { ip.to_owned() } else { format!("{ip}:{}", h.port) }
+}
+
+fn same_pc(host: &str, mac: &str, ip: &str, h: &Hello) -> bool {
+    host.split(':').next() == Some(ip) || (!h.mac.is_empty() && mac.eq_ignore_ascii_case(&h.mac))
+}
+
+/// For the panel (no keys): every computer that said hello, and whether it is set up with its current key.
+pub fn found_json(s: &Settings) -> serde_json::Value {
+    let seen = SEEN.lock().unwrap();
+    serde_json::Value::Array(
+        seen.iter()
+            .rev()
+            .map(|(h, ip, at)| {
+                let first = same_pc(&s.pc_host, &s.pc_mac, ip, h).then(|| (s.pc_host.clone(), s.pc_token.clone()));
+                let set = first.or_else(|| s.pcs_more.iter().find(|d| same_pc(&d.host, &d.mac, ip, h)).map(|d| (d.host.clone(), d.token.clone())));
+                let added = set.as_ref().is_some_and(|(host, token)| *host == host_of(h, ip) && *token == h.key);
+                serde_json::json!({ "name": h.name, "os": h.os, "ip": ip, "mac": h.mac, "at": at, "added": added, "known": set.is_some() })
+            })
+            .collect(),
+    )
+}
+
+/// «Добавить» on the panel: that computer goes into the settings — over its own old entry
+/// (same address or MAC), else first if there is none yet, else into «Ещё компьютеры».
+pub fn adopt(s: &mut Settings, ip: &str) -> Result<String, String> {
+    let (h, ip) = SEEN.lock().unwrap().iter().find(|(_, a, _)| a == ip).map(|(h, a, _)| (h.clone(), a.clone())).ok_or("этот компьютер давно не выходил на связь — откройте на нём soundya")?;
+    let host = host_of(&h, &ip);
+    let label = if h.os == "mac" { "мак" } else { "компьютер" };
+    if s.pc_host.trim().is_empty() || same_pc(&s.pc_host, &s.pc_mac, &ip, &h) {
+        s.pc_host = host.clone();
+        s.pc_token = h.key.clone();
+        if !h.mac.is_empty() {
+            s.pc_mac = h.mac.clone();
+        }
+        if s.pc_name.trim().is_empty() {
+            s.pc_name = label.into();
+        }
+        return Ok(format!("OK: {} ({host}) — основной компьютер", if h.name.is_empty() { label } else { &h.name }));
+    }
+    if let Some(d) = s.pcs_more.iter_mut().find(|d| same_pc(&d.host, &d.mac, &ip, &h)) {
+        d.host = host.clone();
+        d.token = h.key.clone();
+        if !h.mac.is_empty() {
+            d.mac = h.mac.clone();
+        }
+        return Ok(format!("OK: {} ({host}) обновлён", d.name));
+    }
+    let taken: Vec<String> = std::iter::once(s.pc_name.clone()).chain(s.pcs_more.iter().map(|d| d.name.clone())).map(|n| n.trim().to_lowercase()).collect();
+    let name = if taken.iter().any(|n| n == label) { h.name.to_lowercase() } else { label.to_owned() };
+    s.pcs_more.push(crate::settings::PcDevice { name: name.clone(), host: host.clone(), token: h.key.clone(), mac: h.mac.clone() });
+    Ok(format!("OK: {name} ({host}) добавлен"))
+}
+
+#[cfg(test)]
+mod hello_tests {
+    use super::*;
+
+    #[test]
+    fn a_computer_says_hello_and_is_added() {
+        let h = |name: &str, os: &str, mac: &str| Hello { name: name.into(), os: os.into(), port: 0, mac: mac.into(), key: format!("k-{name}") };
+        assert!(hello(Hello { key: String::new(), ..h("x", "mac", "") }, "10.9.9.9").is_err());
+        assert!(hello(h("x", "mac", "zz"), "10.9.9.9").is_err(), "bad MAC");
+        hello(h("MacBook", "mac", "46:a5:2f:8b:ba:c7"), "10.9.9.82").unwrap();
+        hello(h("DESKTOP", "windows", "D8:43:AE:19:42:AB"), "10.9.9.100").unwrap();
+        let mut s = Settings::default();
+        assert!(adopt(&mut s, "10.9.9.82").unwrap().contains("основной"));
+        assert_eq!((s.pc_host.as_str(), s.pc_token.as_str(), s.pc_name.as_str()), ("10.9.9.82", "k-MacBook", "мак"));
+        // The Windows PC was there before under another address: updated by its MAC, not added twice.
+        s.pcs_more.push(crate::settings::PcDevice { name: "компьютер".into(), host: "10.9.9.50".into(), token: "old".into(), mac: "d8:43:ae:19:42:ab".into() });
+        adopt(&mut s, "10.9.9.100").unwrap();
+        assert_eq!(s.pcs_more.len(), 1);
+        assert_eq!((s.pcs_more[0].host.as_str(), s.pcs_more[0].token.as_str()), ("10.9.9.100", "k-DESKTOP"));
+        let found = found_json(&s);
+        assert!(found.as_array().unwrap().iter().filter(|f| f["ip"].as_str().unwrap().starts_with("10.9.9.")).all(|f| f["added"] == true));
+        assert!(!found.to_string().contains("k-MacBook"), "no keys to the panel");
+        assert!(adopt(&mut s, "10.9.9.7").is_err());
     }
 }

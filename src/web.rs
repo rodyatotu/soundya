@@ -29,6 +29,16 @@ mod listen_tests {
         assert_eq!(super::listeners(), 0);
         assert_eq!(super::LISTEN_GEN.load(std::sync::atomic::Ordering::Acquire), g + 1);
     }
+    #[test]
+    fn a_late_heartbeat_does_not_silence_the_speaker_again() {
+        super::listen_from("tabLate", true, true);
+        super::listen("tabLate", false);
+        super::listen("tabLate", true); // sent before the stop, arrived after it
+        assert!(!super::listening_tab("tabLate"));
+        super::listen_from("tabLate", true, true); // the user chose this browser again
+        assert!(super::listening_tab("tabLate"));
+        super::listen("tabLate", false);
+    }
 }
 
 #[cfg(test)]
@@ -244,7 +254,10 @@ pub fn serve(port: u16, tx: Sender<Cmd>, shared: Arc<Shared>, client: Client) {
 static LISTENERS: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = std::sync::Mutex::new(None);
 /// Bumped by «Вернуть звук на колонку»: every listening tab stops.
 pub static LISTEN_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-const LISTEN_TTL: Duration = Duration::from_secs(12);
+// 90 s, not 12: a page in the background (the Mac window hidden, a background tab) has its
+// timers slowed, its heartbeat came late and the speaker sounded for a moment. A page that
+// closes says so itself (pagehide), so a long wait only matters for a crashed browser.
+const LISTEN_TTL: Duration = Duration::from_secs(90);
 static STREAMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const MAX_STREAMS: usize = 6;
 
@@ -256,19 +269,45 @@ pub fn listeners() -> usize {
     map.len()
 }
 
-/// A tab starts (`on`), keeps (`on` again within 12 s) or stops listening.
-pub fn listen(id: &str, on: bool) -> usize {
+/// Tabs that just stopped listening: a late «still listening» (sent a moment before the stop,
+/// arrived after it) must not make the speaker silent again.
+static STOPPED: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = std::sync::Mutex::new(None);
+const LATE_BEAT: Duration = Duration::from_secs(3);
+
+/// A tab starts (`start`: the user chose «этот браузер»), keeps (`on`) or stops listening.
+pub fn listen_from(id: &str, on: bool, start: bool) -> usize {
     let id: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).take(40).collect();
     {
+        let mut stopped = STOPPED.lock().unwrap();
+        let stopped = stopped.get_or_insert_with(Default::default);
+        stopped.retain(|_, at| at.elapsed() < LATE_BEAT);
         let mut g = LISTENERS.lock().unwrap();
         let map = g.get_or_insert_with(Default::default);
         if on && !id.is_empty() {
-            map.insert(id, std::time::Instant::now());
+            if start {
+                stopped.remove(&id);
+            }
+            if !stopped.contains_key(&id) {
+                map.insert(id, std::time::Instant::now());
+            }
         } else {
             map.remove(&id);
+            if !id.is_empty() {
+                stopped.insert(id, std::time::Instant::now());
+            }
         }
     }
     listeners()
+}
+
+pub fn listen(id: &str, on: bool) -> usize {
+    listen_from(id, on, false)
+}
+
+/// Is this tab among the listeners now (a stream request does not start listening by itself).
+fn listening_tab(id: &str) -> bool {
+    let id: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).take(40).collect();
+    LISTENERS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&id))
 }
 
 /// «Вернуть звук на колонку».
@@ -383,7 +422,7 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         return reply(&conn, "403 Forbidden", "text/plain; charset=utf-8", &format!("error: адрес «{host}» не похож на адрес колонки в домашней сети"));
     }
     // Without the PIN's session the body is not even read (a 6 MB report from anyone).
-    if method != "GET" && path != "/api/login" && path != "/api/duck" && crate::auth::enabled() && !crate::auth::session_ok(&cookie) {
+    if method != "GET" && path != "/api/login" && path != "/api/duck" && path != "/api/pc/hello" && crate::auth::enabled() && !crate::auth::session_ok(&cookie) {
         return reply_unread(&conn, &mut reader, length, "401 Unauthorized", "error: нужен PIN панели");
     }
     // An update archive from the Mac/Windows app (its «Обновить» when the speaker's ADB
@@ -498,6 +537,10 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         if !param("id").is_empty() && param("id") != track.id.to_string() {
             return reply(&conn, "409 Conflict", "text/plain", "another track is playing");
         }
+        // The page asking for the next track is listening too: counts as its heartbeat.
+        if !param("tab").is_empty() && listening_tab(param("tab")) {
+            listen(param("tab"), true);
+        }
         if STREAMS.fetch_add(1, std::sync::atomic::Ordering::AcqRel) >= MAX_STREAMS {
             STREAMS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             return reply(&conn, "503 Service Unavailable", "text/plain; charset=utf-8", "слишком много слушателей");
@@ -548,6 +591,12 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
         ("GET", "/") | ("GET", "/index.html") => ("200 OK", "text/html; charset=utf-8", page().to_owned()),
         // «/?app=1» (the Mac app's window) and the like: the same page.
         ("GET", p) if p.starts_with("/?") => ("200 OK", "text/html; charset=utf-8", page().to_owned()),
+        // The to-do list the Mac and Windows apps keep over other windows (src/todo.html).
+        // For the Ditoo Plus launcher on the PC (ditoo.rs): the mode and what to show now.
+        ("GET", "/api/ditoo") => ("200 OK", "application/json", ask(tx, |r| Cmd::Control("ditoo json".into(), r), 10)),
+        // Reads an uploaded document (also .docx) for «Планы» and the to-do window.
+        ("GET", "/import.js") => ("200 OK", "text/javascript; charset=utf-8", include_str!("import.js").to_owned()),
+        ("GET", "/todo") => ("200 OK", "text/html; charset=utf-8", include_str!("todo.html").to_owned()),
         ("GET", "/manifest.webmanifest") => ("200 OK", "application/manifest+json", manifest().to_owned()),
         // The developer build: its scripts and the end of the log (secrets cut out;
         // POST, so only the panel itself and, with a PIN, only after it).
@@ -606,6 +655,14 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             Err(e) => ("200 OK", "application/json", serde_json::json!({"error": e}).to_string()),
         },
         // Smart Ducking events from devices (the PC agent, a phone automation…).
+        // soundya on a computer: «I am here» (pc.rs, Hello). Its own address is taken from the connection.
+        ("POST", "/api/pc/hello") => match serde_json::from_str::<crate::pc::Hello>(&body) {
+            Ok(h) => match crate::pc::hello(h, &conn.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default()) {
+                Ok(()) => ("200 OK", "text/plain; charset=utf-8", "OK".to_owned()),
+                Err(e) => ("400 Bad Request", "text/plain; charset=utf-8", format!("error: {e}")),
+            },
+            Err(e) => ("400 Bad Request", "text/plain; charset=utf-8", format!("error: {e}")),
+        },
         ("POST", "/api/duck") => match serde_json::from_str::<crate::ducking::Request>(&body) {
             Ok(req) => match crate::ducking::event(&req) {
                 Ok(v) => ("200 OK", "application/json", v.to_string()),
@@ -637,11 +694,24 @@ fn handle(conn: TcpStream, tx: &Sender<Cmd>, shared: &Shared, client: &Client) -
             if v["all"] == "stop" {
                 stop_listeners();
             } else {
-                listen(v["id"].as_str().unwrap_or(""), v["on"].as_bool().unwrap_or(false));
+                listen_from(v["id"].as_str().unwrap_or(""), v["on"].as_bool().unwrap_or(false), v["start"].as_bool().unwrap_or(false));
             }
             let n = listeners();
             shared.duck.set_listening(n > 0);
             ("200 OK", "application/json", serde_json::json!({"listeners": n, "gen": LISTEN_GEN.load(std::sync::atomic::Ordering::Acquire)}).to_string())
+        }
+        // Wi-Fi (the control menu): its own route, so a password never goes through /api/cmd.
+        ("GET", "/api/wifi") => ("200 OK", "application/json", crate::wifi::status().to_string()),
+        ("POST", "/api/wifi") => {
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let s = |k: &str| v[k].as_str().unwrap_or("").to_owned();
+            let r = match s("action").as_str() {
+                "scan" => Ok(crate::wifi::scan().to_string()),
+                "connect" => crate::wifi::connect(&s("ssid"), v["psk"].as_str()).map(|m| serde_json::json!({"message": m}).to_string()),
+                "forget" => crate::wifi::forget(&s("id")).map(|m| serde_json::json!({"message": m}).to_string()),
+                _ => Err("unknown action".into()),
+            };
+            ("200 OK", "application/json", r.unwrap_or_else(|e| serde_json::json!({"error": e}).to_string()))
         }
         ("GET", "/api/community") => (
             "200 OK",

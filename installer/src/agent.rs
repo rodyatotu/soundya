@@ -367,6 +367,54 @@ fn key(runner: &dyn Runner, spec: &str) -> String {
     }
 }
 
+/// AppleScript that types `text` into the front window. Plain ASCII: keystroke. Anything else
+/// (Cyrillic, emoji): through the clipboard and ⌘V — keystroke goes by key codes of the current
+/// layout and mangles it; the clipboard is put back after.
+fn type_script(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() || t.chars().count() > 300 || t.chars().any(char::is_control) {
+        return None;
+    }
+    let s = applescript_string(t);
+    Some(if t.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+        format!("tell application \"System Events\" to keystroke {s}")
+    } else {
+        format!(
+            "set old to missing value\ntry\nset old to the clipboard\nend try\nset the clipboard to {s}\n\
+             tell application \"System Events\" to keystroke \"v\" using command down\ndelay 0.4\n\
+             if old is not missing value then set the clipboard to old"
+        )
+    })
+}
+
+fn type_text(runner: &dyn Runner, text: &str) -> String {
+    let Some(script) = type_script(text) else { return "Не поняла, что напечатать".into() };
+    let o = runner.act("/usr/bin/osascript", &["-e", &script]);
+    if o.ok {
+        "Готово".into()
+    } else if not_permitted(&o) || o.stderr.contains("-1719") || o.stderr.contains("assistive") {
+        format!("macOS не разрешила soundya печатать. {ACCESSIBILITY}")
+    } else {
+        eprintln!("soundya-pc: type: {}", o.stderr.trim());
+        "Не получилось напечатать".into()
+    }
+}
+
+/// Where the pointer is, "x,y" in the points «click» takes (top left of the main screen is 0,0).
+fn mouse(runner: &dyn Runner) -> String {
+    // CoreGraphics gives the pointer in the same top-left points «click» takes. AppKit's
+    // NSScreen (the first try) often answered nothing in the agent started by launchd.
+    const JS: &str = "ObjC.import('CoreGraphics'); var e = $.CGEventCreate(null); var p = $.CGEventGetLocation(e); \
+        Math.round(p.x) + ',' + Math.round(p.y)";
+    let o = runner.read("/usr/bin/osascript", &["-l", "JavaScript", "-e", JS]);
+    let xy = o.stdout.trim();
+    if o.ok && parse_click(xy).is_some() {
+        xy.to_owned()
+    } else {
+        "Не получилось узнать, где мышь".into()
+    }
+}
+
 fn open_app(runner: &dyn Runner, config: &Config, name: &str) -> String {
     if name.trim().is_empty() {
         return "Скажите, что открыть".into();
@@ -533,6 +581,8 @@ pub fn handle(runner: &dyn Runner, config: &Config, action: &str, body: &str, ho
         }
         "click" => click(runner, body),
         "key" => key(runner, body),
+        "type" => type_text(runner, body),
+        "mouse" => mouse(runner),
         "shutdown" => power(runner, "shut down", "Выключаю компьютер"),
         "restart" => power(runner, "restart", "Перезагружаю компьютер"),
         _ => return None,
@@ -664,9 +714,38 @@ pub fn main() -> ! {
     let dry_run = std::env::var("SOUNDYA_PC_DRYRUN").is_ok_and(|v| v == "1");
     let hostname = run("/usr/sbin/scutil", &["--get", "ComputerName"]).stdout.trim().to_owned();
     eprintln!("soundya-pc: listening on port {}{}", config.port, if dry_run { " (dry run)" } else { "" });
+    // «I am here» to the speaker now and every 5 minutes: the panel lists this Mac under
+    // «Найдены компьютеры» and adds it in one click (address, MAC and key, nothing typed).
+    let (key, port, name) = (config.key.clone(), config.port, hostname.clone());
+    std::thread::spawn(move || loop {
+        let speaker = speaker_of(&home());
+        if let Err(e) = say_hello(&speaker, &name, port, &key) {
+            eprintln!("soundya-pc: hello to {speaker}: {e}");
+        }
+        std::thread::sleep(Duration::from_secs(300));
+    });
     let agent = Arc::new(Agent { auth: Auth::new(&config.key), config, runner: Box::new(System { dry_run }), hostname });
     agent.serve(listener);
     std::process::exit(0)
+}
+
+/// POST /api/pc/hello to the speaker's panel: name, MAC of the card that reaches it, port, key.
+fn say_hello(speaker: &str, name: &str, port: u16, key: &str) -> Result<(), String> {
+    use std::net::ToSocketAddrs;
+    let addr = format!("{speaker}:8765").to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("no address")?;
+    let me = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect(addr).map(|()| s))
+        .and_then(|s| s.local_addr())
+        .map(|a| a.ip().to_string())
+        .map_err(|e| e.to_string())?;
+    let ifconfig = run("/sbin/ifconfig", &[]).stdout;
+    let body = json!({ "name": name, "os": "mac", "port": port, "mac": mac_for(&ifconfig, &me).unwrap_or_default(), "key": key }).to_string();
+    let mut conn = TcpStream::connect_timeout(&addr, Duration::from_secs(4)).map_err(|e| e.to_string())?;
+    let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
+    write!(conn, "POST /api/pc/hello HTTP/1.1\r\nHost: {speaker}:8765\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).map_err(|e| e.to_string())?;
+    let mut answer = String::new();
+    let _ = conn.read_to_string(&mut answer);
+    if answer.starts_with("HTTP/1.1 200") { Ok(()) } else { Err(answer.lines().next().unwrap_or("no answer").to_owned()) }
 }
 
 // ------------------------------------------------------------------ setup
@@ -865,6 +944,15 @@ pub fn remove_files(home: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typing_scripts() {
+        assert_eq!(type_script("hello world").unwrap(), "tell application \"System Events\" to keystroke \"hello world\"");
+        let ru = type_script("привет \"мир\"").unwrap();
+        assert!(ru.contains("set the clipboard to \"привет \\\"мир\\\"\"") && ru.contains("using command down"), "{ru}");
+        assert!(ru.contains("set the clipboard to old"), "the clipboard is put back");
+        assert!(type_script("").is_none() && type_script("a\nb").is_none() && type_script(&"x".repeat(301)).is_none());
+    }
 
     #[test]
     fn the_menu_bar_icon_finds_its_speaker_and_starts_at_login() {

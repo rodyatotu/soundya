@@ -174,18 +174,58 @@ pub fn configure(c: Config, shared: &Arc<Shared>) {
     }
 }
 
+/// The proxy for Telegram only (settings tg_proxy); "" = none.
+static TG_PROXY: Mutex<String> = Mutex::new(String::new());
+
+pub fn set_proxy(proxy: &str) {
+    *TG_PROXY.lock().unwrap() = proxy.trim().to_owned();
+}
+
 fn agent(shared: &Shared) -> ureq::Agent {
+    // Telegram's own proxy: a plain tunnel, without SoundCloud's bypass tricks (they are for
+    // its hosts) — TLS is between the speaker and Telegram, the proxy only carries it.
+    let own = TG_PROXY.lock().unwrap().clone();
+    if !own.is_empty() {
+        let full = if own.contains("://") { own } else { format!("http://{own}") };
+        if let Ok(p) = ureq::Proxy::new(&full) {
+            return ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).proxy(p).build();
+        }
+    }
     let proxy = shared.proxy.lock().unwrap().clone();
     crate::sc::build_agent(&proxy).unwrap_or_else(|_| ureq::agent())
 }
 
+/// A Bot API call for mentions.rs (its own bot and polling).
+pub(crate) fn call_bot(shared: &Shared, token: &str, method: &str, body: Value, timeout: u64) -> Result<Value, String> {
+    call(shared, token, method, body, timeout)
+}
+
+/// One more Telegram message noticed: the counter the Ditoo launcher follows for its pop-up.
+pub(crate) fn count_said() {
+    st(|s| s.count += 1);
+}
+
 fn call(shared: &Shared, token: &str, method: &str, body: Value, timeout: u64) -> Result<Value, String> {
     let url = format!("{}/bot{token}/{method}", api_base());
-    let r = agent(shared)
-        .post(&url)
-        .timeout(Duration::from_secs(timeout))
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string());
+    let send = || {
+        agent(shared)
+            .post(&url)
+            .timeout(Duration::from_secs(timeout))
+            .set("Content-Type", "application/json")
+            .send_string(&body.to_string())
+    };
+    let r = match send() {
+        // No connection at all (not Telegram's own refusal): some providers drop one of the
+        // Bot API's addresses and let the other through. The one tried is put last (dns.rs
+        // knows both), and the call goes once more.
+        // Through the proxy there is no other address to try: the error is the proxy's.
+        Err(ureq::Error::Transport(t)) if TG_PROXY.lock().unwrap().is_empty() => {
+            eprintln!("telegram: {method}: no connection ({}); trying its other address", t.kind());
+            crate::dns::failed(&api_base());
+            send()
+        }
+        other => other,
+    };
     let v: Value = match r {
         Ok(r) => r.into_json().map_err(|e| e.to_string())?,
         Err(ureq::Error::Status(code, r)) => {

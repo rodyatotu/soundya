@@ -92,6 +92,9 @@ pub struct Request {
     pub screenshot: String,
     #[serde(default)]
     pub screenshot_type: String,
+    /// The Station's model as the owner confirmed or wrote it in the form.
+    #[serde(default)]
+    pub model_said: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -111,6 +114,9 @@ pub struct Record {
     pub sent_at: Option<u64>,
     pub version: String,
     pub model: String,
+    /// The model in the owner's words ("" = not asked: an automatic report, an old one).
+    #[serde(default)]
+    pub model_said: String,
     pub firmware: Option<String>,
     pub installation: Option<String>,
     /// Attachment names and sizes (the files are in reports/<id>/ until sent).
@@ -402,7 +408,7 @@ fn status_summary(shared: &Shared) -> Value {
                 "tvs_more": s.get("tvs_more").and_then(Value::as_array).map_or(0, Vec::len),
                 "pcs_more": s.get("pcs_more").and_then(Value::as_array).map_or(0, Vec::len),
             });
-            for k in ["token", "sc_refresh", "proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "tvs_more", "pcs_more", "tv_name", "pc_name", "tv_active", "zapret_args", "airplay_name", "cal_url", "g_client_secret", "g_refresh", "g_client_id",
+            for k in ["token", "sc_refresh", "proxy", "tg_proxy", "pc_host", "pc_token", "pc_mac", "pc_contacts", "tv_host", "tvs_more", "pcs_more", "tv_name", "pc_name", "tv_active", "zapret_args", "airplay_name", "cal_url", "g_client_secret", "g_refresh", "g_client_id",
                       // Personal: team emails, Telegram ids and names, the headphones, the city.
                       "teams", "tg_allowed", "tg_bots", "meet_bot_token", "bt_mac", "display_city", "panel_pin"] {
                 s.remove(k);
@@ -473,6 +479,9 @@ pub fn build(dir: &Path, shared: &Shared, req: &Request) -> Vec<File> {
             files.push(File { name: format!("screenshot.{ext}"), data: bytes });
         }
     }
+    // Telegram refuses an empty file, and the server then asked for the whole report again
+    // every hour: an empty log (soundya just restarted) is simply not attached.
+    files.retain(|f| !f.data.is_empty());
     files
 }
 
@@ -487,9 +496,18 @@ fn clip(s: &str, n: usize) -> String {
 /// The report's header as the author sees it in Telegram.
 pub fn message(r: &Record) -> String {
     let date = date(r.created);
+    // The system's own name, then what the owner said the Station is: the name alone did not
+    // tell the model apart («Amlogic», #SY-76C50E61).
+    let said = r.model_said.trim();
+    let guess = crate::stats::model_name(&r.model, crate::display::Clock::detect().is_some());
+    let model = match (said.is_empty(), guess) {
+        (true, _) => r.model.clone(),
+        (false, Some(g)) if g.eq_ignore_ascii_case(said) || g.to_lowercase() == said.to_lowercase() => format!("{} — {g}, владелец подтвердил", r.model),
+        (false, _) => format!("{} — владелец пишет: «{said}»", r.model),
+    };
     let device = match &r.firmware {
-        Some(f) => format!("{} (прошивка {f})", r.model),
-        None => r.model.clone(),
+        Some(f) => format!("{model} (прошивка {f})"),
+        None => model,
     };
     let mut m = format!(
         "{} #{}\nSoundya Version: {}\nDevice: {}\nModule: {}\nDate: {}\nUser/Installation ID: {}\nDescription: {}\n",
@@ -571,6 +589,7 @@ fn record(req: &Request, id: String, files: &[File], dir: &Path) -> Record {
         sent_at: None,
         version: crate::VERSION.into(),
         model: crate::stats::model(),
+        model_said: clip(req.model_said.trim(), 60).replace('\n', " "),
         firmware: firmware(),
         installation: req.install_id.then(|| crate::stats::install_id(dir)).flatten(),
         files: files.iter().map(|f| (f.name.clone(), f.data.len() as u64)).collect(),
@@ -587,6 +606,12 @@ fn save_record(dir: &Path, r: &Record) -> std::io::Result<()> {
 
 /// Saves the report on flash and wakes the sender. Returns the record.
 pub fn submit(dir: &Path, shared: &Shared, req: &Request) -> Result<Record, String> {
+    // A bug without the model is half a bug: asked for where the form could not tell it.
+    if req.kind != "feedback" && req.model_said.trim().is_empty()
+        && crate::stats::model_name(&crate::stats::model(), crate::display::Clock::detect().is_some()).is_none()
+    {
+        return Err("впишите модель колонки (например: Станция Мини 2, Лайт, Макс) — сама её определить не смогла".into());
+    }
     if req.description.trim().is_empty() {
         return Err("опишите, что случилось".into());
     }
@@ -777,6 +802,8 @@ pub fn list_json(dir: &Path) -> Value {
             "sent_at": r.sent_at, "description": clip(&r.description, 80),
         })).collect::<Vec<_>>(),
         "modules": MODULES.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
+        // «Ваша колонка — Станция Лайт?» in the form; null: the owner writes the model.
+        "model_guess": crate::stats::model_name(&crate::stats::model(), crate::display::Clock::detect().is_some()),
         "server": !url().is_empty(),
     })
 }
@@ -844,7 +871,7 @@ mod tests {
             id: "SY-0A1B2C3D".into(), kind: "bug".into(), module: "airplay".into(), description: "Звук рвётся".into(),
             expected: "Ровно".into(), actual: "Рвётся".into(), created: 1_700_000_000, status: "queued".into(),
             attempts: 0, last_error: None, next_try: 0, sent_at: None, version: "0.5.0".into(), model: "yandexmini_2".into(),
-            firmware: None, installation: None, files: vec![("system.log".into(), 2048)],
+            firmware: None, installation: None, model_said: String::new(), files: vec![("system.log".into(), 2048)],
         };
         let m = message(&r);
         // Line by line, as agreed with the author.
@@ -854,6 +881,10 @@ mod tests {
             ["BUG REPORT #SY-0A1B2C3D", "Soundya Version", "Device", "Module", "Date", "User/Installation ID", "Description", "Expected", "Actual", "Attachments"],
             "{m}"
         );
+        let said = message(&Record { model: "Amlogic".into(), model_said: "Станция Миди".into(), firmware: Some("1.2".into()), ..r.clone() });
+        assert!(said.contains("Device: Amlogic — владелец пишет: «Станция Миди» (прошивка 1.2)"), "{said}");
+        let lite = message(&Record { model: "yandex-station-lite".into(), model_said: "станция лайт".into(), ..r.clone() });
+        assert!(lite.contains("Device: yandex-station-lite — Станция Лайт, владелец подтвердил"), "{lite}");
         for part in ["Soundya Version: 0.5.0", "Device: yandexmini_2", "Module: AirPlay", "Date: 2023-11-14 22:13:20 UTC",
                      "Description: Звук рвётся", "Expected: Ровно", "Actual: Рвётся", "* system.log (2 КБ)"] {
             assert!(m.contains(part), "missing {part:?} in\n{m}");
@@ -868,7 +899,7 @@ mod tests {
         let rec = Record {
             id: "SY-TEST".into(), kind: "bug".into(), module: "x".into(), description: "d".into(), expected: "".into(),
             actual: "".into(), created: now(), status: "queued".into(), attempts: 0, last_error: None, next_try: 0,
-            sent_at: None, version: "v".into(), model: "m".into(), firmware: None, installation: None, files: vec![],
+            sent_at: None, version: "v".into(), model: "m".into(), firmware: None, installation: None, model_said: String::new(), files: vec![],
         };
         crate::fsx::ensure_dir(&reports_dir(&d));
         save_record(&d, &rec).unwrap();

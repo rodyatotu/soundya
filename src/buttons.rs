@@ -72,15 +72,69 @@ fn is_play_pause_press(event: &[u8]) -> bool {
     matches!(parse(event), Some((EV_KEY, PLAY_PAUSE, 1)))
 }
 
+/// The input device BlueZ makes for a connected Bluetooth speaker's or headphones' own buttons
+/// (AVRCP): «Ditoo-Plus-audio (AVRCP)» → /dev/input/event2. `devices` is /proc/bus/input/devices.
+fn remote_node(devices: &str) -> Option<String> {
+    devices.split("\n\n").find(|d| d.lines().any(|l| l.starts_with("N: Name=") && l.contains("(AVRCP)")))?.lines().find_map(|l| {
+        l.strip_prefix("H: Handlers=")?.split_whitespace().find(|h| h.starts_with("event")).map(|h| format!("/dev/input/{h}"))
+    })
+}
+
+/// What a button of the Bluetooth device does. ⏭ and ⏮ switch tracks; ▶, ‖ and ▶‖ all toggle
+/// (a device with one button sends «play» or «pause» by what it thinks is going on, and it does
+/// not know: the speaker tells it nothing about SoundCloud); ■ pauses.
+fn remote_intent(code: u16, playing: bool) -> Option<Intent> {
+    match code {
+        163 => Some(Intent::Next),
+        165 => Some(Intent::Previous),
+        164 | 200 | 201 | 207 | 119 => Some(if playing { Intent::Pause } else { Intent::Resume }),
+        166 | 128 => playing.then_some(Intent::Pause),
+        _ => None,
+    }
+}
+
+/// The buttons of the Bluetooth device the music goes to: next, previous, play/pause. The
+/// input device is there only while the device is connected, so it is looked for again and again.
+pub fn run_remote(tx: Sender<Cmd>, shared: Arc<Shared>) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(3));
+        let Some(path) = crate::fsx::read_string(std::path::Path::new("/proc/bus/input/devices")).and_then(|d| remote_node(&d)) else { continue };
+        let Ok(mut device) = File::open(&path) else { continue };
+        eprintln!("buttons: Bluetooth device's buttons at {path}");
+        let mut event = [0u8; EVENT_SIZE];
+        let mut last = (0u16, Instant::now() - Duration::from_secs(10));
+        while device.read_exact(&mut event).is_ok() {
+            let Some((EV_KEY, code, 1)) = parse(&event) else { continue };
+            // One press now and then comes twice (the device repeats it until answered).
+            if last.0 == code && last.1.elapsed() < Duration::from_millis(350) {
+                continue;
+            }
+            last = (code, Instant::now());
+            let intent = remote_intent(code, shared.playing.load(Ordering::Acquire));
+            eprintln!("buttons: Bluetooth device key {code} → {intent:?}");
+            if let Some(intent) = intent {
+                let _ = tx.send(Cmd::Voice(intent));
+            }
+        }
+        eprintln!("buttons: Bluetooth device's buttons gone");
+    });
+}
+
 pub fn run(tx: Sender<Cmd>, shared: Arc<Shared>) {
+    // The Bluetooth device's buttons are run_remote's.
+    let remote = crate::fsx::read_string(std::path::Path::new("/proc/bus/input/devices")).and_then(|d| remote_node(&d));
     for n in 0..4 {
         let path = format!("/dev/input/event{n}");
+        if remote.as_deref() == Some(path.as_str()) {
+            continue;
+        }
         let Ok(mut device) = File::open(&path) else { continue };
         let tx = tx.clone();
         let shared = shared.clone();
         thread::spawn(move || {
             let mut event = [0u8; EVENT_SIZE];
             let mut last = Instant::now() - Duration::from_secs(10);
+            let mut last_block = false;
             loop {
                 if device.read_exact(&mut event).is_err() {
                     eprintln!("buttons: {path} closed");
@@ -93,7 +147,16 @@ pub fn run(tx: Sender<Cmd>, shared: Arc<Shared>) {
                         crate::led::firmware_animates();
                     }
                 }
-                if !is_play_pause_press(&event) || last.elapsed() < Duration::from_millis(400) {
+                if !is_play_pause_press(&event) {
+                    continue;
+                }
+                if last.elapsed() < Duration::from_millis(400) {
+                    // A quick second press is not soundya's, but Alice still takes it (she asks
+                    // for Yandex Music → «нужна подписка Плюс»): keep her quiet as after the first.
+                    if last_block {
+                        alice::quiet_for(Duration::from_secs(4));
+                        keep_alice_paused(shared.clone());
+                    }
                     continue;
                 }
                 last = Instant::now();
@@ -101,6 +164,7 @@ pub fn run(tx: Sender<Cmd>, shared: Arc<Shared>) {
                 let yandex_default = shared.keyword_only() || !shared.soundcloud();
                 let (intent, block) = on_press(playing, shared.alice_music(), yandex_default);
                 eprintln!("buttons: ▶‖ pressed, {}", match (&intent, block) { (Some(Intent::Pause), _) => "pause", (Some(_), _) => "play", (None, true) => "Alice's music paused", (None, false) => "left to Alice" });
+                last_block = block;
                 if block {
                     // Alice answers the press herself («нет такой функции»): keep her quiet,
                     // and her music off — the button is SoundCloud's now.
@@ -119,6 +183,21 @@ pub fn run(tx: Sender<Cmd>, shared: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bluetooth_device_buttons() {
+        // /proc/bus/input/devices with a Ditoo connected (from the speaker).
+        let devices = "I: Bus=0019 Vendor=0001 Product=0001 Version=0100\nN: Name=\"sar0_pad0\"\nH: Handlers=kbd event1 \n\n\
+            I: Bus=0005 Vendor=0000 Product=0000 Version=0000\nN: Name=\"Ditoo-Plus-audio (AVRCP)\"\nP: Phys=3c:0b:4f:19:bf:15\nH: Handlers=kbd event2 \nB: EV=100007\n";
+        assert_eq!(remote_node(devices).as_deref(), Some("/dev/input/event2"));
+        assert_eq!(remote_node("N: Name=\"sar0_pad0\"\nH: Handlers=kbd event1 \n"), None);
+        assert_eq!(remote_intent(163, true), Some(Intent::Next));
+        assert_eq!(remote_intent(165, false), Some(Intent::Previous));
+        assert_eq!(remote_intent(200, true), Some(Intent::Pause), "«play» while playing is the one button's pause");
+        assert_eq!(remote_intent(201, false), Some(Intent::Resume));
+        assert_eq!(remote_intent(166, false), None);
+        assert_eq!(remote_intent(115, true), None, "the volume is the device's own");
+    }
 
     #[test]
     fn reads_events_recorded_on_the_speaker() {

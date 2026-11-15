@@ -3,7 +3,8 @@
 #
 # Protocol: POST http://<pc>:8766/<action> with header "X-Soundya-Key: <key>",
 # body = program name (UTF-8) for open/close, the whole phrase for do. Actions:
-# ping, open, close, do, sleep, shutdown, restart, lock, metrics (JSON), process <name>.
+# ping, open, close, do, sleep, shutdown, restart, lock, metrics (JSON), process <name>,
+# click "x,y[,double|right]", key "ctrl+shift+t", type <text>, mouse (answers "x,y").
 # The answer is a short Russian sentence that Alice says. Since 0.5.00 the request
 # is signed (X-Soundya-Time, X-Soundya-Nonce, X-Soundya-Sign) instead of carrying the key.
 #
@@ -786,6 +787,28 @@ function Do-Click([string]$spec) {
     [SoundyaMouse]::Click([int]$Matches[1], [int]$Matches[2], $Matches[4] -eq 'right', $Matches[4] -eq 'double')
     'Готово'
 }
+# Where the pointer is: "x,y" in the same pixels as /click takes.
+$CursorCode = @'
+using System; using System.Runtime.InteropServices;
+public static class SoundyaCursor {
+    [StructLayout(LayoutKind.Sequential)] public struct P { public int X; public int Y; }
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out P p);
+    public static string Where() { P p; if (!GetCursorPos(out p)) return null; return Math.Max(0, p.X) + "," + Math.Max(0, p.Y); }
+}
+'@
+function Do-Mouse {
+    if (-not ('SoundyaCursor' -as [type])) { Add-Type -TypeDefinition $CursorCode -Language CSharp }
+    $xy = [SoundyaCursor]::Where()
+    if ($xy) { $xy } else { 'Не получилось узнать, где мышь' }
+}
+# Types text into the window in front: one line, at most 300 characters, no control
+# characters (as the speaker checks it). SendInput with Unicode characters: Cyrillic works
+# whatever the keyboard layout, and nothing needs escaping (no SendKeys).
+function Do-Type([string]$text) {
+    $t = $text.Trim()
+    if (-not $t -or $t.Length -gt 300 -or $t -match '\p{Cc}') { return 'Не поняла, что напечатать' }
+    if (Type-Text $t) { 'Готово' } else { 'Не получилось напечатать' }
+}
 $KeyNames = @{ enter = '{ENTER}'; esc = '{ESC}'; tab = '{TAB}'; space = ' '; backspace = '{BACKSPACE}'; delete = '{DELETE}';
     up = '{UP}'; down = '{DOWN}'; left = '{LEFT}'; right = '{RIGHT}'; home = '{HOME}'; end = '{END}'; pageup = '{PGUP}';
     pagedown = '{PGDN}'; insert = '{INSERT}' }
@@ -817,6 +840,8 @@ function Handle([string]$action, [string]$body) {
         'do' { Do-Command $body }
         'click' { Do-Click $body }
         'key' { Do-Key $body }
+        'type' { Do-Type $body }
+        'mouse' { Do-Mouse }
         'lock' { Start-Process rundll32.exe 'user32.dll,LockWorkStation'; 'Заблокировала компьютер' }
         'sleep' {
             Later { Start-Sleep -Seconds 2; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false) | Out-Null }

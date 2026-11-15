@@ -32,7 +32,9 @@ import base64
 import binascii
 import collections
 import datetime as dt
+import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -41,6 +43,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ACTIVE_DAYS = 7  # a speaker counts as running if it pinged within this many days
@@ -78,6 +81,9 @@ def pretty_model(raw):
 
 ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
 TEXT_RE = re.compile(r"^[\w.\- ]{0,40}$")
+# A real soundya version: 0.MINOR.PATCH, maybe with a build suffix (0.5.9-plum.1). Made-up ones
+# (1.4.88 and 1.3.37 were sent by hand in a flood) are dropped. Raise the 0 when soundya reaches 1.0.
+VERSION_RE = re.compile(r"^0\.\d{1,2}\.\d{1,3}(-[a-z0-9.]{1,16})?$")
 
 # Telegram bot for anonymous feedback from the web panel (set in the environment).
 TG_TOKEN = os.environ.get("SOUNDYA_TG_TOKEN", "").strip()
@@ -130,7 +136,12 @@ def open_db(path):
             version TEXT, model TEXT, airplay INTEGER, pc INTEGER);
         CREATE TABLE IF NOT EXISTS days (day TEXT, id TEXT, PRIMARY KEY (day, id));
         CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, received TEXT, message_id INTEGER);
+        CREATE TABLE IF NOT EXISTS report_meta (id TEXT PRIMARY KEY, sender TEXT, body TEXT, received TEXT);
+        CREATE TABLE IF NOT EXISTS bans (value TEXT PRIMARY KEY, kind TEXT, added TEXT, note TEXT);
+        CREATE TABLE IF NOT EXISTS secret (k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS ping_new (k TEXT PRIMARY KEY, day TEXT, n INTEGER);
         CREATE INDEX IF NOT EXISTS speakers_last_seen ON speakers (last_seen);
+        CREATE INDEX IF NOT EXISTS speakers_first_seen ON speakers (first_seen);
         """
     )
     return con
@@ -340,19 +351,30 @@ def deliver_report(p):
         body = {"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}
     try:
         msg = tg_call("sendMessage", body)
-        mid = msg.get("message_id") if isinstance(msg, dict) else None
-        for name, content in files:
-            data = {"chat_id": TG_CHAT, "caption": f"{rid} · {name}"}
-            if mid:
-                data["reply_to_message_id"] = mid
-            tg_call("sendDocument", data, {"document": (name, content)})
     except Exception as e:
         print(f"report {rid}: telegram error: {e}", flush=True)
         return 502, "not delivered"
+    mid = msg.get("message_id") if isinstance(msg, dict) else None
+    # Delivered once the message is in: a file Telegram refuses must not make the speaker
+    # send the whole report again every hour (an empty system.log did exactly that).
     with db_lock:
         db.execute("INSERT OR IGNORE INTO reports VALUES (?, ?, ?)", (rid, now().isoformat(), mid))
         db.commit()
-    print(f"report {rid}: delivered with {len(files)} files", flush=True)
+    # Everything in one archive, the report's own text included (report.txt): one file to
+    # pass on instead of a handful («заебался перекидывать пачками файлы»).
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("report.txt", message)
+        for name, content in files:
+            z.writestr(name, content)
+    data = {"chat_id": TG_CHAT, "caption": f"{rid} · отчёт и {len(files)} файл(ов)"}
+    if mid:
+        data["reply_to_message_id"] = mid
+    try:
+        tg_call("sendDocument", data, {"document": (f"{rid}.zip", buf.getvalue())})
+        print(f"report {rid}: delivered with {len(files)} files in one archive", flush=True)
+    except Exception as e:
+        print(f"report {rid}: archive not sent: {e}", flush=True)
     return 200, "ok"
 
 
@@ -377,33 +399,104 @@ def accept_feedback(ip, record=True):
     return True
 
 
-# /ping flood guard (memory only, nothing about senders is stored). A speaker pings once a
-# day; new installation ids are rare. A flood of random ids made the counter show 470 000
-# «speakers» and the page unusable.
+# /ping flood guard. A speaker pings once a day; new installation ids are rare. A flood of
+# random ids once made the counter show 470 000 «speakers». The counts live in the database
+# (a salted hash of the address, today's only), so a restart no longer opens the gate: the
+# 1.4.88 flood came in the second after one.
 PING_NEW_PER_IP_DAY = 3        # new ids one address may add per day (a home has 1–3 speakers)
 PING_NEW_PER_HOUR = 120        # new ids per hour from everyone together
-_ping_lock = threading.Lock()
-_ping_ip = {}                  # sender -> (day, new ids that day)
-_ping_hour = collections.deque()
 
 
 def allow_new_speaker(key):
     """May this sender add one more new id now? Counts it if so."""
     today = dt.date.today().isoformat()
-    t = time.monotonic()
-    with _ping_lock:
-        while _ping_hour and t - _ping_hour[0] > 3600:
-            _ping_hour.popleft()
-        day, n = _ping_ip.get(key, (today, 0))
-        if day != today:
-            n = 0
-        if n >= PING_NEW_PER_IP_DAY or len(_ping_hour) >= PING_NEW_PER_HOUR:
+    k = sender_hash("ping|" + key)
+    hour_ago = (now() - dt.timedelta(hours=1)).isoformat()
+    with db_lock:
+        recent = db.execute("SELECT COUNT(*) FROM speakers WHERE first_seen >= ?", (hour_ago,)).fetchone()[0]
+        row = db.execute("SELECT day, n FROM ping_new WHERE k = ?", (k,)).fetchone()
+        n = row[1] if row and row[0] == today else 0
+        if n >= PING_NEW_PER_IP_DAY or recent >= PING_NEW_PER_HOUR:
             return False
-        _ping_ip[key] = (today, n + 1)
-        _ping_hour.append(t)
-        if len(_ping_ip) > 100_000:  # a new day, or a huge spread of addresses: start over
-            _ping_ip.clear()
+        db.execute("DELETE FROM ping_new WHERE day <> ?", (today,))
+        db.execute("INSERT OR REPLACE INTO ping_new VALUES (?, ?, ?)", (k, today, n + 1))
+        db.commit()
         return True
+
+
+# Only versions that were really released count: the repository's tags (v0.5.9 → 0.5.9),
+# asked hourly and kept in the database for a start without GitHub. A build suffix
+# (0.5.9-plum.1) counts as its release. A version above the newest known asks again at once
+# (at most every 5 minutes): speakers update right after a release. "" switches the check off.
+RELEASES_URL = os.environ.get("SOUNDYA_RELEASES_URL", "https://api.github.com/repos/rodyatotu/soundya/tags?per_page=100")
+_rel = {"set": set(), "tried": 0.0}
+_rel_lock = threading.Lock()
+
+
+def _vtuple(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def refresh_releases():
+    found = set()
+    try:
+        for page in range(1, 6):
+            req = urllib.request.Request(f"{RELEASES_URL}&page={page}", headers={"User-Agent": "soundya-stats"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                tags = json.load(r)
+            found |= {m.group(1) for t in tags if (m := re.match(r"^v?(\d+\.\d+\.\d+)$", str(t.get("name", ""))))}
+            if len(tags) < 100:
+                break
+    except (OSError, ValueError, AttributeError) as e:
+        print(f"releases: {e}", flush=True)
+        return
+    if not found:
+        return
+    with _rel_lock:
+        _rel["set"] = found
+    with db_lock:
+        db.execute("INSERT OR REPLACE INTO secret VALUES ('releases', ?)", (json.dumps(sorted(found, key=_vtuple)),))
+        db.commit()
+
+
+def start_releases():
+    if not RELEASES_URL:
+        return
+    with db_lock:
+        row = db.execute("SELECT v FROM secret WHERE k = 'releases'").fetchone()
+    if row:
+        _rel["set"] = set(json.loads(row[0]))
+
+    def run():
+        while True:
+            with _rel_lock:
+                _rel["tried"] = time.monotonic()
+            refresh_releases()
+            time.sleep(3600)
+
+    threading.Thread(target=run, name="releases", daemon=True).start()
+
+
+def version_ok(version):
+    if not VERSION_RE.match(version):
+        return False
+    if not RELEASES_URL:
+        return True
+    base = version.split("-")[0]
+    with _rel_lock:
+        known = set(_rel["set"])
+        again = time.monotonic() - _rel["tried"] > 300
+        if again:
+            _rel["tried"] = time.monotonic()
+    if not known:
+        return True  # GitHub never answered: the format check alone
+    if base in known:
+        return True
+    if again and _vtuple(base) > max(_vtuple(v) for v in known):
+        refresh_releases()
+        with _rel_lock:
+            return base in _rel["set"]
+    return False
 
 
 def note_feedback(ip):
@@ -411,6 +504,140 @@ def note_feedback(ip):
         nowt = time.monotonic()
         _fb_last[ip] = nowt
         _fb_times.append(nowt)
+
+
+# Report anti-spam. A sender is kept only as a salted hash (the salt lives in the database and
+# never leaves it), so a ban can name «whoever sent SY-…» without any IP being stored.
+REPORTS_PER_SENDER_HOUR = 3
+REPORTS_PER_SENDER_DAY = 10
+REPORT_SAME_TEXT_DAYS = 3      # the same description again within this many days is dropped
+_rep_lock = threading.Lock()
+_rep_sender = {}               # sender hash -> deque of times (memory only)
+
+
+def sender_hash(key):
+    with db_lock:
+        row = db.execute("SELECT v FROM secret WHERE k = 'salt'").fetchone()
+        if not row:
+            salt = os.urandom(16).hex()
+            db.execute("INSERT INTO secret VALUES ('salt', ?)", (salt,))
+            db.commit()
+        else:
+            salt = row[0]
+    return hashlib.sha256((salt + "|" + key).encode()).hexdigest()[:24]
+
+
+def report_body(message):
+    """The report without its own id and date: what the person wrote, to spot the same text
+    sent again under new ids. Lowercased, spaces collapsed, then hashed."""
+    keep = [l for l in message.splitlines()
+            if not l.startswith(("BUG REPORT #", "Date:", "Attachments:", "* ")) and l.strip()]
+    text = re.sub(r"\s+", " ", "\n".join(keep).lower()).strip()
+    return hashlib.sha256(text.encode()).hexdigest()[:32]
+
+
+def banned(*values):
+    vals = [v for v in values if v]
+    if not vals:
+        return False
+    with db_lock:
+        q = "SELECT 1 FROM bans WHERE value IN (%s)" % ",".join("?" * len(vals))
+        return db.execute(q, vals).fetchone() is not None
+
+
+def report_rate_ok(sender):
+    """At most REPORTS_PER_SENDER_HOUR an hour and REPORTS_PER_SENDER_DAY a day from one sender."""
+    t = time.monotonic()
+    with _rep_lock:
+        q = _rep_sender.setdefault(sender, collections.deque())
+        while q and t - q[0] > 86400:
+            q.popleft()
+        hour = sum(1 for x in q if t - x <= 3600)
+        if hour >= REPORTS_PER_SENDER_HOUR or len(q) >= REPORTS_PER_SENDER_DAY:
+            return False
+        if len(_rep_sender) > 50_000:
+            _rep_sender.clear()
+        return True
+
+
+def report_rate_note(sender):
+    with _rep_lock:
+        _rep_sender.setdefault(sender, collections.deque()).append(time.monotonic())
+
+
+def ban(target, note=""):
+    """--ban SY-XXXXXXXX: bans that report's sender and its text. --ban <sender hash> also works,
+    and --ban <speaker id> bans that speaker and removes it from the stats."""
+    target = target.strip()
+    # A speaker id (32 hex; a sender hash is 64).
+    sid = target.lower()
+    with db_lock:
+        known = db.execute("SELECT 1 FROM speakers WHERE id = ?", (sid,)).fetchone() is not None
+    if ID_RE.match(sid) and (known or len(sid) != 64):
+        if not ban_speakers("id = ?", (sid,), note):
+            with db_lock:
+                db.execute("INSERT OR REPLACE INTO bans VALUES (?, 'speaker', ?, ?)", (sid, now().isoformat(), note))
+                db.commit()
+        print(f"забанена колонка {sid}")
+        return 0
+    with db_lock:
+        row = db.execute("SELECT sender, body FROM report_meta WHERE id = ?", (target.upper(),)).fetchone()
+        stamp = now().isoformat()
+        if row:
+            for value, kind in ((row[0], "sender"), (row[1], "text"), (target.upper(), "report")):
+                if value:
+                    db.execute("INSERT OR REPLACE INTO bans VALUES (?, ?, ?, ?)", (value, kind, stamp, note or target.upper()))
+            db.commit()
+            print(f"забанен отправитель {target.upper()} и этот текст отчёта")
+            return 0
+        if REPORT_ID_RE.match(target.upper()):
+            db.execute("INSERT OR REPLACE INTO bans VALUES (?, 'report', ?, ?)", (target.upper(), stamp, note))
+            db.commit()
+            print(f"{target.upper()}: отправителя этого отчёта сервер не знает (пришёл до обновления); забанен только сам отчёт")
+            return 0
+        db.execute("INSERT OR REPLACE INTO bans VALUES (?, 'sender', ?, ?)", (target, stamp, note))
+        db.commit()
+    print(f"забанен {target}")
+    return 0
+
+
+def ban_speakers(where, args, note):
+    """Bans the speaker ids that match and removes them from the counts. Returns how many."""
+    stamp = now().isoformat()
+    with db_lock:
+        ids = [r[0] for r in db.execute("SELECT id FROM speakers WHERE " + where, args)]
+        for sid in ids:
+            db.execute("INSERT OR REPLACE INTO bans VALUES (?, 'speaker', ?, ?)", (sid, stamp, note))
+            db.execute("DELETE FROM days WHERE id = ?", (sid,))
+            db.execute("DELETE FROM speakers WHERE id = ?", (sid,))
+        db.commit()
+    invalidate_stats()
+    return len(ids)
+
+
+def ban_version(version):
+    """--ban-version 1.4.88: every speaker that sent it is banned and removed, and the version is never counted again."""
+    version = version.strip()
+    if not TEXT_RE.match(version) or not version:
+        print("версия — например 1.4.88")
+        return 2
+    n = ban_speakers("version = ?", (version,), "v:" + version)
+    with db_lock:
+        db.execute("INSERT OR REPLACE INTO bans VALUES (?, 'version', ?, ?)", ("v:" + version, now().isoformat(), ""))
+        db.commit()
+    print(f"версия {version} забанена; забанено и убрано из статистики колонок: {n}")
+    return 0
+
+
+def unban(target):
+    target = target.strip()
+    with db_lock:
+        row = db.execute("SELECT sender, body FROM report_meta WHERE id = ?", (target.upper(),)).fetchone()
+        vals = [target, target.upper(), target.lower(), "v:" + target] + (list(row) if row else [])
+        n = db.execute("DELETE FROM bans WHERE value IN (%s)" % ",".join("?" * len(vals)), vals).rowcount
+        db.commit()
+    print(f"снято банов: {n}")
+    return 0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -475,6 +702,9 @@ class Handler(BaseHTTPRequestHandler):
             model = str(p.get("model", ""))[:40]
             if not ID_RE.match(sid) or not TEXT_RE.match(version) or not TEXT_RE.match(model):
                 return self.send(400, "bad ping", "text/plain")
+            # A made-up version or a banned speaker: "ok", so a flooder sees no difference, and nothing kept.
+            if not version_ok(version) or banned(sid, "v:" + version):
+                return self.send(200, "ok", "text/plain")
             t = now()
             with db_lock:
                 known = db.execute("SELECT 1 FROM speakers WHERE id = ?", (sid,)).fetchone() is not None
@@ -538,14 +768,34 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             return self.send(400, "bad report", "text/plain")
         # Retries of a delivered report are answered without counting them.
+        rid = str(p.get("id", "")).upper()
         with db_lock:
-            seen = db.execute("SELECT 1 FROM reports WHERE id = ?", (str(p.get("id", "")),)).fetchone()
+            seen = db.execute("SELECT 1 FROM reports WHERE id = ?", (rid,)).fetchone()
+        if seen:
+            return self.send(200, "already delivered", "text/plain")
         key = sender_key(self)
-        if not seen and not accept_feedback(key, record=False):
+        who = sender_hash(key)
+        body = report_body(str(p.get("message", "")))
+        # Banned, or the same text again: answered 200 so the speaker stops retrying, never sent.
+        if banned(who, body, rid):
+            print(f"report {rid[:11]}: banned, dropped", flush=True)
+            return self.send(200, "ok", "text/plain")
+        with db_lock:
+            since = (now() - dt.timedelta(days=REPORT_SAME_TEXT_DAYS)).isoformat()
+            dup = db.execute("SELECT id FROM report_meta WHERE body = ? AND received >= ? AND id IN (SELECT id FROM reports)",
+                             (body, since)).fetchone()
+        if dup:
+            print(f"report {rid[:11]}: same text as {dup[0]}, dropped", flush=True)
+            return self.send(200, "duplicate", "text/plain")
+        if not report_rate_ok(who) or not accept_feedback(key, record=False):
             return self.send(429, "too many", "text/plain")
+        with db_lock:
+            db.execute("INSERT OR REPLACE INTO report_meta VALUES (?, ?, ?, ?)", (rid, who, body, now().isoformat()))
+            db.commit()
         code, text = deliver_report(p)
-        if code == 200 and not seen:
+        if code == 200:
             note_feedback(key)
+            report_rate_note(who)
         self.send(code, text, "text/plain")
 
 
@@ -566,6 +816,39 @@ class Handler(BaseHTTPRequestHandler):
 
 
 TG_POST_RE = re.compile(r'<div class="tgme_widget_message_text js-message_text"[^>]*>.*?</div>', re.S)
+
+
+TG_MSG_RE = re.compile(r'data-post="([A-Za-z0-9_]{1,40}/\d{1,12})"')
+TG_VIEWS_RE = re.compile(r'tgme_widget_message_views">\s*([0-9]+(?:[.,][0-9]+)?)\s*([KkMm]?)\s*<')
+TG_TIME_RE = re.compile(r'<time datetime="([^"]{10,40})"')
+
+
+def tg_blocks(page):
+    """The posts' text blocks, each after a line of its own with the post's number, views and
+    time (soundya 0.5.9+ picks the news worth reading by them; older ones skip the line):
+    <div class="soundya_post" data-post="chan/123" data-views="12300" data-time="1794650000"></div>"""
+    marks = list(TG_MSG_RE.finditer(page))
+    if not marks:
+        return "\n".join(TG_POST_RE.findall(page))
+    out = []
+    for i, m in enumerate(marks):
+        chunk = page[m.end(): marks[i + 1].start() if i + 1 < len(marks) else len(page)]
+        text = TG_POST_RE.search(chunk)
+        if not text:
+            continue
+        views, when = "", ""
+        v = TG_VIEWS_RE.search(chunk)
+        if v:
+            mul = {"k": 1000, "m": 1000000}.get(v.group(2).lower(), 1)
+            views = str(int(float(v.group(1).replace(",", ".")) * mul))
+        t = TG_TIME_RE.search(chunk, text.end()) or TG_TIME_RE.search(chunk)
+        if t:
+            try:
+                when = str(int(dt.datetime.fromisoformat(t.group(1)).timestamp()))
+            except ValueError:
+                pass
+        out.append(f'<div class="soundya_post" data-post="{m.group(1)}" data-views="{views}" data-time="{when}"></div>\n{text.group(0)}')
+    return "\n".join(out)
 
 
 def tg_posts(name):
@@ -592,7 +875,7 @@ def tg_posts(name):
     except Exception as e:
         print(f"tg {name}: {e}", flush=True)
         return 502, "telegram unreachable"
-    body = page if TG_RELAY else "\n".join(TG_POST_RE.findall(page))
+    body = page if TG_RELAY else tg_blocks(page)
     if not body.strip():
         return 404, "no posts (the channel has no web page, or it is private)"
     with tg_lock:
@@ -691,6 +974,10 @@ def main():
     ap.add_argument("--db", default="stats.db")
     ap.add_argument("--selftest", action="store_true", help="send a test report to the bot and exit")
     ap.add_argument("--flood-report", action="store_true", help="new ids per day (to see when a flood started) and exit")
+    ap.add_argument("--ban", metavar="SY-XXXXXXXX", help="ban the sender and the text of this report (or a speaker by its id), and exit")
+    ap.add_argument("--ban-version", metavar="1.4.88", help="ban every speaker that sent this version, remove them from the stats, and exit")
+    ap.add_argument("--unban", metavar="SY-XXXXXXXX", help="lift the bans made by --ban, and exit")
+    ap.add_argument("--bans", action="store_true", help="list bans and exit")
     ap.add_argument("--purge-since", metavar="YYYY-MM-DD",
                     help="remove ids first seen on/after this day that pinged on one day only (a flood), and exit")
     a = ap.parse_args()
@@ -701,12 +988,23 @@ def main():
         raise SystemExit(0)
     if a.purge_since:
         raise SystemExit(purge(a.purge_since))
+    if a.ban:
+        raise SystemExit(ban(a.ban))
+    if a.ban_version:
+        raise SystemExit(ban_version(a.ban_version))
+    if a.unban:
+        raise SystemExit(unban(a.unban))
+    if a.bans:
+        for row in db.execute("SELECT added, kind, note, value FROM bans ORDER BY added"):
+            print("  ".join(str(x) for x in row))
+        raise SystemExit(0)
     if a.selftest:
         if not TG_TOKEN or not TG_CHAT:
             print("selftest: set SOUNDYA_TG_TOKEN and SOUNDYA_TG_CHAT (or source /etc/soundya-stats.env)")
             raise SystemExit(2)
         raise SystemExit(selftest())
     print(f"soundya-stats on {a.host}:{a.port}, db {a.db}", flush=True)
+    start_releases()
     start_community(os.path.dirname(os.path.abspath(a.db)))
     ThreadingHTTPServer((a.host, a.port), Handler).serve_forever()
 

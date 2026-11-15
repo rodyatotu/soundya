@@ -1,0 +1,202 @@
+<!doctype html>
+<!-- The to-do list over other windows (/todo): the Mac app and the Windows app show it in a small
+     window that floats above the rest. The same tasks as «Планы» on the panel (soundya's own and
+     Google's); a click on a task's dot marks it done. Read and changed through /api/cmd «plan …». -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Задачи</title>
+<style>
+  :root { color-scheme: dark; --ink: #f2eff8; --muted: #9a93a8; --line: rgba(255,255,255,.08); --accent: #ff5a1f; --late: #ff5d6c; }
+  html, body { margin: 0; height: 100%; background: transparent; }
+  body { font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: var(--ink);
+    -webkit-user-select: none; user-select: none; overflow: hidden; }
+  .card { position: fixed; inset: 0; display: flex; flex-direction: column; background: rgba(20,18,28,.82);
+    -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); border-radius: 14px; border: 1px solid var(--line); }
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px 14px; -webkit-app-region: drag; app-region: drag; }
+  header b { font-size: 13px; letter-spacing: .02em; }
+  header .n { color: var(--muted); font-size: 12px; }
+  header .sp { flex: 1; }
+  header button { -webkit-app-region: no-drag; app-region: no-drag; background: none; border: 0; color: var(--muted);
+    font: inherit; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+  header button:hover { color: var(--ink); background: rgba(255,255,255,.06); }
+  ul { list-style: none; margin: 0; padding: 0 6px 6px; overflow-y: auto; flex: 1; }
+  ul::-webkit-scrollbar { width: 0; }
+  li { display: flex; align-items: flex-start; gap: 9px; padding: 6px 8px; border-radius: 8px; transition: opacity .35s, transform .35s; }
+  li:hover { background: rgba(255,255,255,.04); }
+  li.gone { opacity: 0; transform: translateX(14px); }
+  .dot { flex: none; width: 15px; height: 15px; margin-top: 1px; border-radius: 50%; border: 1.6px solid var(--muted);
+    background: none; padding: 0; cursor: pointer; position: relative; transition: border-color .15s, background .15s; }
+  .dot:hover { border-color: var(--accent); }
+  .dot.on { border-color: var(--accent); background: var(--accent); }
+  .dot.on::after { content: ""; position: absolute; left: 4.3px; top: 1.6px; width: 3.5px; height: 7px;
+    border: solid #fff; border-width: 0 1.8px 1.8px 0; transform: rotate(45deg); }
+  .ev .dot { border-style: dashed; cursor: default; }
+  .t { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .w { display: block; color: var(--muted); font-size: 11.5px; }
+  .late .w { color: var(--late); }
+  .high .t::before { content: "!"; color: var(--accent); font-weight: 700; margin-right: 4px; }
+  .empty, .err { color: var(--muted); padding: 18px 14px; text-align: center; }
+  .note { margin: 0 10px 6px; padding: 6px 9px; border-radius: 8px; background: rgba(255,255,255,.07); font-size: 12px; }
+  .note.bad { color: var(--late); }
+  .note[hidden] { display: none; }
+  .card.over { border-color: var(--accent); }
+  form { display: flex; gap: 6px; padding: 6px 10px 10px; border-top: 1px solid var(--line); }
+  form input { flex: 1; min-width: 0; background: rgba(255,255,255,.06); border: 1px solid var(--line); color: var(--ink);
+    border-radius: 8px; padding: 6px 8px; font: inherit; -webkit-user-select: text; user-select: text; }
+  form input:focus { outline: none; border-color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="card">
+  <header>
+    <b>Задачи</b><span class="n" id="n"></span><span class="sp"></span>
+    <button title="Загрузить список дел из файла (.txt, .md, .docx, .ics…) — или перетащите файл в это окно" onclick="$('file').click()">📎</button>
+    <button id="ev" title="Показывать события календаря" onclick="toggleEvents()">📅</button>
+    <button title="Обновить" onclick="load()">↻</button>
+  </header>
+  <ul id="list"></ul>
+  <div class="note" id="note" hidden></div>
+  <input type="file" id="file" accept=".txt,.md,.markdown,.docx,.csv,.ics,.json,text/plain" hidden>
+  <form onsubmit="addTask(event)"><input id="add" placeholder="Новая задача…" maxlength="200" autocomplete="off"></form>
+</div>
+<script src="/import.js"></script>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+let showEvents = false;
+try { showEvents = localStorage.getItem('todo-events') === '1'; } catch (e) {}
+$('ev').style.opacity = showEvents ? 1 : .45;
+
+async function cmd(body) {
+  const r = await fetch('/api/cmd', { method: 'POST', body });
+  if (r.status === 401) throw new Error('pin');
+  return (await r.text()).trim();
+}
+
+// Overdue, then today and the coming days, then tasks without a date: as «Планы» shows them.
+function rows(plan) {
+  const out = [], seen = new Set();
+  for (const i of plan.items || []) {
+    if (i.kind === 'event' && !showEvents) continue;
+    if (i.kind === 'event' && i.day !== 0) continue;
+    const key = i.source + ':' + i.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(i);
+  }
+  return out;
+}
+
+function when(i) {
+  if (i.overdue) return 'просрочено' + (i.time ? ', ' + i.time : '');
+  const parts = [];
+  if (i.day_word && i.day !== 0) parts.push(i.day_word);
+  if (i.time) parts.push(i.time);
+  if (i.source && i.source !== 'local' && i.kind !== 'event') parts.push(i.source === 'google' ? 'Google' : i.source);
+  return parts.join(', ');
+}
+
+function render(plan) {
+  const ul = $('list');
+  const items = rows(plan);
+  ul.innerHTML = '';
+  $('n').textContent = items.filter(i => i.kind !== 'event').length || '';
+  if (!items.length) { ul.innerHTML = '<div class="empty">Всё сделано 🎉</div>'; return; }
+  for (const i of items) {
+    const li = document.createElement('li');
+    li.className = (i.kind === 'event' ? 'ev' : '') + (i.overdue ? ' late' : '') + (i.priority === 'high' ? ' high' : '');
+    const dot = document.createElement('button');
+    dot.className = 'dot';
+    dot.title = i.kind === 'event' ? 'Событие календаря' : 'Отметить выполненной';
+    if (i.kind !== 'event') dot.onclick = () => done(i, li, dot);
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = i.title;
+    const w = when(i);
+    if (w) { const s = document.createElement('span'); s.className = 'w'; s.textContent = w; t.appendChild(s); }
+    li.append(dot, t);
+    ul.appendChild(li);
+  }
+}
+
+async function done(i, li, dot) {
+  if (dot.classList.contains('on')) return;
+  dot.classList.add('on');
+  try {
+    const r = await cmd(i.source === 'google' ? `plan gdone ${i.list} ${i.id}` : `plan done ${i.id}`);
+    if (r.startsWith('error')) throw new Error(r);
+    li.classList.add('gone');
+    setTimeout(load, 380);
+  } catch (e) {
+    dot.classList.remove('on');
+    dot.title = String(e.message || e).replace(/^error:\s*/, '');
+  }
+}
+
+async function addTask(e) {
+  e.preventDefault();
+  const title = $('add').value.trim();
+  if (!title) return;
+  $('add').value = '';
+  try { await cmd('plan add ' + JSON.stringify({ title })); } catch (err) {}
+  load();
+}
+
+// A document dropped on the window (or picked with the paper clip): its tasks at once.
+let noteTimer = 0;
+function note(text, bad) {
+  const n = $('note'); n.textContent = text; n.className = 'note' + (bad ? ' bad' : ''); n.hidden = false;
+  clearTimeout(noteTimer); noteTimer = setTimeout(() => { n.hidden = true; }, 7000);
+}
+async function importFile(file) {
+  if (!file) return;
+  note('Читаю «' + file.name + '»…');
+  try {
+    const text = await readDocFile(file);
+    const r = await cmd('plan import ' + JSON.stringify({ text, day: 0 }));
+    note(r.replace(/^(error|ok):\s*/i, ''), r.startsWith('error'));
+    last = ''; load();
+  } catch (e) {
+    note(e.message === 'pin' ? 'Панель защищена PIN-кодом: войдите в панели soundya' : String(e.message || e), true);
+  }
+}
+$('file').onchange = e => { importFile(e.target.files[0]); e.target.value = ''; };
+{
+  const card = document.querySelector('.card');
+  // Without this the window would open the dropped file instead of the list.
+  // Files only: text dragged into the field is still dropped as text.
+  const files = e => [...e.dataTransfer.types].includes('Files');
+  window.addEventListener('dragover', e => { if (!files(e)) return; e.preventDefault(); card.classList.add('over'); });
+  window.addEventListener('dragleave', () => card.classList.remove('over'));
+  window.addEventListener('drop', e => { if (!files(e)) return; e.preventDefault(); card.classList.remove('over'); importFile(e.dataTransfer.files[0]); });
+}
+
+function toggleEvents() {
+  showEvents = !showEvents;
+  try { localStorage.setItem('todo-events', showEvents ? '1' : '0'); } catch (e) {}
+  $('ev').style.opacity = showEvents ? 1 : .45;
+  load();
+}
+
+let last = '';
+async function load() {
+  try {
+    const t = await cmd('plan json');
+    if (t === last) return;
+    last = t;
+    render(JSON.parse(t));
+  } catch (e) {
+    last = '';
+    $('list').innerHTML = '<div class="err">' + (e.message === 'pin'
+      ? 'Панель защищена PIN-кодом: откройте панель soundya и войдите.'
+      : 'Нет связи с колонкой') + '</div>';
+  }
+}
+load();
+setInterval(load, 15000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+</script>
+</body>
+</html>

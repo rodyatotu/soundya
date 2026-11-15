@@ -38,10 +38,87 @@ const APPS: &[(&str, &[&str], &[&str])] = &[
     ("VPN", &["впн", "vpn", "випиэн"], &["vpn", "wireguard", "amnezia", "outline", "hiddify", "v2ray", "nekobox", "openvpn"]),
 ];
 
+/// Video apps a search can go into («найди … на рутубе»); not music (Alice's), settings, VPN.
+const VIDEO_APPS: &[&str] = &["Кинопоиск", "ivi", "Okko", "Wink", "KION", "Netflix", "Twitch", "VK Видео", "RUTUBE", "PREMIER",
+    "Амедиатека", "Смотрёшка", "Plex", "Kodi", "Lampa", "KinoPub", "HD VideoBox", "SmartTube"];
+
+/// The shown name of the video app `said` starts with («рутубе» → RUTUBE).
+fn video_app(said: &str) -> Option<&'static str> {
+    let s = said.trim();
+    APPS.iter()
+        .filter(|(label, _, _)| VIDEO_APPS.contains(label))
+        .find(|(_, names, _)| names.iter().any(|n| s.starts_with(n) && s.len() <= n.len() + 6))
+        .map(|(label, _, _)| *label)
+}
+
+/// «найди маму в 16 на рутубе» → ("рутубе", "маму в 16"): a search inside a video app.
+pub fn search_in_phrase(text: &str) -> Option<(String, String)> {
+    let rest = ["найди ", "поищи ", "покажи ", "включи ", "поставь ", "запусти "].iter().find_map(|v| text.strip_prefix(v))?;
+    let kind = |q: &str| -> String {
+        ["фильм ", "сериал ", "мультфильм ", "мультик ", "видео ", "ролик "].iter().find_map(|p| q.strip_prefix(p)).unwrap_or(q).trim().to_owned()
+    };
+    // The app first: «найди на рутубе фильм дюна», «включи в вк видео клипы».
+    if let Some(after) = ["на ", "в ", "во "].iter().find_map(|p| rest.strip_prefix(p)) {
+        let words: Vec<&str> = after.split_whitespace().collect();
+        for n in [2, 1] {
+            if words.len() > n && video_app(&words[..n].join(" ")).is_some() {
+                let q = kind(&words[n..].join(" "));
+                if !q.is_empty() {
+                    return Some((words[..n].join(" "), q));
+                }
+            }
+        }
+    }
+    for sep in [" на ", " в ", " во "] {
+        if let Some(i) = rest.rfind(sep) {
+            let (q, app) = (rest[..i].trim(), rest[i + sep.len()..].trim());
+            if q.is_empty() || video_app(app).is_none() {
+                continue;
+            }
+            let q = ["фильм ", "сериал ", "мультфильм ", "мультик ", "видео ", "ролик "].iter().find_map(|p| q.strip_prefix(p)).unwrap_or(q);
+            return Some((app.to_owned(), q.trim().to_owned()));
+        }
+    }
+    None
+}
+
+/// A video app's own search page, for apps without Android's search screen (RUTUBE): opened
+/// as a link in that app.
+fn search_url(label: &str, q: &str) -> Option<String> {
+    let q = percent_encode(q);
+    let base = match label {
+        "RUTUBE" => "https://rutube.ru/search/?query=",
+        "VK Видео" => "https://vkvideo.ru/?q=",
+        "ivi" => "https://www.ivi.ru/search/?q=",
+        "Okko" => "https://okko.tv/search/",
+        "Wink" => "https://wink.ru/search?query=",
+        "KION" => "https://kion.ru/search?text=",
+        "PREMIER" => "https://premier.one/search?query=",
+        "Кинопоиск" => "https://hd.kinopoisk.ru/search?text=",
+        "Twitch" => "https://www.twitch.tv/search?term=",
+        _ => return None,
+    };
+    Some(format!("{base}{q}"))
+}
+
+/// The shown name of the app a package belongs to (APPS), for its search page.
+fn label_of_package(pkg: &str) -> Option<&'static str> {
+    APPS.iter().find(|(_, _, parts)| parts.iter().any(|p| pkg.contains(p))).map(|(label, _, _)| *label)
+}
+
 /// Does what was said start with a known app's name («смарт тьюб», «ютуб»)?
 pub fn app_named(said: &str) -> bool {
     let s = said.trim();
     APPS.iter().any(|(_, names, _)| names.iter().any(|n| s.starts_with(n)))
+}
+
+/// A video app by its spoken name («ютуб», «кинопоиск»): what «открой …» without a device
+/// may mean on a TV. Not music apps (Alice's), the browser, settings or the VPN.
+pub fn screen_app(said: &str) -> bool {
+    let s = said.trim();
+    !s.starts_with("ютуб муз")
+        && !s.starts_with("ютуб мьюз")
+        && APPS.iter().any(|(label, names, _)| (*label == "YouTube" || VIDEO_APPS.contains(label)) && names.iter().any(|n| s.starts_with(n)))
 }
 
 /// Apps only the TV has: said without «на проекторе», the phrase is still the TV's.
@@ -366,20 +443,23 @@ pub fn run(host: &str, dir: &Path, action: &TvAction) -> Result<String, String> 
         }
         TvAction::Search(q) => {
             // «Алиса, найди фильм Колобок»: the TV on first, then the search (#SY-F351993A).
-            let asleep = sh("dumpsys power | grep -m1 mWakefulness=").map(|o| !o.contains("Awake")).unwrap_or(false);
-            if asleep {
-                let _ = sh("input keyevent KEYCODE_WAKEUP");
-                std::thread::sleep(Duration::from_millis(1500));
-            }
+            wake_if_asleep(&sh);
             let app = SEARCH_APPS.lock().unwrap().get(host).cloned().unwrap_or_default();
-            if let Some(cmd) = search_script(&app, q) {
-                match sh(&cmd) {
-                    Ok(out) if !out.contains("Error") => return Ok(format!("Ищу {q} в {}", label(&app))),
-                    Ok(out) => eprintln!("tv: {app} does not search ({}); the TV's own search", out.trim()),
-                    Err(e) => eprintln!("tv: {app} search: {e}; the TV's own search"),
-                }
+            if !app.is_empty() && search_in_app(&sh, &app, q) {
+                return Ok(format!("Ищу {q} в {}", label(&app)));
             }
             sh(&global_search(q)).map(|_| format!("Ищу {q}"))
+        }
+        TvAction::SearchIn(app, q) => {
+            wake_if_asleep(&sh);
+            let list = sh("pm list packages")?;
+            let packages: Vec<String> =
+                list.lines().filter_map(|l| l.trim().strip_prefix("package:")).map(str::to_owned).collect();
+            match find_package(app, &packages) {
+                Some(pkg) if search_in_app(&sh, &pkg, q) => Ok(format!("Ищу {q} в {}", label(&pkg))),
+                Some(_) => sh(&global_search(q)).map(|_| format!("Ищу {q}")),
+                None => Err(format!("Не нашла на телевизоре приложение {app}")),
+            }
         }
         TvAction::YouTube(q) => {
             let url = format!("https://www.youtube.com/results?search_query={}", percent_encode(q));
@@ -427,6 +507,7 @@ pub fn run(host: &str, dir: &Path, action: &TvAction) -> Result<String, String> 
         }
         // Handled by the controller (no TV involved).
         TvAction::RemoteMode(_) => Ok(String::new()),
+        TvAction::Unclear => Err("Не поняла, что сделать на проекторе. Скажите, например: включи ютуб на проекторе, тише на пять, пауза".into()),
         TvAction::Tap(what) => {
             let nodes = dump_screen(&sh)?;
             match find_on_screen(&nodes, what) {
@@ -524,6 +605,38 @@ fn search_script(app: &str, q: &str) -> Option<String> {
 
 fn global_search(q: &str) -> String {
     format!("am start -a android.search.action.GLOBAL_SEARCH --es query {}", adb::quote(q))
+}
+
+/// Asleep TVs are woken first, and given a moment.
+fn wake_if_asleep(sh: &dyn Fn(&str) -> Result<String, String>) {
+    let asleep = sh("dumpsys power | grep -m1 mWakefulness=").map(|o| !o.contains("Awake")).unwrap_or(false);
+    if asleep {
+        let _ = sh("input keyevent KEYCODE_WAKEUP");
+        std::thread::sleep(Duration::from_millis(1500));
+    }
+}
+
+/// The search inside `pkg`: Android's search screen, else the app's own search page as a link
+/// (RUTUBE has no search screen: «найди маму в 16» opened the TV's general search). false: neither.
+fn search_in_app(sh: &dyn Fn(&str) -> Result<String, String>, pkg: &str, q: &str) -> bool {
+    if let Some(cmd) = search_script(pkg, q) {
+        match sh(&cmd) {
+            Ok(out) if !out.contains("Error") => return true,
+            Ok(out) => eprintln!("tv: {pkg} has no search screen ({})", out.trim().replace('\n', " | ")),
+            Err(e) => eprintln!("tv: {pkg} search: {e}"),
+        }
+    }
+    if let Some(url) = label_of_package(pkg).and_then(|l| search_url(l, q)) {
+        match sh(&format!("am start -a android.intent.action.VIEW -d {} -p {pkg}", adb::quote(&url))) {
+            Ok(out) if !out.contains("Error") => {
+                eprintln!("tv: {pkg}: its search page {url}");
+                return true;
+            }
+            Ok(out) => eprintln!("tv: {pkg} does not open its search page ({}); the TV's own search", out.trim().replace('\n', " | ")),
+            Err(e) => eprintln!("tv: {pkg} search page: {e}"),
+        }
+    }
+    false
 }
 
 /// A package name safe to put into a shell command.
@@ -626,6 +739,20 @@ mod tests {
         assert_eq!(find_package("ютуб музыку", &pk).as_deref(), Some("com.google.android.youtube.tvmusic"));
         let only_music: Vec<String> = vec!["com.google.android.youtube.tvmusic".into()];
         assert_eq!(find_package("ютуб", &only_music), None);
+    }
+
+    #[test]
+    fn a_search_in_a_named_video_app() {
+        assert_eq!(search_in_phrase("найди маму в 16 на рутубе"), Some(("рутубе".into(), "маму в 16".into())));
+        assert_eq!(search_in_phrase("найди фильм дюна в кинопоиске"), Some(("кинопоиске".into(), "дюна".into())));
+        assert_eq!(search_in_phrase("поищи стрим на твиче"), Some(("твиче".into(), "стрим".into())));
+        assert_eq!(search_in_phrase("найди маму в 16 на пикабу"), None, "not an app it knows");
+        // Music stays Alice's; places and numbers are not apps.
+        assert_eq!(search_in_phrase("включи bonobo в яндекс музыке"), None);
+        assert_eq!(search_in_phrase("найди кафе в москве"), None);
+        assert_eq!(search_in_phrase("найди маму в 16"), None);
+        assert_eq!(search_url("RUTUBE", "маму в 16").as_deref(), Some("https://rutube.ru/search/?query=%D0%BC%D0%B0%D0%BC%D1%83+%D0%B2+16"));
+        assert_eq!(label_of_package("ru.rutube.app"), Some("RUTUBE"));
     }
 
     #[test]

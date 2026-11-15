@@ -89,6 +89,28 @@ pub struct Settings {
     /// status is readable by anyone in the home network.
     #[serde(default)]
     pub share_heard: bool,
+    /// A proxy for the Telegram Bot API only («http://user:pass@host:port»): for a provider
+    /// that blocks api.telegram.org. SoundCloud and the rest do not go through it.
+    #[serde(default)]
+    pub tg_proxy: String,
+    /// Mentions in the team's Telegram group are collected (mentions.rs), by the bot of
+    /// meet_bot_token: tasks into the planner, messages said in working hours.
+    #[serde(default)]
+    pub tg_mentions: bool,
+    /// The owner's Telegram name («@ник»): what counts as written to him.
+    #[serde(default)]
+    pub tg_me: String,
+    /// Where «громче / тише» goes when no device is named: "" — the speaker (Alice's own),
+    /// "tv", "ask" (soundya asks «На каком устройстве?»).
+    #[serde(default)]
+    pub route_volume: String,
+    /// Where «открой ютуб» goes: "" — the only screen set up (a question if both a TV and a
+    /// computer are), "tv", "pc", "ask".
+    #[serde(default)]
+    pub route_apps: String,
+    /// Divoom Ditoo Plus modes (ditoo.rs): what its launcher shows in each.
+    #[serde(default)]
+    pub ditoo_modes: Vec<crate::ditoo::Mode>,
     /// «Обход блокировок без прокси»: the strategy found by bypass::pick ("" = none yet).
     #[serde(default)]
     pub bypass: String,
@@ -298,6 +320,12 @@ pub struct Settings {
     pub morning_greet: String,
     #[serde(default = "default_news")]
     pub morning_news: String,
+    /// Words that put a piece of news first («steam, нейросети»), comma separated.
+    #[serde(default)]
+    pub morning_like: String,
+    /// Words whose news is never read out («крипта, футбол»), comma separated.
+    #[serde(default)]
+    pub morning_skip: String,
     #[serde(default)]
     pub morning_intro: String,
     #[serde(default = "yes")]
@@ -692,6 +720,12 @@ impl Default for Settings {
             airplay_icon: speaker(),
             stats: true,
             share_heard: false,
+            ditoo_modes: Vec::new(),
+            tg_proxy: String::new(),
+            tg_mentions: false,
+            tg_me: String::new(),
+            route_volume: String::new(),
+            route_apps: String::new(),
             tv_host: String::new(),
             tv_search: Default::default(),
             macros: Vec::new(),
@@ -787,6 +821,8 @@ impl Default for Settings {
             pc_keep: String::new(),
             morning_greet: default_greet(),
             morning_news: default_news(),
+            morning_like: String::new(),
+            morning_skip: String::new(),
             morning_intro: String::new(),
             morning_weather: true,
             morning_plans: true,
@@ -1067,6 +1103,10 @@ impl Settings {
     }
 
     /// Proxy with the password hidden, for showing on the page.
+    pub fn masked_tg_proxy(&self) -> String {
+        Settings { proxy: self.tg_proxy.clone(), ..Settings::default() }.masked_proxy()
+    }
+
     pub fn masked_proxy(&self) -> String {
         let p = &self.proxy;
         let Some(scheme_end) = p.find("://").map(|i| i + 3) else {

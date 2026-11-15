@@ -81,6 +81,20 @@ pub(crate) fn model() -> String {
     read("/proc/device-tree/model").map(|m| clean(&m)).filter(|m| !m.is_empty()).unwrap_or_else(|| clean(&hostname))
 }
 
+/// The Station's name in words, where the system's own name tells it for sure: asked in the
+/// bug report form («Ваша колонка — Станция Лайт?»). None: not known — the owner writes it.
+/// `clock`: the Mini 2 with a clock is a model of its own.
+pub fn model_name(model: &str, clock: bool) -> Option<&'static str> {
+    let m = model.to_lowercase().replace(['_', ' '], "-");
+    if m.contains("station-lite") || m.contains("stationlite") {
+        Some("Станция Лайт")
+    } else if m.contains("mini2") || m.contains("mini-2") {
+        Some(if clock { "Станция Мини 2 с часами" } else { "Станция Мини 2" })
+    } else {
+        None
+    }
+}
+
 /// Only what the server accepts: letters, digits, `.`, `-`, `_`, space; 40 characters.
 fn clean(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric() || " ._-".contains(*c)).take(40).collect()

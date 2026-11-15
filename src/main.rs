@@ -28,6 +28,10 @@ mod ipt;
 mod led;
 mod luna;
 mod mdns;
+mod mic;
+mod wifi;
+mod ditoo;
+mod mentions;
 mod pc;
 mod planner;
 mod probe;
@@ -94,6 +98,10 @@ pub enum Cmd {
     /// A strategy switched on by hand, without a check.
     BypassManual(String),
     Control(String, Sender<String>),
+    /// Several commands said in one phrase: done one after another (alice::chain).
+    Chain(Vec<Intent>),
+    /// One of them: its answer goes back instead of being said.
+    Step(Intent, Sender<String>),
     Ended(u64, Outcome),
     /// A settings change from the page: only the fields it sends (merged into the current ones).
     Settings(serde_json::Value, Sender<String>),
@@ -274,6 +282,58 @@ fn fmt_ms(ms: u64) -> String {
 
 /// Sends the answer to the web page or the command line; for voice commands
 /// (no reply channel) optionally says it in Alice's voice.
+/// How long the next command of a chain waits after this one: a projector switched on needs
+/// a few seconds before it takes anything, an app just opened a little less.
+fn chain_pause(done: &Intent) -> Duration {
+    let tv = match done {
+        Intent::Tv(a) => Some(a),
+        Intent::On(_, inner) => match &**inner {
+            Intent::Tv(a) => Some(a),
+            _ => None,
+        },
+        _ => None,
+    };
+    Duration::from_millis(match tv {
+        Some(alice::TvAction::Wake) => 6000,
+        Some(alice::TvAction::Open(_) | alice::TvAction::OpenPackage(_) | alice::TvAction::OpenAndStart(_) | alice::TvAction::OpenIn(..)) => 3500,
+        Some(_) => 1200,
+        None => 600,
+    })
+}
+
+/// The commands of one phrase, in order, each after the one before is done. One answer at
+/// the end: what the last one did, or which one failed (the rest is not done then).
+/// `reply`: for `hear` from the panel — the answer goes there instead of being said.
+fn run_chain(tx: Sender<Cmd>, steps: Vec<Intent>, reply: Option<Sender<String>>) {
+    thread::spawn(move || {
+        let total = steps.len();
+        let mut last = String::new();
+        let mut failed = None;
+        for (n, step) in steps.into_iter().enumerate() {
+            let (rtx, rrx) = mpsc::channel();
+            if tx.send(Cmd::Step(step.clone(), rtx)).is_err() {
+                return;
+            }
+            let answer = rrx.recv_timeout(Duration::from_secs(45)).unwrap_or_else(|_| "OK".into());
+            eprintln!("chain: {}/{total} {step:?} -> {answer}", n + 1);
+            if let Some(e) = answer.strip_prefix("error: ") {
+                failed = Some((n + 1, e.to_owned()));
+                break;
+            }
+            last = answer.strip_prefix("OK: ").or_else(|| answer.strip_prefix("OK")).unwrap_or(&answer).trim().to_owned();
+            if n + 1 < total {
+                thread::sleep(chain_pause(&step));
+            }
+        }
+        let (text, say) = match failed {
+            Some((n, e)) => (format!("error: шаг {n} из {total}: {e}"), format!("На шаге {n} не получилось: {e}")),
+            None if last.is_empty() || last.starts_with('{') => (format!("OK: сделано {total}"), "Готово".to_owned()),
+            None => (format!("OK: сделано {total}: {last}"), last),
+        };
+        respond(reply, &text, Some(say));
+    });
+}
+
 fn respond(reply: Option<Sender<String>>, text: &str, speech: Option<String>) {
     match reply {
         Some(r) => {
@@ -321,7 +381,7 @@ fn bt_watch(tx: Sender<Cmd>, mac: Option<String>) {
                     }
                 }
             }
-            let now = bt::info(&mac).is_some_and(|d| d.connected);
+            let now = bt::audio_up(&mac);
             if now != bt::connected(&mac) {
                 eprintln!("bt: {mac} {}", if now { "connected" } else { "disconnected" });
                 bt::set_connected(&mac, now);
@@ -460,6 +520,8 @@ impl Controller {
             "airplay_icon": self.settings.airplay_icon,
             "stats": self.settings.stats,
             "share_heard": self.settings.share_heard,
+            "ditoo_modes": ditoo::modes(&self.settings.ditoo_modes),
+            "ditoo_screens": ditoo::SCREENS.iter().map(|(k, n)| serde_json::json!([k, n])).collect::<Vec<_>>(),
             "tv_host": self.settings.tv_host,
             "tv_name": self.settings.tv_name,
             "tvs_more": self.settings.tvs_more,
@@ -484,6 +546,12 @@ impl Controller {
             "pc_on": self.settings.pc_on,
             "tv_on": self.settings.tv_on,
         });
+        // After the macro: one more key in it runs out of its recursion limit.
+        settings["tg_proxy"] = self.settings.masked_tg_proxy().into();
+        settings["tg_mentions"] = self.settings.tg_mentions.into();
+        settings["tg_me"] = self.settings.tg_me.clone().into();
+        settings["route_volume"] = self.settings.route_volume.clone().into();
+        settings["route_apps"] = self.settings.route_apps.clone().into();
         settings["eq_on"] = self.settings.eq_on.into();
         settings["led_order"] = self.settings.led_order.clone().into();
         settings["light_speed"] = self.settings.light_speed.into();
@@ -554,6 +622,8 @@ impl Controller {
         settings["morning_greet"] = self.settings.morning_greet.clone().into();
         settings["morning_news"] = self.settings.morning_news.clone().into();
         settings["morning_intro"] = self.settings.morning_intro.clone().into();
+        settings["morning_like"] = self.settings.morning_like.clone().into();
+        settings["morning_skip"] = self.settings.morning_skip.clone().into();
         settings["morning_weather"] = self.settings.morning_weather.into();
         settings["morning_plans"] = self.settings.morning_plans.into();
         settings["home_hidden"] = self.settings.home_hidden.clone().into();
@@ -600,13 +670,15 @@ impl Controller {
             "settings": settings,
             "user": self.user,
             // none | ok | checking (saved, not confirmed yet) | refused (sign in again)
-            "login": login_state(self.client.has_token(), self.client.token_refused() || self.client.token_expired(), self.user.is_some()),
+            "login": login_state(self.client.has_token(), self.client.token_refused() || self.client.token_expired(), self.user.is_some(), LOGIN_FAILED.lock().unwrap().is_some()),
             "loading": self.loading.lock().unwrap().clone(),
             "airplay": self.shared.airplay.json(),
             "update": self.shared.updates.json(),
             "bypass_log": *self.shared.bypass_log.lock().unwrap(),
             "bypass_busy": self.shared.bypass_busy.load(Ordering::Acquire),
             "volume": volume::level(),
+            // The microphone switched off on the speaker (null: cannot tell on this one).
+            "mic_muted": mic::muted(),
             "led": led::info(),
             "device": device_info(),
             "pc_legacy": pc::LEGACY.load(Ordering::Acquire),
@@ -634,6 +706,9 @@ impl Controller {
         });
         // Through the speaker: the phone may not reach sndcdn.com itself.
         out["heard"] = self.shared.heard_json();
+        // soundya's own question that waits for an answer («На каком устройстве?»): the panel may show it.
+        out["question"] = alice::question_json();
+        out["mentions"] = mentions::json();
         out["cover"] = current.filter(|t| t.cover().is_some()).map(|t| format!("/cover?{}", t.id)).into();
         out.to_string()
     }
@@ -724,25 +799,35 @@ impl Controller {
             if client.token_refused() {
                 client.verify_token();
             }
-            let user = if client.has_token() {
-                match client.me() {
-                    Ok((_, name)) => {
-                        if WRITES {
-                            if let Ok(ids) = client.liked_ids() {
-                                let _ = tx.send(Cmd::Liked(ids));
+            let mut user = None;
+            if client.has_token() {
+                // No answer from SoundCloud is not «no login»: asked again a few times, and
+                // the page says «нет связи» meanwhile instead of «проверяю» for ever.
+                for wait in [0u64, 20, 60, 180] {
+                    thread::sleep(Duration::from_secs(wait));
+                    match client.me() {
+                        Ok((_, name)) => {
+                            *LOGIN_FAILED.lock().unwrap() = None;
+                            if WRITES {
+                                if let Ok(ids) = client.liked_ids() {
+                                    let _ = tx.send(Cmd::Liked(ids));
+                                }
                             }
+                            client.warm_recommendations();
+                            user = Some(name);
+                            break;
                         }
-                        client.warm_recommendations();
-                        Some(name)
-                    }
-                    Err(e) => {
-                        eprintln!("login: {e}");
-                        None
+                        Err(e) => {
+                            eprintln!("login: {e}");
+                            if client.token_refused() || client.token_expired() {
+                                *LOGIN_FAILED.lock().unwrap() = None;
+                                break;
+                            }
+                            *LOGIN_FAILED.lock().unwrap() = Some(e.to_string());
+                        }
                     }
                 }
-            } else {
-                None
-            };
+            }
             let _ = tx.send(Cmd::User(user));
         });
     }
@@ -816,7 +901,14 @@ impl Controller {
         for a in &new.tg_allowed {
             telegram::forget_unknown(a.id);
         }
+        new.tg_proxy = new.tg_proxy.trim().to_owned();
+        if new.tg_proxy.contains('•') {
+            new.tg_proxy = self.settings.tg_proxy.clone();
+        }
+        telegram::set_proxy(&new.tg_proxy);
         telegram::configure(telegram::Config::from_settings(&new), &self.shared);
+        new.tg_me = new.tg_me.trim().trim_start_matches('@').chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(32).collect();
+        mentions::configure(mentions::Config::from_settings(&new), &self.shared);
         new.display_widgets.retain(|w| ["clock", "pc", "weather"].contains(&w.as_str()));
         new.display_widgets.dedup();
         new.display_secs = new.display_secs.clamp(3, 120);
@@ -1033,8 +1125,20 @@ impl Controller {
         }
         *self.shared.proxy.lock().unwrap() = new.use_proxy().to_owned();
         new.tv_host = new.tv_host.trim().to_owned();
+        // The first TV (or computer) added: its block comes on with it. It could be saved with
+        // the block off, and then nothing worked without a word why (#SY-091FB968).
+        if self.settings.tvs().is_empty() && !new.tvs().is_empty() && !new.tv_on && !self.settings.tv_on {
+            eprintln!("settings: the first TV is added; «Телевизор» switched on");
+            new.tv_on = true;
+        }
+        if self.settings.pcs().is_empty() && !new.pcs().is_empty() && !new.pc_on && !self.settings.pc_on {
+            eprintln!("settings: the first computer is added; «Компьютер» switched on");
+            new.pc_on = true;
+            self.shared.pc.store(new.pc_configured(), Ordering::Release);
+        }
         self.shared.tv.store(new.tv_configured(), Ordering::Release);
         alice::set_tv(new.tv_configured());
+        alice::set_tv_off(!new.tv_on && !new.tvs().is_empty());
         // Only the TVs there are, each with a package name (or none: its own search).
         let hosts: Vec<String> = new.tvs().into_iter().map(|t| t.host).collect();
         new.tv_search = std::mem::take(&mut new.tv_search)
@@ -1049,9 +1153,17 @@ impl Controller {
         alice::set_devices(device_names(&new));
         new.pc_keep = new.pc_keep.trim().chars().take(500).collect();
         alice::set_pc_rules(pc_rules(&new));
+        for r in [&mut new.route_volume, &mut new.route_apps] {
+            if !matches!(r.as_str(), "" | "tv" | "pc" | "ask") {
+                r.clear();
+            }
+        }
+        alice::set_routes(routes(&new));
         new.morning_greet = new.morning_greet.trim().chars().take(200).collect();
         new.morning_intro = new.morning_intro.trim().chars().take(300).collect();
         new.morning_news = new.morning_news.trim().to_owned();
+        new.morning_like = new.morning_like.trim().chars().take(400).collect();
+        new.morning_skip = new.morning_skip.trim().chars().take(400).collect();
         if !new.morning_news.is_empty() && morning::feed_url(&new.morning_news).is_none() && morning::tg_channels(&new.morning_news).is_none() {
             return "error: новости — один из источников списка, ссылка на RSS (https://…) или каналы Telegram (@канал, @канал)".into();
         }
@@ -1206,10 +1318,112 @@ impl Controller {
         r
     }
 
+    /// Looks for Bluetooth devices nearby, reads their names aloud and asks which to connect.
+    /// `prefix` goes before «Ищу…» in the same sentence: two phrases started at once collide.
+    fn bt_find(&mut self, reply: Option<Sender<String>>, prefix: &str) {
+        if BT_FINDING.swap(true, Ordering::AcqRel) {
+            let text = "Уже ищу устройства, подождите".to_owned();
+            return respond(reply, &format!("error: {text}"), Some(text));
+        }
+        // The search takes a while (ten seconds of listening, then a second per device): say so first.
+        let opening = format!("{prefix}Ищу устройства Bluetooth рядом, это до полуминуты. Переведите устройство в режим сопряжения");
+        let said = said_until(&opening);
+        alice::say(opening);
+        let saved = self.settings.bt_mac.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let found = bt::scan_named(10);
+            BT_FINDING.store(false, Ordering::Release);
+            wait_said(said);
+            let list = match found {
+                Ok(list) => bt_candidates(list, &saved),
+                Err(e) => {
+                    eprintln!("bt: scan: {e}");
+                    alice::say("Не получилось поискать устройства Bluetooth. Подробности на странице колонки, в разделе Bluetooth".into());
+                    return respond(reply, &format!("error: {e}"), None);
+                }
+            };
+            match list.as_slice() {
+                [] => {
+                    let text = "Ничего не нашла. Включите устройство, переведите его в режим сопряжения и скажите: Алиса, найди блютуз устройства".to_owned();
+                    alice::say(text.clone());
+                    respond(reply, &format!("OK: {text}"), None);
+                }
+                // The only one, and it is a sound device: no question. BtConnect says «Подключаю …».
+                [one] if one.audio => {
+                    let _ = tx.send(Cmd::Voice(Intent::BtConnect(one.mac.clone(), one.name.clone())));
+                    respond(reply, &format!("OK: нашла {}, подключаю", one.name), None);
+                }
+                // Several, or one that may not play sound at all (a phone, a watch): ask.
+                some => {
+                    let (text, choices) = bt_question(some);
+                    alice::ask(text.clone(), choices);
+                    respond(reply, &format!("OK: {text}"), None);
+                }
+            }
+        });
+    }
+
+    /// The devices a phrase without one may go to, each with its finished command: the
+    /// speaker (volume only), every TV, every computer (apps only).
+    fn device_choices(&self, what: &alice::Ambig) -> Vec<alice::Choice> {
+        use alice::{Ambig, Choice, Step};
+        let words = |base: &[&str], name: &str| -> Vec<String> {
+            base.iter().map(|w| (*w).to_owned()).chain(alice::normalize_phrase(name).split_whitespace().map(str::to_owned)).collect()
+        };
+        // Aimed at a named device as «выключи телевизор в спальне» is; the first one has no name.
+        let on = |name: &str, i: Intent| if name.trim().is_empty() { i } else { Intent::On(alice::normalize_phrase(name), Box::new(i)) };
+        let mut out = Vec::new();
+        if let Ambig::Volume(up, n) = what {
+            out.push(Choice {
+                label: "колонка".into(),
+                words: words(&["колонка", "колонке", "колонку", "станция", "станции", "станцию", "здесь", "тут", "алиса", "алисе"], ""),
+                // Alice was cut off when the question was asked: soundya turns the volume itself.
+                // One level when no number was said, as Alice's own «тише» is.
+                step: Step::Control(format!("volume {} {}", if *up { "up" } else { "down" }, n.unwrap_or(1))),
+            });
+        }
+        let tvs: Vec<settings::Device> = self.settings.tvs().into_iter().filter(|d| !d.host.is_empty()).collect();
+        for d in &tvs {
+            let action = match what {
+                Ambig::Volume(up, n) => alice::TvAction::Key(if *up { "KEYCODE_VOLUME_UP" } else { "KEYCODE_VOLUME_DOWN" }, n.unwrap_or(3)),
+                Ambig::App(true, app, _) => alice::TvAction::Open(app.clone()),
+                Ambig::App(false, app, _) => alice::TvAction::Close(app.clone()),
+            };
+            // One TV: its kind is enough («на проекторе», «телевизор»); several: their names.
+            let kind: &[&str] = if tvs.len() == 1 || d.name.trim().is_empty() {
+                &["телевизор", "телевизоре", "проектор", "проекторе", "тв", "телек", "телеке", "телик", "приставка", "приставке", "экран", "экране"]
+            } else {
+                &[]
+            };
+            out.push(Choice {
+                label: if d.name.trim().is_empty() { "телевизор".into() } else { d.name.trim().to_owned() },
+                words: words(kind, &d.name),
+                // Always by its name (the first one's is empty): a bare TV command would go to the
+                // TV the remote was last used on, not to the one picked.
+                step: Step::Voice(Intent::On(alice::normalize_phrase(&d.name), Box::new(Intent::Tv(action)))),
+            });
+        }
+        if let Ambig::App(_, _, phrase) = what {
+            let pcs: Vec<settings::Device> = self.settings.pcs().into_iter().filter(|d| !d.host.is_empty()).collect();
+            for d in &pcs {
+                let kind: &[&str] = if pcs.len() == 1 || d.name.trim().is_empty() { &["компьютер", "компьютере", "комп", "компе", "пк"] } else { &[] };
+                out.push(Choice {
+                    label: if d.name.trim().is_empty() { "компьютер".into() } else { d.name.trim().to_owned() },
+                    words: words(kind, &d.name),
+                    step: Step::Voice(on(&d.name, Intent::Pc(alice::PcAction::Command(phrase.clone())))),
+                });
+            }
+        }
+        out
+    }
+
     fn bt_cmd(&mut self, arg: &str, reply: Sender<String>) {
         let (what, rest) = arg.split_once(' ').unwrap_or((arg, ""));
         let rest = rest.trim().to_owned();
         match what {
+            // The voice flow from the panel: «Алиса, подключись к новому устройству блютус».
+            "find" => self.intent(Intent::BtFind, Some(reply)),
             "" | "status" => send_to(&reply, bt::status_json(&self.settings.bt_mac, self.settings.bt_on).to_string()),
             "scan" => {
                 thread::spawn(move || {
@@ -1237,8 +1451,13 @@ impl Controller {
                 if !bt::valid_mac(mac) {
                     return send_to(&reply, "error: неверный адрес".into());
                 }
+                // The same device again keeps the name it was saved with: a Ditoo shows up first
+                // as «Ditoo-Plus-light» (its screen side) on the address its sound side has.
+                let same = self.settings.bt_mac.eq_ignore_ascii_case(mac) && !self.settings.bt_name.trim().is_empty();
                 self.settings.bt_mac = mac.to_ascii_uppercase();
-                self.settings.bt_name = name.chars().take(60).collect();
+                if !same {
+                    self.settings.bt_name = name.chars().take(60).collect();
+                }
                 self.settings.bt_on = true;
                 let note = self.bt_save();
                 send_to(&reply, format!("OK: музыка soundya теперь в «{}»{note}", if name.is_empty() { mac } else { name }));
@@ -1819,6 +2038,14 @@ impl Controller {
                             alice::TvAction::Key(k, _) => Some(k),
                             _ => None,
                         });
+                        // The paused film is gone (the TV is off, another thing was opened):
+                        // «продолжи» is the music's again.
+                        if matches!(action, alice::TvAction::Sleep | alice::TvAction::Open(_) | alice::TvAction::OpenPackage(_) | alice::TvAction::OpenIn(..)
+                            | alice::TvAction::OpenAndStart(_) | alice::TvAction::Close(_) | alice::TvAction::Search(_) | alice::TvAction::SearchIn(..)
+                            | alice::TvAction::YouTube(_) | alice::TvAction::PlayFirst)
+                        {
+                            alice::tv_forget_pause();
+                        }
                         // Short confirmations are not worth Alice's voice for keys.
                         let say = (!matches!(action, alice::TvAction::Key(..) | alice::TvAction::OpenPackage(_))).then(|| text.clone());
                         respond(reply, &format!("OK: {text}"), say);
@@ -1939,20 +2166,117 @@ impl Controller {
                 let text = hello::repeat();
                 respond(reply, &format!("OK: {text}"), None);
             }
-            Intent::BtOut(on) => {
-                let name = self.settings.bt_name.clone();
-                let text = if !bt::valid_mac(&self.settings.bt_mac) {
-                    "Наушники не выбраны: подключите их на странице колонки, раздел «Bluetooth»".to_owned()
-                } else {
-                    self.settings.bt_on = on;
-                    self.bt_save();
-                    match (on, bt::connected(&self.settings.bt_mac)) {
-                        (false, _) => "Музыка снова на колонке".to_owned(),
-                        (true, true) => format!("Музыка в {name}"),
-                        (true, false) => format!("Включите {name}: музыка перейдёт туда, как только они подключатся"),
+            // «Переключись на блютус»: the saved device, connected again if it was let go — as
+            // the panel's switch does. Nothing saved yet: look for a new one.
+            Intent::BtOut(true) => {
+                if !bt::valid_mac(&self.settings.bt_mac) {
+                    return self.bt_find(reply, "Сохранённого устройства нет. ");
+                }
+                let (mac, name) = (self.settings.bt_mac.clone(), bt_spoken_name(&self.settings.bt_name));
+                self.settings.bt_on = true;
+                self.bt_save();
+                if bt::connected(&mac) {
+                    let text = format!("Музыка в {name}");
+                    return respond(reply, &format!("OK: {text}"), Some(text));
+                }
+                let opening = format!("Подключаю {name}");
+                let said = said_until(&opening);
+                if reply.is_none() {
+                    alice::say(opening);
+                }
+                let tx = self.tx.clone();
+                thread::spawn(move || match bt::connect(&mac) {
+                    Ok(d) => {
+                        bt::set_connected(&d.mac, true);
+                        let (rtx, _rrx) = mpsc::channel();
+                        let _ = tx.send(Cmd::Control("bt reroute".into(), rtx));
+                        let text = format!("Музыка в {name}");
+                        if reply.is_none() {
+                            wait_said(said);
+                        }
+                        respond(reply, &format!("OK: {text}"), Some(text));
                     }
+                    Err(e) => {
+                        eprintln!("bt: {mac}: {e}");
+                        let text = bt_failed_why(&format!("Не получилось подключить {name}. Включите его и скажите: Алиса, переключись на блютуз"), &e);
+                        if reply.is_none() {
+                            wait_said(said);
+                        }
+                        respond(reply, &format!("error: {text}"), Some(text));
+                    }
+                });
+            }
+            // «Верни звук на колонку», «отключи блютуз колонку»: as the panel's switch off — the
+            // device is let go, so a phone can take it.
+            Intent::BtOut(false) => {
+                let mac = self.settings.bt_mac.clone();
+                let text = if !bt::valid_mac(&mac) || !self.settings.bt_on {
+                    "Музыка и так на колонке"
+                } else {
+                    self.settings.bt_on = false;
+                    self.bt_save();
+                    bt::set_connected(&mac, false);
+                    thread::spawn(move || {
+                        if let Err(e) = bt::release(&mac) {
+                            eprintln!("bt: {mac}: not let go: {e}");
+                        }
+                    });
+                    "Музыка снова на колонке"
                 };
-                respond(reply, &format!("OK: {text}"), Some(text));
+                respond(reply, &format!("OK: {text}"), Some(text.to_owned()));
+            }
+            // «Подключись к новому устройству блютус»: look around, read the names, ask which.
+            Intent::BtFind => self.bt_find(reply, ""),
+            // The device picked from that list (or the only one found).
+            Intent::BtConnect(mac, name) => {
+                let spoken = bt_spoken_name(&name);
+                let opening = format!("Подключаю {spoken}, это до тридцати секунд");
+                let said = said_until(&opening);
+                alice::say(opening);
+                let tx = self.tx.clone();
+                thread::spawn(move || match bt::connect(&mac) {
+                    Ok(d) => {
+                        bt::set_connected(&d.mac, true);
+                        let shown = if d.name.is_empty() { name.clone() } else { d.name.clone() };
+                        let (rtx, _rrx) = mpsc::channel();
+                        let _ = tx.send(Cmd::Control(format!("bt chosen {} {shown}", d.mac), rtx));
+                        let text = format!("Готово. Музыка теперь в {spoken}");
+                        wait_said(said);
+                        alice::say(text.clone());
+                        respond(reply, &format!("OK: {text}"), None);
+                    }
+                    Err(e) => {
+                        eprintln!("bt: {mac}: {e}");
+                        let text = bt_failed_why(&format!("Не получилось подключить {spoken}. Переведите его в режим сопряжения и скажите: Алиса, найди блютуз устройства"), &e);
+                        wait_said(said);
+                        alice::say(text.clone());
+                        respond(reply, &format!("error: {e}"), None);
+                    }
+                });
+            }
+            // No device named and it fits several: ask, or do it on the only one there is.
+            Intent::Ask(what) => {
+                let mut choices = self.device_choices(&what);
+                match choices.len() {
+                    0 => {
+                        let text = "Не на чем выполнить: добавьте телевизор или компьютер на странице колонки, в разделе Устройства".to_owned();
+                        respond(reply, &format!("error: {text}"), Some(text));
+                    }
+                    1 => match choices.remove(0).step {
+                        alice::Step::Voice(i) => self.intent(i, reply),
+                        alice::Step::Control(c) => {
+                            let (rtx, _rrx) = mpsc::channel();
+                            self.control(&c, reply.unwrap_or(rtx));
+                        }
+                    },
+                    _ => {
+                        let names: Vec<String> = choices.iter().map(|c| c.label.clone()).collect();
+                        let (last, first) = names.split_last().map(|(l, f)| (l.clone(), f.join(", "))).unwrap_or_default();
+                        let text = format!("На каком устройстве: {first} или {last}? Скажите, например: Алиса, {}", names[0].to_lowercase());
+                        alice::ask(text.clone(), choices);
+                        respond(reply, &format!("OK: {text}"), None);
+                    }
+                }
             }
             Intent::WhatPlaying if self.shared.airplay.is_active() => {
                 let text = "Сейчас играет музыка с телефона по AirPlay".to_owned();
@@ -2030,6 +2354,21 @@ impl Controller {
     }
 
     fn control(&mut self, line: &str, reply: Sender<String>) {
+        // A scenario's step for one device: «pc@ноутбук sleep», «tv@спальня key home» (spaces
+        // in the name as «_»). That device just for this command, as «усыпи ноутбук» by voice.
+        if let Some((kind, name, rest)) = device_step(line) {
+            let tv = kind == "tv";
+            let list = if tv { self.settings.tvs() } else { self.settings.pcs() };
+            let Some(d) = list.into_iter().find(|d| alice::normalize_phrase(&d.name) == alice::normalize_phrase(&name) && (!d.host.is_empty() || !d.mac.is_empty())) else {
+                send_to(&reply, format!("error: нет {} «{name}» в настройках (Устройства)", if tv { "телевизора" } else { "компьютера" }));
+                return;
+            };
+            let saved = self.settings.clone();
+            self.settings = if tv { Settings { tv_active: d.name.clone(), ..saved.with_tv(&d) } } else { saved.with_pc(&d) };
+            self.control(&format!("{kind} {rest}"), reply);
+            self.settings = saved;
+            return;
+        }
         let (cmd, arg) = line.trim().split_once(' ').unwrap_or((line.trim(), ""));
         let arg = arg.trim().to_owned();
         let on_off = |a: &str| !matches!(a, "off" | "0" | "false" | "выкл");
@@ -2232,11 +2571,23 @@ impl Controller {
                     // From scenarios: «pc click 500 300», «pc key cmd+t».
                     "click" => pc::click_spec(&name).map(alice::PcAction::Click),
                     "key" => pc::key_spec(&name).map(alice::PcAction::Key),
+                    "type" => pc::type_spec(&name).map(alice::PcAction::Type),
+                    "mouse" => Some(alice::PcAction::Mouse),
+                    // Computers that said hello (pc::hello): the list, and adding one by its address.
+                    "found" => return send_to(&reply, pc::found_json(&self.settings).to_string()),
+                    "adopt" => {
+                        let r = pc::adopt(&mut self.settings, &name);
+                        if r.is_ok() {
+                            let _ = self.settings.save(&self.dir);
+                            self.publish();
+                        }
+                        return send_to(&reply, r.unwrap_or_else(|e| format!("error: {e}")));
+                    }
                     _ => None,
                 };
                 match action {
                     Some(a) => self.intent(Intent::Pc(a), Some(reply)),
-                    None => send_to(&reply, "usage: pc ping|wake|sleep|shutdown|restart|lock|open <программа>|close <программа>|do <фраза>|click <x> <y> [double|right]|key <клавиша, например cmd+t>".into()),
+                    None => send_to(&reply, "usage: pc ping|wake|sleep|shutdown|restart|lock|open <программа>|close <программа>|do <фраза>|click <x> <y> [double|right]|key <клавиша, например cmd+t>|type <текст>|mouse".into()),
                 }
             }
             "stop" => {
@@ -2327,6 +2678,50 @@ impl Controller {
             "status" => send_to(&reply, self.status()),
             // Bluetooth output (bt.rs): «bt status | scan | connect MAC | on | off | disconnect | forget MAC».
             "bt" => self.bt_cmd(&arg, reply),
+            // The panel's «Очистить» under the list of Telegram mentions.
+            "mentions" if arg == "clear" => {
+                mentions::clear();
+                self.publish();
+                send_to(&reply, "OK".into());
+            }
+            // An answer to soundya's own question, typed instead of said: «answer на проекторе».
+            "answer" => match alice::take_answer(&arg) {
+                Some(Some(alice::Step::Voice(i))) => self.intent(i, Some(reply)),
+                Some(Some(alice::Step::Control(c))) => self.control(&c, reply),
+                Some(None) => send_to(&reply, "OK: отменено".into()),
+                None => send_to(&reply, "error: сейчас нет вопроса, на который это ответ".into()),
+            },
+            // The developer build: a phrase as if Alice had heard it — which intent it is and
+            // whose (soundya's or Alice's), and it is run. For checking phrases without a voice.
+            #[cfg(feature = "dev")]
+            "hear" => {
+                if let Some(step) = alice::take_answer(&arg) {
+                    return match step {
+                        Some(alice::Step::Voice(i)) => self.intent(i, Some(reply)),
+                        Some(alice::Step::Control(c)) => self.control(&c, reply),
+                        None => send_to(&reply, "OK: отменено".into()),
+                    };
+                }
+                let norm = alice::normalize_phrase(&arg);
+                if let Some((phrase, _)) = self.shared.macros().into_iter().find(|(p, _)| alice::macro_matches(&norm, p)) {
+                    return send_to(&reply, format!("OK: сценарий «{phrase}» (не запускаю)"));
+                }
+                if let Some(steps) = alice::chain(&arg, self.settings.keyword_only) {
+                    if let Some(bad) = steps.iter().find(|i| !alice::owns_now(i, &self.shared)) {
+                        return send_to(&reply, format!("Алисе: в цепочке {bad:?} сейчас не наше"));
+                    }
+                    eprintln!("hear: {arg:?} -> chain {steps:?}");
+                    return run_chain(self.tx.clone(), steps, Some(reply));
+                }
+                match alice::intent(&arg, self.settings.keyword_only) {
+                    None => send_to(&reply, "Алисе: soundya эту фразу не берёт".into()),
+                    Some(i) if !alice::owns_now(&i, &self.shared) => send_to(&reply, format!("Алисе: {i:?} сейчас не наше")),
+                    Some(i) => {
+                        eprintln!("hear: {arg:?} -> {i:?}");
+                        self.intent(i, Some(reply))
+                    }
+                }
+            }
             // soundya's timer (timer.rs): «timer start <секунды> [название] | pomodoro [название] |
             // pause | resume | skip | stop | left | json».
             // «meet test <id группы>»: the page's «Проверить» — a test message with the meeting bot.
@@ -2346,6 +2741,27 @@ impl Controller {
             "alarm" => send_to(&reply, alarm::panel(&arg)),
             // «morning run» after the alarm, «morning test» from the panel's «Проверить».
             "morning" => {
+                // «morning pick»: what would be read out now and why, without a word said and
+                // without remembering it as read.
+                if arg == "pick" {
+                    let (s, proxy) = (self.settings.clone(), self.shared.proxy.lock().unwrap().clone());
+                    thread::spawn(move || {
+                        let r = match morning::chosen(&s, &proxy, planner::dir().as_deref()) {
+                            None => "error: новости не выбраны".to_owned(),
+                            Some(Err(e)) => format!("error: {e}"),
+                            Some(Ok((_, posts))) if posts.is_empty() => "OK: свежих новостей с прошлого раза нет".to_owned(),
+                            Some(Ok((name, posts))) => {
+                                let lines: Vec<String> = posts
+                                    .iter()
+                                    .map(|p| format!("[{}{}] {}", p.source, p.views.map_or(String::new(), |v| format!(", {v} просмотров")), p.text))
+                                    .collect();
+                                format!("OK: новости {name}:\n{}", lines.join("\n"))
+                            }
+                        };
+                        send_to(&reply, r);
+                    });
+                    return;
+                }
                 if arg != "run" && arg != "test" {
                     send_to(&reply, "usage: morning test".into());
                     return;
@@ -2495,6 +2911,20 @@ impl Controller {
                     _ => send_to(&reply, "usage: tg reply <текст> | tg yes | tg no".into()),
                 }
             }
+            // Divoom Ditoo Plus (ditoo.rs): «ditoo <режим>» from a scenario, «ditoo json» for /api/ditoo.
+            "ditoo" => {
+                let r = if arg.trim() == "json" {
+                    let status = serde_json::from_str::<serde_json::Value>(&self.json()).unwrap_or_default();
+                    let tasks: Vec<serde_json::Value> = planner::json()["items"]
+                        .as_array()
+                        .map(|a| a.iter().filter(|i| i["kind"] != "event" && (i["day"] == 0 || i["overdue"] == true)).cloned().collect())
+                        .unwrap_or_default();
+                    ditoo::json(&self.settings.ditoo_modes, &status, Some(serde_json::Value::Array(tasks))).to_string()
+                } else {
+                    ditoo::set(&self.settings.ditoo_modes, &arg).unwrap_or_else(|e| e)
+                };
+                send_to(&reply, r);
+            }
             // The panel's «Планы»: «plan json», «plan add {json}», «plan done|undone|del <id>».
             "plan" => {
                 let (what, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
@@ -2522,6 +2952,34 @@ impl Controller {
                         }
                         _ => "error: нужен заголовок".into(),
                     },
+                    // A pasted day plan (planner::parse_schedule): {"text", "day": 0 today | 1 tomorrow, "dry": preview}.
+                    // A document with things to do, pasted or uploaded (planner::parse_document):
+                    // {"text", "day": 0 today | 1 tomorrow, "dry": preview only}.
+                    ("import", _) => match serde_json::from_str::<serde_json::Value>(rest) {
+                        Ok(v) => {
+                            let (now, off) = (planner::now(), planner::offset());
+                            let today = (now + off).div_euclid(86_400);
+                            let day = today + v["day"].as_i64().unwrap_or(0).clamp(0, 30);
+                            let found = planner::parse_document(v["text"].as_str().unwrap_or(""), day, off, now);
+                            if found.is_empty() {
+                                "error: не нашла в документе ни задач, ни строк со временем. Подойдёт список по строке на задачу, «- [ ] задача» или расписание «18:00–18:10 | Блок | Задача»".into()
+                            } else if v["dry"].as_bool().unwrap_or(false) {
+                                serde_json::json!({ "items": found.iter().map(|e| serde_json::json!({
+                                    "title": e.title, "due": e.due, "high": e.high, "category": e.category,
+                                    "when": e.due.map(|d| planner::say_time(d, now, off)),
+                                })).collect::<Vec<_>>() }).to_string()
+                            } else {
+                                let (added, dup) = planner::import(&found, now);
+                                match (added, dup) {
+                                    (0, d) => format!("OK: всё это уже есть в планах ({d})"),
+                                    (a, 0) => format!("OK: добавлено в планы: {a}"),
+                                    (a, d) => format!("OK: добавлено в планы: {a}; уже было: {d}"),
+                                }
+                            }
+                        }
+                        Err(_) => "error: нужен JSON с полем text".into(),
+                    },
+                    ("prompt", _) => planner::SCHEDULE_PROMPT.to_owned(),
                     ("done", Some(id)) => if planner::set_done(id, true) { "OK".into() } else { "error: нет такой задачи".into() },
                     ("undone", Some(id)) => if planner::set_done(id, false) { "OK".into() } else { "error: нет такой задачи".into() },
                     ("del", Some(id)) => if planner::delete(id) { "OK".into() } else { "error: нет такой задачи".into() },
@@ -2945,6 +3403,8 @@ impl Controller {
             };
             match cmd {
                 Cmd::Voice(intent) => self.intent(intent, None),
+                Cmd::Chain(steps) => run_chain(self.tx.clone(), steps, None),
+                Cmd::Step(intent, reply) => self.intent(intent, Some(reply)),
                 Cmd::Control(line, reply) => {
                     let (cmd, arg) = line.trim().split_once(' ').unwrap_or((line.trim(), ""));
                     let arg = arg.trim().to_owned();
@@ -3238,14 +3698,20 @@ fn alarm_music_on() -> bool {
     alarm::music_on()
 }
 
-fn login_state(token: bool, refused: bool, confirmed: bool) -> &'static str {
+/// `failed`: the last check could not reach SoundCloud at all («зависло на проверке»,
+/// #SY-92FD6163: the provider blocks it and «Обход блокировок» was off — it «checked» for ever).
+fn login_state(token: bool, refused: bool, confirmed: bool, failed: bool) -> &'static str {
     match (token, refused, confirmed) {
         (false, ..) => "none",
         (true, true, _) => "refused",
         (true, false, true) => "ok",
+        (true, false, false) if failed => "offline",
         (true, false, false) => "checking",
     }
 }
+
+/// Why the last login check did not get through to SoundCloud (None: it did, or none ran).
+static LOGIN_FAILED: Mutex<Option<String>> = Mutex::new(None);
 
 fn state_dir() -> PathBuf {
     PathBuf::from(std::env::var("SOUNDYA_DIR").unwrap_or_else(|_| "/data/opt/soundya".into()))
@@ -3284,6 +3750,86 @@ fn device_names(settings: &Settings) -> Vec<(String, bool)> {
     tvs.chain(pcs).filter(|(n, _)| !n.trim().is_empty()).collect()
 }
 
+/// «Куда отправлять команды без названия устройства» for the voice parser.
+fn routes(settings: &Settings) -> alice::Routes {
+    alice::Routes {
+        volume: alice::Route::from_setting(&settings.route_volume),
+        apps: alice::Route::from_setting(&settings.route_apps),
+        pc: settings.pc_configured(),
+    }
+}
+
+/// When a phrase given to alice::say now will have been said (its own estimate: a pause, then
+/// about 13 letters a second). The next phrase waits for it — two at once collide.
+fn said_until(text: &str) -> std::time::Instant {
+    std::time::Instant::now() + Duration::from_millis(1600 + text.chars().count() as u64 * 1000 / 13)
+}
+
+fn wait_said(until: std::time::Instant) {
+    if let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+        thread::sleep(left);
+    }
+}
+
+/// What to say when a device did not connect: the speaker's own sending side, if that is
+/// what failed (no point in asking to pair the device again), else `text`.
+/// As bt_failed, with bt.rs's own error: a device that is seen but busy is said so.
+fn bt_failed_why(text: &str, error: &str) -> String {
+    if error == bt::BUSY {
+        return "Устройство видно, но не принимает подключение. Похоже, оно сейчас подключено к компьютеру или телефону. Отключите его там и повторите".to_owned();
+    }
+    if bt::source_error().is_some() {
+        "Колонка сейчас не может передавать звук по Bluetooth. Подробности на странице колонки, в разделе Bluetooth".to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
+/// One Bluetooth search at a time (it takes a quarter of a minute and blocks bluetoothctl).
+static BT_FINDING: AtomicBool = AtomicBool::new(false);
+
+/// A device's name as it is said: «JBL Flip 5»; an empty one is «устройство».
+fn bt_spoken_name(name: &str) -> String {
+    let n = name.trim();
+    if n.is_empty() { "устройство".to_owned() } else { n.to_owned() }
+}
+
+/// What a voice search offers: named devices, sound devices first, not the one already
+/// playing, five at most (a longer list is not listened to the end).
+fn bt_candidates(found: Vec<bt::Device>, saved: &str) -> Vec<bt::Device> {
+    // A paired device that is known not to be a sound device (a phone the Station remembers) is not offered.
+    let mut list: Vec<bt::Device> = found
+        .into_iter()
+        .filter(|d| !d.name.trim().is_empty() && !(d.connected && d.mac.eq_ignore_ascii_case(saved)) && (d.audio || !d.paired))
+        .collect();
+    // Stable: bt::scan's own order (connected, paired, audio, name) stays inside each half.
+    list.sort_by_key(|d| !d.audio);
+    list.truncate(5);
+    list
+}
+
+/// «Нашла: первое — JBL Flip, второе — Sony. Какое подключить?…» and what each answer runs.
+fn bt_question(list: &[bt::Device]) -> (String, Vec<alice::Choice>) {
+    const NTH: [&str; 5] = ["первое", "второе", "третье", "четвёртое", "пятое"];
+    let said: Vec<String> = list.iter().zip(NTH).map(|(d, n)| format!("{n} — {}", d.name.trim())).collect();
+    let text = if let [one] = list {
+        format!("Нашла {}. Подключить? Скажите: Алиса, первое. Или: Алиса, отмена", one.name.trim())
+    } else {
+        format!("Нашла: {}. Какое подключить? Скажите, например: Алиса, первое. Или: Алиса, отмена", said.join(", "))
+    };
+    let choices = list
+        .iter()
+        .map(|d| alice::Choice {
+            label: d.name.trim().to_owned(),
+            // The name's own words pick it too, as written and in Russian letters when the
+            // recogniser spells a brand that way; ordinals are the dependable way.
+            words: alice::normalize_phrase(&d.name).split_whitespace().map(str::to_owned).collect(),
+            step: alice::Step::Voice(Intent::BtConnect(d.mac.clone(), d.name.trim().to_owned())),
+        })
+        .collect();
+    (text, choices)
+}
+
 /// Every name of every Telegram contact: "мама|маме" -> ["мама", "маме"].
 fn contact_names(settings: &Settings) -> Vec<String> {
     settings
@@ -3303,8 +3849,8 @@ fn norm_phrase(s: &str) -> String {
 /// Commands a macro may run: playback, volume, the PC and the TV. Not
 /// uninstall, update, bypass, settings or other macros — a spoken phrase
 /// must not be able to remove or reconfigure soundya.
-const MACRO_COMMANDS: [&str; 23] = [
-    "play", "playlist", "album", "likes", "recs", "myplaylist", "openpl", "pause", "resume", "toggle", "next",
+const MACRO_COMMANDS: [&str; 25] = [
+    "bt", "ditoo", "play", "playlist", "album", "likes", "recs", "myplaylist", "openpl", "pause", "resume", "toggle", "next",
     "prev", "previous", "stop", "shuffle", "repeat", "similar", "seek", "volume", "pc", "tv", "goto", "timer",
 ];
 
@@ -3334,6 +3880,19 @@ fn without_timer(script: &str) -> String {
 }
 
 /// A script's lines, checked: every one is «wait N» or an allowed command.
+/// «pc@ноутбук sleep» → ("pc", "ноутбук", "sleep"); «tv@в_спальне key home» → ("tv", "в спальне", "key home").
+fn device_step(line: &str) -> Option<(&'static str, String, String)> {
+    let (head, rest) = line.trim().split_once(' ').unwrap_or((line.trim(), ""));
+    let (kind, name) = head.split_once('@')?;
+    let kind = match kind {
+        "pc" => "pc",
+        "tv" => "tv",
+        _ => return None,
+    };
+    let name = name.replace('_', " ").trim().to_owned();
+    (!name.is_empty() && !rest.trim().is_empty()).then(|| (kind, name, rest.trim().to_owned()))
+}
+
 fn macro_lines(script: &str) -> Result<Vec<String>, String> {
     let lines: Vec<String> = script
         .lines()
@@ -3346,6 +3905,11 @@ fn macro_lines(script: &str) -> Result<Vec<String>, String> {
     }
     for l in &lines {
         let cmd = l.split_whitespace().next().unwrap_or("");
+        let cmd = cmd.split_once('@').map_or(cmd, |(k, _)| k);
+        // Where the music plays, not pairing or forgetting a device.
+        if cmd == "bt" && !matches!(l.split_whitespace().nth(1), Some("on" | "off")) {
+            return Err("в сценарии для Bluetooth можно только «bt on» (музыку в сохранённое устройство) и «bt off» (на колонку)".into());
+        }
         if !(cmd == "wait" || cmd == "sleep" || MACRO_COMMANDS.contains(&cmd)) {
             return Err(format!("команда «{cmd}» в сценарии не разрешена (можно: wait, {})", MACRO_COMMANDS.join(", ")));
         }
@@ -3548,8 +4112,11 @@ fn daemon() {
     voice::recover();
     voice::configure(settings.alice_voice, settings.alice_voice_max);
     // Telegram bots: messages from allowed people read out, replies by voice.
+    telegram::set_proxy(&settings.tg_proxy);
     telegram::configure(telegram::Config::from_settings(&settings), &shared);
     telegram::run_summary(shared.clone());
+    mentions::configure(mentions::Config::from_settings(&settings), &shared);
+    mentions::run_summary();
     // Tasks and reminders (said only with the planner on).
     planner::configure(settings.planner_on, settings.tz_offset);
     planner::run(&dir);
@@ -3558,9 +4125,11 @@ fn daemon() {
     alarm::run(&dir, tx.clone());
     adbkeep::configure(settings.adb_keep);
     alice::set_tv(settings.tv_configured());
+    alice::set_tv_off(!settings.tv_on && !settings.tvs().is_empty());
     tv::set_search_apps(settings.tv_search.clone());
     alice::set_devices(device_names(&settings));
     alice::set_pc_rules(pc_rules(&settings));
+    alice::set_routes(routes(&settings));
     alarm::set_morning(settings.morning_on);
     alarm::set_own(settings.alarm_own);
     alarm::set_volume(settings.alarm_volume, settings.alarm_louder);
@@ -3575,6 +4144,7 @@ fn daemon() {
     // Smart Ducking: calls and notifications from devices lower soundya's music.
     ducking::configure(ducking::Config::from_settings(&settings));
     ducking::run(shared.clone());
+    mic::run();
     // Bug reports queued on flash: delivered when the server answers.
     report::run(dir.clone(), shared.clone());
     // Looks for a newer soundya on GitHub; the page offers to install it.
@@ -3584,6 +4154,7 @@ fn daemon() {
     if std::env::var("SOUNDYA_NO_VOICE").is_err() {
         alice::watch(tx.clone(), shared.clone());
         buttons::run(tx.clone(), shared.clone());
+        buttons::run_remote(tx.clone(), shared.clone());
     }
     let port = std::env::var("SOUNDYA_WEB_PORT")
         .ok()
@@ -3854,13 +4425,20 @@ mod macro_tests {
     fn macros_cannot_remove_soundya() {
         assert!(super::macro_lines("tv do открой ютуб\nwait 3000\nvolume set 4").is_ok());
         assert!(super::macro_lines("pc wake\ntimer pomodoro").is_ok(), "«я сажусь работать» may start a pomodoro");
+        assert!(super::macro_lines("pc@ноутбук sleep\ntv@в_спальне key home").is_ok(), "a step for one device");
+        assert!(super::macro_lines("bt on\nplay lofi\nbt off").is_ok(), "where the music plays");
+        assert!(super::macro_lines("bt forget AA:BB:CC:DD:EE:FF").is_err() && super::macro_lines("bt connect AA:BB:CC:DD:EE:FF").is_err());
+        assert_eq!(super::device_step("tv@в_спальне key home"), Some(("tv", "в спальне".to_owned(), "key home".to_owned())));
+        assert_eq!(super::device_step("pc sleep"), None);
+        assert_eq!(super::device_step("uninstall@x y"), None);
         assert_eq!(super::without_timer("play lofi\ntimer pomodoro\nvolume set 3"), "play lofi\nvolume set 3", "no pomodoro loop");
         for bad in ["uninstall", "update install", "bypass off", "macro run x", "pc do x\nuninstall"] {
             assert!(super::macro_lines(bad).is_err(), "{bad}");
         }
-        assert_eq!(super::login_state(true, true, true), "refused");
-        assert_eq!(super::login_state(true, false, false), "checking");
-        assert_eq!(super::login_state(false, true, false), "none");
+        assert_eq!(super::login_state(true, true, true, false), "refused");
+        assert_eq!(super::login_state(true, false, false, false), "checking");
+        assert_eq!(super::login_state(true, false, false, true), "offline", "SoundCloud not reached: said, not «checking» for ever");
+        assert_eq!(super::login_state(false, true, false, true), "none");
         assert_eq!(super::norm_phrase("Алиса, Включи вечерний режим, пожалуйста!"), "включи вечерний режим");
     }
 }
