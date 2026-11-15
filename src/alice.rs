@@ -67,6 +67,14 @@ pub enum Intent {
     Address,
     /// «Включи музыку в наушниках» (true) / «верни музыку на колонку» (false): Bluetooth output (bt.rs).
     BtOut(bool),
+    /// «Подключись к новому устройству блютус»: find Bluetooth devices nearby, read their
+    /// names aloud and ask which one to connect.
+    BtFind,
+    /// The device picked from that list: (address, name).
+    BtConnect(String, String),
+    /// A phrase that fits several devices and the settings say «спрашивать» (or there is no
+    /// other way to tell): soundya asks «На каком устройстве?» and the answer runs it there.
+    Ask(Ambig),
     /// «Говори тише / громче»: only her voice (voice.rs), by this many %.
     VoiceLevel(i8),
     /// «Да» / «нет» to an update sent from the app (update.rs: installed only after «да»).
@@ -117,14 +125,86 @@ fn duck_command(text: &str) -> Option<DuckCmd> {
     }
 }
 
+/// What was asked without saying where (see `Routes`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ambig {
+    /// «Сделай тише на пять»: (louder, the steps said). None: the device's usual step — one
+    /// level on the speaker (as Alice's own «тише»), three presses on a TV.
+    Volume(bool, Option<u8>),
+    /// «Открой ютуб» / «закрой ютуб»: (open, the app as said, the whole phrase for a computer).
+    App(bool, String, String),
+}
+
+/// Where a family of phrases goes when no device is named (settings route_volume, route_apps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Route {
+    /// Volume: the speaker itself (Alice's own, not taken). Apps: the only screen set up, a question if both are.
+    #[default]
+    Auto,
+    Tv,
+    Pc,
+    Ask,
+}
+
+impl Route {
+    pub fn from_setting(s: &str) -> Route {
+        match s.trim() {
+            "tv" => Route::Tv,
+            "pc" => Route::Pc,
+            "ask" => Route::Ask,
+            _ => Route::Auto,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Routes {
+    pub volume: Route,
+    pub apps: Route,
+    /// A computer is set up (the TV is in TvState.set_up).
+    pub pc: bool,
+}
+
+#[cfg(not(test))]
+static ROUTES: std::sync::Mutex<Routes> = std::sync::Mutex::new(Routes { volume: Route::Auto, apps: Route::Auto, pc: false });
+
+#[cfg(not(test))]
+fn routes_state<R>(f: impl FnOnce(&mut Routes) -> R) -> R {
+    f(&mut ROUTES.lock().unwrap())
+}
+
+// As TV_STATE: each test has its own.
+#[cfg(test)]
+thread_local! {
+    static ROUTES: std::cell::RefCell<Routes> = std::cell::RefCell::new(Routes::default());
+}
+
+#[cfg(test)]
+fn routes_state<R>(f: impl FnOnce(&mut Routes) -> R) -> R {
+    ROUTES.with(|s| f(&mut s.borrow_mut()))
+}
+
+pub fn set_routes(r: Routes) {
+    routes_state(|s| *s = r);
+}
+
+fn routes() -> Routes {
+    routes_state(|s| *s)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TvAction {
+    /// A phrase about the TV that soundya did not understand: it says so itself, Alice's
+    /// «не нашла умных устройств» / «не могу на этом устройстве» is cut off.
+    Unclear,
     Wake,
     Sleep,
     /// Open an app: «открой ютуб на проекторе».
     Open(String),
     /// Search films and shows across apps: «найди фильм дюна на проекторе».
     Search(String),
+    /// «Найди маму в 16 на рутубе»: search inside that app (spoken app name, query).
+    SearchIn(String, String),
     /// Search YouTube: «включи на ютубе котиков на проекторе».
     YouTube(String),
     /// Remote-control keys: the Android key code and how many presses.
@@ -221,6 +301,103 @@ fn nav_key(words: &[&str]) -> Option<(&'static str, u8)> {
     code.map(|c| (c, n))
 }
 
+/// «тише на 10», «сделай громче на пять делений»: (key, presses); None if any other word is there.
+fn volume_steps(words: &[&str]) -> Option<(&'static str, u8)> {
+    volume_said(words).map(|(code, n)| (code, n.unwrap_or(3)))
+}
+
+/// As volume_steps, with the number as said (None: no number).
+fn volume_said(words: &[&str]) -> Option<(&'static str, Option<u8>)> {
+    let mut code = None;
+    let mut n: Option<u8> = None;
+    for w in words {
+        match *w {
+            "тише" | "потише" | "убавь" | "уменьши" | "ниже" => code = Some("KEYCODE_VOLUME_DOWN"),
+            "громче" | "погромче" | "прибавь" | "увеличь" | "добавь" => code = Some("KEYCODE_VOLUME_UP"),
+            "сделай" | "на" | "звук" | "громкость" | "деления" | "делений" | "деление" | "пунктов" | "пункта" | "единиц" | "шагов" | "шага" | "еще" => {}
+            w => n = Some(number_word(w)?),
+        }
+    }
+    Some((code?, n.map(|n| n.clamp(1, 30))))
+}
+
+fn number_word(w: &str) -> Option<u8> {
+    if let Ok(v) = w.parse::<u8>() {
+        return Some(v);
+    }
+    const WORDS: [(&str, u8); 17] = [
+        ("один", 1), ("одно", 1), ("два", 2), ("две", 2), ("три", 3), ("четыре", 4), ("пять", 5), ("шесть", 6), ("семь", 7),
+        ("восемь", 8), ("девять", 9), ("десять", 10), ("пятнадцать", 15), ("двадцать", 20), ("тридцать", 30), ("пару", 2), ("парочку", 2),
+    ];
+    WORDS.iter().find(|(k, _)| *k == w).map(|(_, v)| *v)
+}
+
+/// First words of a question or talk about TVs: Alice's, not a command to the TV.
+const TV_HERS: [&str; 16] = [
+    "что", "какой", "какая", "какие", "как", "почему", "зачем", "сколько", "когда", "где", "кто", "расскажи", "посоветуй", "купи",
+    "закажи", "найди",
+];
+
+/// Volume and apps said without a device. Volume: the speaker's own by default (Alice does
+/// it, soundya does not take the phrase), the TV or a question by the setting. Apps («открой
+/// ютуб», «включи кинопоиск», «закрой ютуб»): the TV, the computer or a question; with only
+/// one of them set up — that one. Before this «включи ютуб» searched SoundCloud for «ютуб».
+fn routed(n: &str) -> Option<Intent> {
+    let r = routes();
+    let tv_up = tv_state(|s| s.set_up);
+    let words: Vec<&str> = n.split_whitespace().filter(|w| *w != "пожалуйста").collect();
+    if let Some((code, said)) = volume_said(&words) {
+        // «ниже» / «выше» alone are the remote's arrows (tv_unnamed took them already).
+        let up = code == "KEYCODE_VOLUME_UP";
+        return match r.volume {
+            Route::Tv if tv_up => Some(Intent::Tv(TvAction::Key(code, said.unwrap_or(3)))),
+            Route::Ask if tv_up => Some(Intent::Ask(Ambig::Volume(up, said))),
+            _ => None,
+        };
+    }
+    // «Включи премьеру» is Alice's own playlist, not the app PREMIER.
+    if yandex_only(n).is_some() {
+        return None;
+    }
+    let (verb, rest) = words.split_first()?;
+    let open = match *verb {
+        "открой" | "запусти" | "включи" | "открыть" | "вруби" => true,
+        "закрой" | "закрыть" | "выруби" => false,
+        _ => return None,
+    };
+    let app = rest.join(" ");
+    // Only a known app's name and nothing after it: «включи ютуб», not «включи ютуб в профиле
+    // работа», «открой ютуб на компьютере» (a named computer is its own rule below).
+    if app.is_empty() || !crate::tv::screen_app(&app) || rest.len() > 2 || rest.iter().any(|w| matches!(*w, "на" | "в" | "во" | "и" | "с" | "для")) {
+        return None;
+    }
+    let to_tv = || Some(Intent::Tv(if open { TvAction::Open(app.clone()) } else { TvAction::Close(app.clone()) }));
+    // The computer's own parser knows «открой/закрой»; «включи ютуб» is said its way. What the
+    // «Компьютер» menu leaves to Alice stays hers.
+    let to_pc = || {
+        let a = PcAction::Command(format!("{} {app}", if open { "открой" } else { "закрой" }));
+        pc_allowed(n, &a, false, &pc_rules()).then_some(Intent::Pc(a))
+    };
+    let ask = || Some(Intent::Ask(Ambig::App(open, app.clone(), format!("{} {app}", if open { "открой" } else { "закрой" }))));
+    match (r.apps, tv_up, r.pc) {
+        (_, false, false) => None,
+        (Route::Tv, true, _) | (Route::Auto, true, false) => to_tv(),
+        (Route::Pc, _, true) | (Route::Auto, false, true) => to_pc(),
+        (Route::Ask, true, true) | (Route::Auto, true, true) => ask(),
+        (Route::Ask, true, false) | (Route::Pc, true, false) => to_tv(),
+        (Route::Ask, false, true) | (Route::Tv, false, true) => to_pc(),
+    }
+}
+
+/// A phrase that names the TV or the projector but means nothing soundya knows: still the
+/// TV's (with a TV set up), so Alice does not answer about her smart home.
+fn tv_unclear(text: &str) -> Option<Intent> {
+    let (rest, _) = strip_tv(&normalize(text))?;
+    // Questions and talk about TVs stay hers: «какой телевизор лучше», «что идёт по тв», «купи телевизор».
+    rest.split_whitespace().next()?;
+    (!tv_not_a_command(&rest)).then_some(Intent::Tv(TvAction::Unclear))
+}
+
 /// The remote's OK, said.
 const OK_WORDS: [&str; 13] = ["ок", "окей", "ok", "нажми", "нажми ок", "выбери", "выбрать", "подтверди", "войди", "открой это", "жми", "выбери это", "нажми на это"];
 
@@ -233,12 +410,17 @@ struct TvState {
     remote: Option<std::time::Instant>,
     /// A TV is set up (settings): «подключи впн» is then the projector's, else the PC's.
     set_up: bool,
+    /// The video on the TV was paused by a command (when): «продолжи» is then the TV's, not
+    /// SoundCloud's — until it is continued or music is asked for.
+    paused: Option<std::time::Instant>,
 }
+/// How long «продолжи» after «пауза на проекторе» still means the film.
+const TV_PAUSED_FOR: std::time::Duration = std::time::Duration::from_secs(40 * 60);
 const TV_SESSION_FOR: std::time::Duration = std::time::Duration::from_secs(90);
 const TV_REMOTE_FOR: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
 #[cfg(not(test))]
-static TV_STATE: std::sync::Mutex<TvState> = std::sync::Mutex::new(TvState { session: None, remote: None, set_up: false });
+static TV_STATE: std::sync::Mutex<TvState> = std::sync::Mutex::new(TvState { session: None, remote: None, set_up: false, paused: None });
 
 #[cfg(not(test))]
 fn tv_state<R>(f: impl FnOnce(&mut TvState) -> R) -> R {
@@ -263,9 +445,20 @@ pub fn tv_used(key: Option<&'static str>) {
         if s.remote.is_some_and(|at| at.elapsed() < TV_REMOTE_FOR) {
             s.remote = Some(std::time::Instant::now());
         }
+        match key {
+            Some("KEYCODE_MEDIA_PAUSE") => s.paused = Some(std::time::Instant::now()),
+            // Continued, also by the remote's OK or the play/pause key.
+            Some("KEYCODE_MEDIA_PLAY" | "KEYCODE_MEDIA_NEXT" | "KEYCODE_MEDIA_PREVIOUS" | "KEYCODE_DPAD_CENTER" | "KEYCODE_MEDIA_PLAY_PAUSE" | "KEYCODE_HOME") => s.paused = None,
+            _ => {}
+        }
         let key = key.or_else(|| s.session.and_then(|(_, k)| k));
         s.session = Some((std::time::Instant::now(), key));
     });
+}
+
+/// Music was asked for: «продолжи» is the music's again.
+pub fn tv_forget_pause() {
+    tv_state(|s| s.paused = None);
 }
 
 pub fn tv_remote(on: bool) {
@@ -310,6 +503,15 @@ pub fn set_tv(on: bool) {
     tv_state(|s| s.set_up = on);
 }
 
+/// A TV's address is saved, but «Телевизор» is switched off in the settings: its commands
+/// went to Alice, who answers «на этом устройстве не получится» (#SY-091FB968 — the owner
+/// took it for soundya not working at all). Said in words instead.
+static TV_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_tv_off(off: bool) {
+    TV_OFF.store(off, std::sync::atomic::Ordering::Release);
+}
+
 /// Phrases for the TV that do not name it: «ещё выше» right after a TV command;
 /// SmartTube (only the TV has it); «открой впн и включи его».
 fn tv_unnamed(n: &str) -> Option<TvAction> {
@@ -341,10 +543,32 @@ fn tv_unnamed(n: &str) -> Option<TvAction> {
     if crate::tv::tv_only_app(n) {
         return as_tv();
     }
+    // «Найди маму в 16 на рутубе»: a video app only the TV has here — no «на телевизоре» needed.
+    if crate::tv::search_in_phrase(n).is_some() && tv_state(|s| s.set_up) {
+        return as_tv();
+    }
     // The speaker has no screen: «нажми вверх», «наведись ниже», «влево» can only mean the TV's remote.
     let words: Vec<&str> = n.split_whitespace().collect();
     if let Some((code, k)) = nav_key(&words) {
         return Some(TvAction::Key(code, k));
+    }
+    // The film was paused by voice a while ago: «продолжи» continues it, not SoundCloud.
+    if matches!(n, "продолжи" | "продолжай" | "продолжить" | "сними с паузы" | "играй дальше" | "продолжи воспроизведение" | "продолжи видео" | "продолжи фильм")
+        && tv_state(|s| s.paused.is_some_and(|at| at.elapsed() < TV_PAUSED_FOR))
+    {
+        return Some(TvAction::Key("KEYCODE_MEDIA_PLAY", 1));
+    }
+    // Things only a screen has, with a TV set up: «включи первое видео», «следующая серия»,
+    // «найди фильм дюна». Without them soundya searched SoundCloud for «первое видео». Not when
+    // a computer is named or the browser is meant («найди фильм дюна в гугле»): the computer's.
+    let pcs = matches!(pc_named(n), Some((_, true))) || words.iter().any(|w| ["гугл", "браузер", "интернет", "ютуб", "youtube"].iter().any(|s| w.starts_with(s)));
+    if tv_state(|s| s.set_up) && !pcs {
+        if let Some(a) = screen_only(&words, false) {
+            return Some(a);
+        }
+        if matches!(as_tv(), Some(TvAction::PlayFirst)) {
+            return Some(TvAction::PlayFirst);
+        }
     }
     // «подключись к впн», «включи впн», «отключи впн»: the VPN app on the TV, its main button.
     if (n.contains("впн") || n.contains("vpn")) && tv_state(|s| s.set_up) {
@@ -369,6 +593,87 @@ fn tv_unnamed(n: &str) -> Option<TvAction> {
         a @ TvAction::Key(k, _) if [UP, DOWN, LEFT, RIGHT, CENTER, "KEYCODE_BACK"].contains(&k) => Some(a),
         _ => None,
     }
+}
+
+/// «Следующая серия», «предыдущее видео», «найди фильм дюна», «включи сериал друзья»: a screen's.
+/// `named`: the TV was named in the phrase. Without it «включи кино …» is the band Кино on
+/// SoundCloud and «включи аниме опенинги» is music; a search verb or the TV's name makes them films.
+fn screen_only(words: &[&str], named: bool) -> Option<TvAction> {
+    let video = |w: &&str| ["сери", "эпизод", "видео", "ролик", "выпуск"].iter().any(|s| w.starts_with(s));
+    let dir = |w: &&str| w.starts_with("следующ") || w.starts_with("предыдущ") || w.starts_with("прошл");
+    let filler = |w: &&str| ["включи", "поставь", "запусти", "покажи", "давай", "пожалуйста"].contains(w);
+    let all = words.join(" ");
+    // Only these words: «какой следующий выпуск новостей» is a question, not the remote.
+    if words.iter().any(video) && words.iter().any(dir) && words.iter().all(|w| video(w) || dir(w) || filler(w)) {
+        if words.iter().any(|w| w.starts_with("следующ")) {
+            return Some(TvAction::Key("KEYCODE_MEDIA_NEXT", 1));
+        }
+        return Some(TvAction::Key("KEYCODE_MEDIA_PREVIOUS", 1));
+    }
+    // «найди/включи/поставь/покажи фильм … »: the title after the noun.
+    let (verb, rest) = words.split_first()?;
+    if !matches!(*verb, "найди" | "поищи" | "покажи" | "включи" | "поставь" | "запусти") {
+        return None;
+    }
+    let search_verb = matches!(*verb, "найди" | "поищи" | "покажи");
+    let noun = |w: &&str| ["фильм", "сериал", "мультфильм", "мультик"].contains(w) || ((named || search_verb) && ["кино", "аниме"].contains(w));
+    let at = rest.iter().position(|w| noun(&w))?;
+    // «включи музыку из фильма …» is music: the noun comes right after the verb.
+    if at != 0 || all.contains("музык") || all.contains("песн") || all.contains("саундтрек") {
+        return None;
+    }
+    let title = rest[1..].join(" ");
+    // «поставь фильм на паузу», «включи фильм дальше» are the player's, not a title.
+    if title.is_empty() || title.contains("пауз") || matches!(title.as_str(), "дальше" | "заново" | "сначала" | "снова" | "с начала" | "еще раз") {
+        return None;
+    }
+    Some(TvAction::Search(title))
+}
+
+/// Questions, reminders and timers that only mention the TV are not commands to it.
+fn tv_not_a_command(rest: &str) -> bool {
+    const NOT_COMMANDS: [&str; 8] = ["напомни", "напоминай", "добавь", "запиши", "разбуди", "заведи", "напиши", "отправь"];
+    let first = rest.split_whitespace().next().unwrap_or("");
+    TV_HERS.contains(&first) || NOT_COMMANDS.contains(&first) || rest.contains("таймер") || rest.contains("будильник") || rest.contains("напомин")
+}
+
+/// The TV is named as a place («… на проекторе») but `tv()` knows no such command: still the
+/// TV's — its pause, seek and «закрой», else Unclear. Before this the phrase went on to the
+/// music rules: «перемотай на 30 секунд на проекторе» wound SoundCloud, «закрой ютуб на
+/// проекторе» was sent to the computer.
+fn tv_named_rest(n: &str, or_unclear: bool) -> Option<TvAction> {
+    let (rest, as_object) = strip_tv(n)?;
+    if as_object {
+        return None;
+    }
+    let words: Vec<&str> = rest.split_whitespace().filter(|w| *w != "пожалуйста").collect();
+    let first = *words.first()?;
+    let all = words.join(" ");
+    if tv_not_a_command(&all) {
+        return None;
+    }
+    let _ = first;
+    let key = |code: &'static str, n: u8| Some(TvAction::Key(code, n));
+    let media = |w: &&str| ["видео", "фильм", "сери", "ролик", "воспроизведени", "просмотр", "кино", "эпизод", "его", "ее"].iter().any(|s| w.starts_with(s));
+    if all.contains("на паузу") || all.contains("паузу") || (matches!(first, "останови" | "остановить" | "стоп" | "пауза") && words[1..].iter().all(media)) {
+        return key("KEYCODE_MEDIA_PAUSE", 1);
+    }
+    if all.contains("с паузы") || (matches!(first, "продолжи" | "продолжай" | "продолжить" | "возобнови") && words[1..].iter().all(media)) {
+        return key("KEYCODE_MEDIA_PLAY", 1);
+    }
+    if let Some(a) = screen_only(&words, true) {
+        return Some(a);
+    }
+    if let Some(ms) = seek_command(&all) {
+        // One press of the remote's wind key is about 10-15 s in the players.
+        let presses = (ms.unsigned_abs() / 15_000).clamp(1, 10) as u8;
+        return key(if ms >= 0 { "KEYCODE_MEDIA_FAST_FORWARD" } else { "KEYCODE_MEDIA_REWIND" }, presses);
+    }
+    if matches!(first, "закрой" | "закрыть" | "выйди") && words.len() > 1 {
+        let app = words[1..].iter().filter(|w| **w != "из").copied().collect::<Vec<_>>().join(" ");
+        return (!app.is_empty()).then_some(TvAction::Close(app));
+    }
+    or_unclear.then_some(TvAction::Unclear)
 }
 
 /// Commands for the Android TV. `None` when the phrase does not name it.
@@ -447,6 +752,10 @@ fn tv(text: &str) -> Option<TvAction> {
             }
         }
     }
+    // «Сделай проектор тише на 10», «громче на пять», «убавь звук на 3»: that many presses.
+    if let Some((code, n)) = volume_steps(&words) {
+        return key(code, n);
+    }
     match all.as_str() {
         "пауза" | "поставь на паузу" | "останови" | "стоп" | "на паузу" | "поставь паузу" => return key("KEYCODE_MEDIA_PAUSE", 1),
         "продолжи" | "играй" | "воспроизведи" | "сними с паузы" | "продолжай" => return key("KEYCODE_MEDIA_PLAY", 1),
@@ -461,6 +770,10 @@ fn tv(text: &str) -> Option<TvAction> {
         "перемотай вперед" | "вперед" => return key("KEYCODE_MEDIA_FAST_FORWARD", 1),
         "перемотай назад" | "отмотай назад" => return key("KEYCODE_MEDIA_REWIND", 1),
         _ => {}
+    }
+    // «найди маму в 16 на рутубе», «включи дюну в кинопоиске»: inside that app.
+    if let Some((app, q)) = crate::tv::search_in_phrase(&all) {
+        return Some(TvAction::SearchIn(app, q));
     }
     let youtube = |w: &str| w.starts_with("ютуб") || w.starts_with("youtube") || w.starts_with("ютьюб");
     // «найди на ютубе котиков», «включи на ютубе …»
@@ -524,6 +837,10 @@ pub enum PcAction {
     Click(String),
     /// A key or a shortcut, from a scenario: "enter", "cmd+t", "ctrl+shift+esc" (pc::key_spec).
     Key(String),
+    /// Text typed on the keyboard, from a scenario («pc type привет»; pc::type_spec).
+    Type(String),
+    /// Where the mouse pointer is now ("x,y"): for setting up a scenario's click.
+    Mouse,
 }
 
 /// Which PC commands soundya takes («Компьютер» menu); the rest stay Alice's.
@@ -745,6 +1062,215 @@ pub fn normalize_phrase(text: &str) -> String {
         .filter(|w| !w.is_empty() && *w != "пожалуйста")
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// ---------------------------------------------------------------- a question and its answer
+
+/// What an answer does: a voice intent or a panel command, ready to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    Voice(Intent),
+    Control(String),
+}
+
+/// One thing to choose: what is read aloud, the words that pick it and what it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    pub label: String,
+    pub words: Vec<String>,
+    pub step: Step,
+}
+
+/// soundya asked something aloud («На каком устройстве?», «Какое подключить?») and waits for
+/// the answer. Alice does not listen by herself (no such call is known), so the answer is a
+/// new phrase with her name: «Алиса, на проекторе», «Алиса, первое», «Алиса, отмена».
+#[derive(Debug, Clone)]
+struct Question {
+    id: u64,
+    options: Vec<Choice>,
+    until: std::time::Instant,
+}
+
+/// How long the answer is waited for after the question was said.
+const ANSWER_FOR: Duration = Duration::from_secs(40);
+
+#[cfg(not(test))]
+static QUESTION: std::sync::Mutex<Option<Question>> = std::sync::Mutex::new(None);
+
+#[cfg(not(test))]
+fn question<R>(f: impl FnOnce(&mut Option<Question>) -> R) -> R {
+    f(&mut QUESTION.lock().unwrap())
+}
+
+// As TV_STATE: each test has its own.
+#[cfg(test)]
+thread_local! {
+    static QUESTION: std::cell::RefCell<Option<Question>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn question<R>(f: impl FnOnce(&mut Option<Question>) -> R) -> R {
+    QUESTION.with(|s| f(&mut s.borrow_mut()))
+}
+
+static QUESTION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Keeps the question for `wait`; the id tells a later `ask` from this one.
+fn put_question(options: Vec<Choice>, wait: Duration) -> u64 {
+    let id = QUESTION_ID.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    question(|q| *q = Some(Question { id, options, until: std::time::Instant::now() + wait }));
+    id
+}
+
+/// Says `text` in Alice's voice and waits for one of `options`. The window is counted from
+/// the end of the speech (an answer during it counts too).
+pub fn ask(text: String, options: Vec<Choice>) {
+    // About 13 letters a second (say_wait's own estimate), plus the pause before speaking.
+    let speaking = Duration::from_millis(1600 + text.chars().count() as u64 * 1000 / 13);
+    let id = put_question(options, speaking + ANSWER_FOR);
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(600));
+        say_wait(&text);
+        question(|q| {
+            if let Some(q) = q.as_mut().filter(|q| q.id == id) {
+                q.until = std::time::Instant::now() + ANSWER_FOR;
+            }
+        });
+    });
+}
+
+/// The options of the question that is still waiting.
+fn pending_options() -> Option<Vec<Choice>> {
+    question(|q| {
+        if q.as_ref().is_some_and(|q| q.until < std::time::Instant::now()) {
+            *q = None;
+        }
+        q.as_ref().map(|q| q.options.clone())
+    })
+}
+
+pub fn clear_question() {
+    question(|q| *q = None);
+}
+
+/// For the panel: what is being asked (labels) and how many seconds are left.
+pub fn question_json() -> serde_json::Value {
+    let left = question(|q| q.as_ref().map(|q| q.until.saturating_duration_since(std::time::Instant::now()).as_secs()));
+    match (pending_options(), left) {
+        (Some(o), Some(left)) => serde_json::json!({ "options": o.iter().map(|c| c.label.clone()).collect::<Vec<_>>(), "left": left }),
+        _ => serde_json::Value::Null,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Answer {
+    Pick(usize),
+    Cancel,
+    /// Not an answer at all: the phrase goes on as any other.
+    No,
+}
+
+/// «Первое», «второй», «3», «последнее» → the option's index.
+fn ordinal(word: &str, len: usize) -> Option<usize> {
+    const ORD: [&[&str]; 6] = [
+        &["1", "один", "одно", "первое", "первый", "первая", "первую", "первого", "первом", "первой", "первому"],
+        &["2", "два", "две", "второе", "второй", "вторая", "вторую", "второго", "втором", "второму"],
+        &["3", "три", "третье", "третий", "третья", "третью", "третьего", "третьем", "третьему", "третьей"],
+        &["4", "четыре", "четвертое", "четвертый", "четвертая", "четвертую", "четвертого", "четвертом", "четвертому", "четвертой"],
+        &["5", "пять", "пятое", "пятый", "пятая", "пятую", "пятого", "пятом", "пятому", "пятой"],
+        &["6", "шесть", "шестое", "шестой", "шестая", "шестую", "шестого", "шестом", "шестому"],
+    ];
+    if matches!(word, "последнее" | "последний" | "последняя" | "последнюю") {
+        return len.checked_sub(1);
+    }
+    ORD.iter().position(|w| w.contains(&word)).filter(|i| *i < len)
+}
+
+/// Is the phrase (normalize_phrase) an answer to these options? Only a phrase that is wholly
+/// an answer: «на проекторе», «проектор», «первое», «на мак», «отмена» — never «включи первое
+/// видео» or «включи музыку».
+pub fn answer(options: &[Choice], phrase: &str) -> Answer {
+    const FILL: [&str; 20] = [
+        "на", "в", "во", "к", "ко", "пожалуйста", "давай", "выбери", "выбираю", "подключи", "подключись", "вариант", "номер",
+        "устройство", "устройству", "устройстве", "это", "пусть", "будет", "выполни",
+    ];
+    let phrase = phrase.replace('ё', "е");
+    let words: Vec<&str> = phrase.split_whitespace().filter(|w| !FILL.contains(w)).collect();
+    if words.is_empty() || words.len() > 4 {
+        return Answer::No;
+    }
+    let all = words.join(" ");
+    if matches!(
+        all.as_str(),
+        "отмена" | "отмени" | "отменить" | "никакое" | "никакой" | "никакую" | "никуда" | "ничего" | "не надо" | "не нужно" | "нет"
+            | "ни каком" | "никаком" | "передумал" | "передумала" | "не важно" | "неважно"
+    ) {
+        return Answer::Cancel;
+    }
+    if let [one] = words[..] {
+        if let Some(i) = ordinal(one, options.len()) {
+            return Answer::Pick(i);
+        }
+    }
+    // Every word said is a word of exactly one option («проектор», «мак», «джбл флип»).
+    // A short name in another case too («на маке» for «мак», «в зале» for «зал»): same_word
+    // needs four letters for its stem.
+    let short = |said: &str, name: &str| {
+        let len = name.chars().count();
+        (2..=3).contains(&len) && said.starts_with(name) && said.chars().count() <= len + 2
+    };
+    let fits = |c: &Choice| words.iter().all(|w| c.words.iter().any(|n| same_word(w, n) || short(w, n)));
+    let mut picks = options.iter().enumerate().filter(|(_, c)| fits(c)).map(|(i, _)| i);
+    match (picks.next(), picks.next()) {
+        (Some(i), None) => Answer::Pick(i),
+        _ => Answer::No,
+    }
+}
+
+/// The heard phrase as an answer to the pending question: Some(Some(step)) — picked,
+/// Some(None) — «отмена», None — not an answer (the question stays).
+pub fn take_answer(text: &str) -> Option<Option<Step>> {
+    let options = pending_options()?;
+    match answer(&options, &normalize_phrase(text)) {
+        Answer::Pick(i) => {
+            clear_question();
+            Some(Some(options[i].step.clone()))
+        }
+        Answer::Cancel => {
+            clear_question();
+            Some(None)
+        }
+        Answer::No => None,
+    }
+}
+
+/// Names Alice writes in Latin letters: the scenario's phrase was typed in Russian.
+const LATIN_NAMES: [(&str, &str); 16] = [
+    ("youtube", "ютуб"), ("deadlock", "дедлок"), ("discord", "дискорд"), ("telegram", "телеграм"),
+    ("steam", "стим"), ("twitch", "твич"), ("netflix", "нетфликс"), ("spotify", "спотифай"),
+    ("chrome", "хром"), ("google", "гугл"), ("whatsapp", "ватсап"), ("tiktok", "тикток"),
+    ("smarttube", "смарттьюб"), ("kinopoisk", "кинопоиск"), ("dota", "дота"), ("cs", "кс"),
+];
+
+fn canon_words(phrase: &str) -> String {
+    phrase
+        .split(' ')
+        .map(|w| LATIN_NAMES.iter().find(|(l, _)| *l == w).map_or(w, |(_, r)| *r))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('ё', "е")
+}
+
+/// Does a heard phrase (normalize_phrase) run the scenario `saved` (its normalized phrase)?
+/// The whole phrase, as before, but «YouTube» is «ютуб», and «выполни …» / «запусти сценарий …»
+/// in front only says «run it»: «Алиса, выполни буду смотреть ютуб».
+pub fn macro_matches(heard: &str, saved: &str) -> bool {
+    let (h, s) = (canon_words(heard), canon_words(saved));
+    if h == s {
+        return true;
+    }
+    const RUN: [&str; 7] = ["выполни сценарий ", "запусти сценарий ", "включи сценарий ", "сценарий ", "выполни ", "запусти ", "активируй "];
+    RUN.iter().any(|p| h.strip_prefix(p).is_some_and(|rest| rest == s))
 }
 
 /// Removes "в саундклауде", "на soundcloud" and similar; returns whether it was present.
@@ -1062,11 +1588,57 @@ fn bt_out(n: &str) -> Option<bool> {
     (n.starts_with("верни ") && (n.ends_with("на колонку") || n.ends_with("на станцию") || n.ends_with("с наушников"))).then_some(false)
 }
 
+/// «блютуз» as people and the recogniser write it.
+fn bt_word(n: &str) -> bool {
+    ["блютуз", "блютус", "блютуф", "блутуз", "bluetooth"].iter().any(|w| n.contains(w))
+}
+
+/// Bluetooth by voice. «Переключись на блютус», «включи блютуз колонку», «музыку в наушники» →
+/// BtOut(true): the saved device, connected again if need be. «Подключись к новому устройству
+/// блютус», «найди блютуз устройства», «добавь блютуз колонку» → BtFind. «Отключи блютуз
+/// колонку», «верни звук на колонку» → BtOut(false). Bare «включи блютуз» / «выключи блютуз»
+/// stay Alice's (the Station as a Bluetooth speaker for a phone) — unless soundya's music is
+/// in a Bluetooth device right now, then «выключи блютуз» brings it back.
+fn bt_voice(n: &str) -> Option<Intent> {
+    if let Some(on) = bt_out(n) {
+        return Some(Intent::BtOut(on));
+    }
+    let words: Vec<&str> = n.split_whitespace().filter(|w| !matches!(*w, "пожалуйста" | "мне" | "мою" | "мои" | "мой")).collect();
+    let (&verb, rest) = words.split_first()?;
+    let bt = bt_word(n);
+    let has = |stems: &[&str]| rest.iter().any(|w| stems.iter().any(|s| w.starts_with(s)));
+    let device = has(&["колонк", "наушник", "устройств", "гарнитур", "динамик"]);
+    let new = has(&["нов", "друг"]);
+    // Only Bluetooth and device words after the verb: «найди блютуз наушники в интернете»,
+    // «добавь в список блютуз колонку» are not a search for devices.
+    let only_bt = rest.iter().all(|w| {
+        bt_word(w) || ["колонк", "наушник", "устройств", "гарнитур", "динамик", "нов", "друг"].iter().any(|s| w.starts_with(s))
+            || matches!(*w, "к" | "по" | "рядом" | "поблизости" | "вокруг" | "все" | "еще")
+    });
+    // «Включи блютуз на колонке»: the Station's own Bluetooth, Alice's.
+    let on_station = n.contains(" на колонке") || n.contains(" на станции") || n.contains(" на алисе");
+    let to_speaker = n.ends_with("на колонку") || n.ends_with("на станцию") || n.ends_with("на саму колонку") || n.ends_with("на алису");
+    match verb {
+        "найди" | "поищи" | "ищи" | "сопряги" | "добавь" if bt && only_bt => Some(Intent::BtFind),
+        "подключи" | "подключись" | "подключить" | "подключиться" | "привяжи" if new && (bt || device) => Some(Intent::BtFind),
+        "подключи" | "подключись" | "подключить" | "подключиться" if bt => Some(Intent::BtOut(true)),
+        "переключись" | "переключи" | "переведи" | "выведи" | "пусти" | "перекинь" if to_speaker && (has(&["музык", "звук"]) || rest.len() <= 2) => {
+            Some(Intent::BtOut(false))
+        }
+        "переключись" | "переключи" | "переведи" | "выведи" | "пусти" | "перекинь" if bt || has(&["наушник"]) => Some(Intent::BtOut(true)),
+        // «Вернись на колонку»: Alice answers «я и так на колонке» herself.
+        "вернись" | "верни" | "возвращайся" | "вернуться" if to_speaker && rest.len() <= 3 => Some(Intent::BtOut(false)),
+        "включи" | "запусти" if bt && device && !on_station => Some(Intent::BtOut(true)),
+        "отключи" | "выключи" | "отключись" | "отсоедини" if bt && !on_station && (device || crate::bt::output().is_some()) => Some(Intent::BtOut(false)),
+        _ => None,
+    }
+}
+
 /// Smart-home words: «включи свет» is never music.
-const HOME: [&str; 30] = [
+const HOME: [&str; 31] = [
     "свет", "освещение", "ламп", "люстр", "торшер", "ночник", "розетк", "телевизор", "тв",
     "кондиционер", "вентилятор", "обогревател", "пылесос", "робот", "чайник", "будильник",
-    "таймер", "блютуз", "bluetooth", "режим", "экран", "микрофон", "громк", "звук",
+    "таймер", "блютуз", "блютус", "bluetooth", "режим", "экран", "микрофон", "громк", "звук",
     "отоплен", "увлажнител", "очистител", "зарядк", "радио", "сказк",
 ];
 
@@ -1125,6 +1697,10 @@ fn device_in(n: &str, devices: &[(String, bool)]) -> Option<(String, bool, Strin
         if *tv && !kind_named && music {
             continue;
         }
+        // «Включи свет в спальне» with a TV called «спальня»: the lamp, not an app «свет».
+        if *tv && !kind_named && home_thing(&rest.split_whitespace().collect::<Vec<_>>()) {
+            continue;
+        }
         let phrase = if kind_named {
             rest
         } else if prep {
@@ -1137,7 +1713,153 @@ fn device_in(n: &str, devices: &[(String, bool)]) -> Option<(String, bool, Strin
     None
 }
 
+/// The way people really say it → the plain command the rules below know. Only the start of
+/// the phrase: «слушай, а ну-ка вруби проектор» → «включи проектор», «можешь открыть ютуб на
+/// телевизоре» → «открой ютуб на телевизоре», «выруби телек» → «выключи телек». A phrase that
+/// does not start with a command after the small talk is left as it was (answers, questions).
+/// Without this every such wording went to Alice, and she answered in her own way.
+pub fn plain_command(text: &str) -> String {
+    const SMALL_TALK: [&str; 30] = [
+        "пожалуйста", "давай", "давайте", "ну", "ну-ка", "нука", "а", "и", "слушай", "слышь", "можешь", "можете", "сможешь", "можно",
+        "ты", "мне", "быстро", "быстренько", "сейчас", "сначала", "сперва", "теперь", "тогда", "будь", "добра", "любезна", "хочу", "надо", "нужно", "срочно",
+    ];
+    // Said → the rule's word. Slang, «-ай» forms, the polite plural and «можешь включить».
+    const VERBS: [(&str, &str); 75] = [
+        ("вруби", "включи"), ("врубай", "включи"), ("включай", "включи"), ("включите", "включи"), ("включить", "включи"), ("включим", "включи"),
+        ("вруби-ка", "включи"), ("зажги", "включи"), ("активируй", "включи"),
+        ("выруби", "выключи"), ("вырубай", "выключи"), ("выключай", "выключи"), ("выключите", "выключи"), ("выключить", "выключи"), ("выключим", "выключи"),
+        ("отруби", "выключи"), ("погаси", "выключи"), ("гаси", "выключи"), ("туши", "выключи"), ("потуши", "выключи"),
+        ("открывай", "открой"), ("откройте", "открой"), ("открыть", "открой"), ("откроем", "открой"), ("раскрой", "открой"),
+        ("запускай", "запусти"), ("запустите", "запусти"), ("запустить", "запусти"), ("запустим", "запусти"), ("стартани", "запусти"), ("стартуй", "запусти"),
+        ("закрывай", "закрой"), ("закройте", "закрой"), ("закрыть", "закрой"), ("закроем", "закрой"), ("прикрой", "закрой"),
+        ("отыщи", "найди"), ("разыщи", "найди"), ("ищи", "найди"), ("найдите", "найди"), ("найти", "найди"), ("найдем", "найди"),
+        ("поискать", "найди"),
+        ("поставьте", "поставь"), ("поставить", "поставь"), ("поставим", "поставь"), ("ставь", "поставь"),
+        ("сделайте", "сделай"), ("сделать", "сделай"), ("делай", "сделай"),
+        ("нажмите", "нажми"), ("жми", "нажми"), ("тыкни", "нажми"), ("клацни", "нажми"),
+        ("переключай", "переключи"), ("переключите", "переключи"), ("переключить", "переключи"),
+        ("перемотать", "перемотай"), ("мотай", "перемотай"), ("промотай", "перемотай"),
+        ("остановите", "останови"), ("остановить", "останови"), ("тормози", "останови"), ("стопни", "останови"),
+        ("продолжай", "продолжи"), ("продолжить", "продолжи"), ("продолжим", "продолжи"),
+        ("убавить", "убавь"), ("убавляй", "убавь"), ("прибавить", "прибавь"), ("прибавляй", "прибавь"), ("добавь-ка", "прибавь"),
+        ("покажите", "покажи"), ("показать", "покажи"), ("показывай", "покажи"),
+    ];
+    // The rules' own first words: after small talk they are a command too («давай открой ютуб»).
+    const KNOWN: [&str; 26] = [
+        "включи", "выключи", "открой", "запусти", "закрой", "найди", "поищи", "поставь", "сделай", "нажми", "переключи", "перемотай",
+        "останови", "продолжи", "убавь", "прибавь", "покажи", "подключи", "отключи", "усыпи", "разбуди", "верни", "вернись", "отмотай", "выбери", "зайди",
+    ];
+    let n = normalize(text);
+    let words: Vec<&str> = n.split_whitespace().map(|w| w.trim_matches(',')).filter(|w| !w.is_empty()).collect();
+    let skip = words.iter().take_while(|w| SMALL_TALK.contains(w)).count();
+    let Some(first) = words.get(skip) else { return n };
+    let verb = VERBS.iter().find(|(said, _)| said == first).map(|(_, plain)| *plain).or_else(|| KNOWN.contains(first).then_some(*first));
+    match verb {
+        // Nothing to ease: the phrase as it was (the commas too: «ответь да, приду»).
+        Some(v) if skip == 0 && v == *first => n,
+        Some(v) => std::iter::once(v).chain(words[skip + 1..].iter().copied()).collect::<Vec<_>>().join(" "),
+        None => n,
+    }
+}
+
+/// «Включи проектор, открой впн и потом найди на рутубе фильм»: several commands in one
+/// phrase → each of them, in order. None unless there are two or more and every one is a
+/// command soundya knows — then the phrase is handled as before (one command, or Alice's).
+/// - Cut at «потом», «затем», «после этого», «а ещё», commas; at «и» only before a command's
+///   verb («включи битлз и роллинг стоунз» is one request).
+/// - The device carries over: after «включи проектор», «открой впн» and «найди фильм» are
+///   the projector's without naming it again; after a computer's command, the computer's.
+pub fn chain(text: &str, keyword_only: bool) -> Option<Vec<Intent>> {
+    let n = normalize(text);
+    // «Ответь …», «напомни …», «запиши …»: the rest is the user's own words, never commands.
+    const FREE_TEXT: [&str; 9] = ["ответь", "напиши", "напомни", "запиши", "добавь", "скажи", "отправь", "передай", "сообщи"];
+    if n.split_whitespace().next().is_some_and(|w| FREE_TEXT.contains(&w.trim_matches(','))) {
+        return None;
+    }
+    let mut cut = format!(" {} ", n.replace([',', ';', '.'], " | "));
+    for sep in [
+        " а потом ", " и потом ", " потом ", " а затем ", " и затем ", " затем ", " после этого ", " после чего ", " а после ", " и после ",
+        " далее ", " а еще ", " и еще ", " а также ", " и также ", " также ", " следом ",
+    ] {
+        cut = cut.replace(sep, " | ");
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for piece in cut.split('|').map(str::trim).filter(|p| !p.is_empty()) {
+        // «… и открой ютуб»: «и» before a command's verb. And no word between at all, as the
+        // recogniser writes it («включи проектор открой впн»): a verb after a whole command.
+        let words: Vec<&str> = piece.split_whitespace().collect();
+        let mut from = 0;
+        for i in 1..words.len() {
+            if i <= from {
+                continue;
+            }
+            if words[i] == "и" && i + 1 < words.len() && starts_command(&words[i + 1..].join(" ")) {
+                parts.push(words[from..i].join(" "));
+                from = i + 1;
+            } else if starts_command(words[i]) && words[i - 1] != "и" {
+                let whole = intent(&words[from..i].join(" "), keyword_only);
+                if whole.is_some_and(|w| !matches!(w, Intent::Ask(_) | Intent::Tv(TvAction::Unclear))) {
+                    parts.push(words[from..i].join(" "));
+                    from = i;
+                }
+            }
+        }
+        parts.push(words[from..].join(" "));
+    }
+    let parts: Vec<String> = parts.into_iter().filter(|p| !p.is_empty() && p != "и").collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let names_device = |p: &str| strip_tv(p).is_some() || [" компьютер", " комп", " пк", " ноутбук"].iter().any(|w| format!(" {p}").contains(w));
+    let vague = |i: &Option<Intent>| matches!(i, None | Some(Intent::Ask(_)) | Some(Intent::Tv(TvAction::Unclear)));
+    let mut out: Vec<Intent> = Vec::new();
+    // The device the previous command was for: (a TV?, its name if it was named).
+    let mut on: Option<(bool, Option<String>)> = None;
+    for p in &parts {
+        let alone = intent(p, keyword_only);
+        let carried = match &on {
+            Some((tv, name)) if !names_device(p) => {
+                let place = if *tv { "на телевизоре" } else { "на компьютере" };
+                let there = intent(&format!("{p} {place}"), keyword_only).filter(|i| !matches!(i, Intent::Tv(TvAction::Unclear)));
+                // Aimed at the same named one («…в спальне»).
+                there.map(|i| match (name, i) {
+                    (Some(name), i @ (Intent::Tv(_) | Intent::Pc(_))) => Intent::On(name.clone(), Box::new(i)),
+                    (_, i) => i,
+                })
+            }
+            _ => None,
+        };
+        // The device's reading wins when the phrase alone says nothing clear, or would go to
+        // the other kind of device only because the settings send unnamed commands there.
+        let step = match (&on, alone, carried) {
+            (Some((true, _)), a, Some(c)) if vague(&a) || matches!(a, Some(Intent::Pc(_))) => c,
+            (Some((false, _)), a, Some(c)) if vague(&a) || matches!(a, Some(Intent::Tv(_))) => c,
+            (_, Some(a), _) if !matches!(a, Intent::Ask(_) | Intent::Tv(TvAction::Unclear) | Intent::ToAlice) => a,
+            _ => return None,
+        };
+        on = match &step {
+            Intent::Tv(_) => Some((true, None)),
+            Intent::Pc(_) => Some((false, None)),
+            Intent::On(name, inner) => Some((matches!(**inner, Intent::Tv(_)), Some(name.clone()))),
+            _ => on,
+        };
+        out.push(step);
+    }
+    Some(out)
+}
+
+/// Does it begin like a command (after `plain_command`'s easing)?
+fn starts_command(part: &str) -> bool {
+    const VERBS: [&str; 30] = [
+        "включи", "выключи", "открой", "запусти", "закрой", "найди", "поищи", "поставь", "сделай", "нажми", "переключи", "перемотай",
+        "останови", "продолжи", "убавь", "прибавь", "покажи", "подключи", "отключи", "усыпи", "разбуди", "верни", "вернись", "отмотай",
+        "выбери", "зайди", "перейди", "воспроизведи", "приглуши", "набери",
+    ];
+    plain_command(part).split_whitespace().next().is_some_and(|w| VERBS.contains(&w))
+}
+
 pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
+    let text = &plain_command(text);
     // A TV or computer named by the user: its command, aimed at it.
     let devices = DEVICES.lock().unwrap().clone();
     if !devices.is_empty() {
@@ -1149,7 +1871,7 @@ pub fn intent(text: &str, keyword_only: bool) -> Option<Intent> {
             }
         }
     }
-    intent_plain(text, keyword_only)
+    intent_plain(text, keyword_only).or_else(|| tv_unclear(text))
 }
 
 fn intent_plain(text: &str, keyword_only: bool) -> Option<Intent> {
@@ -1161,9 +1883,34 @@ fn intent_plain(text: &str, keyword_only: bool) -> Option<Intent> {
     if let Some(on) = remote_phrase(&normalize(text)) {
         return Some(Intent::Tv(TvAction::RemoteMode(on)));
     }
+    // Bluetooth before the TV's follow-ups: in «режим пульта» «найди блютуз устройства» was a
+    // search on the TV, and «переключи блютуз» skipped the track. Not when the TV is named.
+    if strip_tv(&normalize(text)).is_none() {
+        if let Some(i) = bt_voice(&normalize(text)) {
+            return Some(i);
+        }
+    }
     // The TV first: «перемотай вперёд на проекторе», «открой ютуб на проекторе».
-    if let Some(action) = tv(&normalize(text)).or_else(|| tv_unnamed(&normalize(text))) {
+    let n = normalize(text);
+    let named = tv(&n);
+    // «Поставь видео на паузу на проекторе» is its pause, not an app called «видео на паузу»:
+    // `tv()` takes «включи / поставь / открой X» as «open X» when nothing else fits.
+    let action = match named {
+        // «Поставь таймер на десять минут на телевизоре» is Alice's timer, not an app «таймер…».
+        Some(TvAction::Open(ref app)) if app.contains("таймер") || app.contains("будильник") || app.contains("напомин") => None,
+        // «Поставь фильм на паузу на проекторе»: `tv()` reads «на паузу» as a film's title.
+        Some(TvAction::Search(ref q)) if q.contains("пауз") => tv_named_rest(&n, false).or(named),
+        // Unclear comes later (below), after Telegram, timers, the planner and the computer:
+        // «напиши маме что на телевизоре идёт фильм» only mentions the TV.
+        Some(TvAction::Open(_)) | None => tv_named_rest(&n, false).or(named).or_else(|| tv_unnamed(&n)),
+        known => known,
+    };
+    if let Some(action) = action {
         return Some(Intent::Tv(action));
+    }
+    // No device named and it fits several: the settings say where («Куда отправлять команды»).
+    if let Some(i) = routed(&normalize(text)) {
+        return Some(i);
     }
     if matches!(
         normalize(text).as_str(),
@@ -1171,9 +1918,6 @@ fn intent_plain(text: &str, keyword_only: bool) -> Option<Intent> {
             | "какой адрес у саундя" | "адрес саундя" | "адрес панели саундя" | "повтори адрес панели"
     ) {
         return Some(Intent::Address);
-    }
-    if let Some(on) = bt_out(&normalize(text)) {
-        return Some(Intent::BtOut(on));
     }
     match normalize(text).as_str() {
         "говори тише" | "говори потише" | "сделай голос тише" | "сделай свой голос тише" | "говори тише пожалуйста" => {
@@ -1248,6 +1992,10 @@ fn intent_plain(text: &str, keyword_only: bool) -> Option<Intent> {
         if pc_allowed(&normalize(text), &action, named, &rules) {
             return Some(Intent::Pc(action));
         }
+    }
+    // The TV is named and nothing above took the phrase: still the TV's, never the music's.
+    if let Some(a) = tv_named_rest(&normalize(text), true) {
+        return Some(Intent::Tv(a));
     }
     // «Включи бонобо в яндекс музыке», «продолжи в яндекс музыке»: Alice's, whatever the mode.
     if names_yandex(&normalize(text)) {
@@ -1505,6 +2253,32 @@ pub fn quiet_for(time: Duration) {
     cancel_alice();
 }
 
+/// Alice is speaking now (her AliceState frames: 2 = speaking).
+static SPEAKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A cut-off is being repeated (one at a time).
+static CUTTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Cuts off Alice's answer and repeats it until she is quiet: one cancel is sometimes
+/// dropped by the firmware (she then says «нужна подписка Плюс…» in full, 9 s).
+fn cut_off() {
+    use std::sync::atomic::Ordering;
+    cancel_alice();
+    if CUTTING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    thread::spawn(|| {
+        for wait in [250, 400, 600, 800, 1000] {
+            thread::sleep(Duration::from_millis(wait));
+            if !SPEAKING.load(Ordering::Acquire) || OWN_SPEECH.load(Ordering::Acquire) {
+                break;
+            }
+            eprintln!("voice: Alice still speaking, cutting off again");
+            cancel_alice();
+        }
+        CUTTING.store(false, Ordering::Release);
+    });
+}
+
 fn quiet() -> bool {
     QUIET_UNTIL.load(std::sync::atomic::Ordering::Acquire) > now_ms()
 }
@@ -1552,7 +2326,7 @@ fn recognized(data: &[u8]) -> Option<(String, String)> {
     }
     // The final text is the same as the request's own; a number may be written differently
     // there («восемь» / «8»), so an alarm answer passes either way.
-    if Some(text.as_bytes()) != bytes(state, 2) && !alarm_answer(text) {
+    if Some(text.as_bytes()) != bytes(state, 2) && !alarm_answer(text) && !question_answer(text) {
         return None;
     }
     let request = std::str::from_utf8(bytes(state, 7)?).ok()?;
@@ -1560,6 +2334,11 @@ fn recognized(data: &[u8]) -> Option<(String, String)> {
         return None;
     }
     Some((request.to_owned(), text.to_owned()))
+}
+
+/// While soundya's own question waits: is this phrase an answer to it («первое» comes as «1»)?
+fn question_answer(text: &str) -> bool {
+    pending_options().is_some_and(|o| answer(&o, &normalize_phrase(text)) != Answer::No)
 }
 
 /// While the alarm waits for the answer to its sum: is this phrase a number?
@@ -1786,13 +2565,29 @@ fn read_frames(
             // «Громкость голоса Алисы»: the mixer down while she listens and speaks.
             crate::voice::alice_busy(busy);
         }
+        if let Some(state) = alice_state(&data) {
+            SPEAKING.store(state == 2, std::sync::atomic::Ordering::Release);
+            #[cfg(feature = "dev")]
+            eprintln!("dev: alice state {state}");
+        }
+        // A phrase we took over: her answer is cancelled while she is still preparing it
+        // (state 3, «думаю»). The cancel sent with the phrase itself comes while she is still
+        // listening and is ignored; at «speaking» she has already said «Чтобы…» of «Чтобы
+        // слушать музыку, надо оформить подписку Плюс».
+        if alice_state(&data) == Some(3)
+            && (suppress_until.is_some_and(|t| std::time::Instant::now() < t) || quiet())
+            && !OWN_SPEECH.load(std::sync::atomic::Ordering::Acquire)
+        {
+            eprintln!("voice: cancelling Alice's own answer before she speaks");
+            cancel_alice();
+        }
         if alice_state(&data) == Some(2)
             && (suppress_until.is_some_and(|t| std::time::Instant::now() < t) || quiet())
             && !OWN_SPEECH.load(std::sync::atomic::Ordering::Acquire)
             && last_cancel.elapsed() > Duration::from_millis(400)
         {
             eprintln!("voice: cutting off Alice's own answer");
-            cancel_alice();
+            cut_off();
             last_cancel = std::time::Instant::now();
         }
         // Dev build: what Alice's alarm looks like on the wire (for «сводка вместе с будильником»).
@@ -1808,19 +2603,60 @@ fn read_frames(
             if seen.len() > 64 {
                 seen.pop_front();
             }
-            crate::volume::heard(&text);
             // For programs on the PC (Ditoo Plus), if allowed («share_heard»).
             shared.set_heard(&text);
+            // The phrase is soundya's: Alice's own answer to it is cancelled now, again when she
+            // starts preparing it and cut off if she speaks (the window below). Scenarios and
+            // answers used to send the first cancel only — she still listens then and ignores
+            // it, so «не могу сделать это на вашем устройстве» came before the scenario ran.
+            let mut take = || {
+                *HEARD_AT.lock().unwrap() = Some(std::time::Instant::now());
+                // The owner spoke over soundya's own speech (a list being read): his phrase wins.
+                OWN_SPEECH.store(false, std::sync::atomic::Ordering::Release);
+                cancel_alice();
+                suppress_until = Some(std::time::Instant::now() + Duration::from_secs(6));
+            };
+            // An answer to soundya's own question first («Алиса, на проекторе», «Алиса, первое»).
+            // Not while the alarm rings: its «стоп» and its sum come before everything.
+            if !crate::alarm::ringing() {
+                if let Some(step) = take_answer(&text) {
+                    eprintln!("voice: {text:?} -> answer: {step:?}");
+                    take();
+                    match step {
+                        Some(Step::Voice(i)) => {
+                            let _ = tx.send(Cmd::Voice(i));
+                        }
+                        Some(Step::Control(c)) => {
+                            let (dtx, _drx) = std::sync::mpsc::channel();
+                            let _ = tx.send(Cmd::Control(c, dtx));
+                        }
+                        None => say("Хорошо, отменила".into()),
+                    }
+                    continue;
+                }
+            }
             // A user macro whose phrase is heard wins over built-in handling —
             // the whole phrase, not a part of it (a macro «свет» must not take
             // «включи свет на кухне» from Alice).
             let normalized = normalize_phrase(&text);
-            if let Some((phrase, _)) = shared.macros().into_iter().find(|(p, _)| *p == normalized) {
+            if let Some((phrase, _)) = shared.macros().into_iter().find(|(p, _)| macro_matches(&normalized, p)) {
                 eprintln!("voice: {text:?} -> macro {phrase:?}");
-                cancel_alice();
+                take();
+                clear_question();
                 let (dtx, _drx) = std::sync::mpsc::channel();
                 let _ = tx.send(Cmd::Control(format!("macro run {phrase}"), dtx));
                 continue;
+            }
+            // Several commands in one phrase («включи проектор, открой впн и найди фильм»):
+            // all of them soundya's, or it is not a chain.
+            if !crate::alarm::ringing() {
+                if let Some(steps) = chain(&text, shared.keyword_only()).filter(|c| c.iter().all(|i| owns(i, &Who::of(shared)))) {
+                    eprintln!("voice: {text:?} -> chain {steps:?}");
+                    take();
+                    clear_question();
+                    let _ = tx.send(Cmd::Chain(steps));
+                    continue;
+                }
             }
             let intent = contact_allowed(&text)
                 .then(|| message_to_contact(&text, &shared.contact_names()))
@@ -1832,6 +2668,8 @@ fn read_frames(
                     shared.set_alice_music();
                 }
                 eprintln!("voice: {text:?} left to Alice");
+                // Her own «громче» / «тише»: soundya only follows the level.
+                crate::volume::heard(&text);
                 continue;
             };
             if intent == Intent::ToAlice {
@@ -1843,27 +2681,46 @@ fn read_frames(
                 } else {
                     eprintln!("voice: {text:?} left to Alice (her music)");
                 }
+                tv_forget_pause();
+                crate::volume::heard(&text);
                 continue;
             }
             // SoundCloud switched off in the settings: only the PC, the TV and
             // messages are ours; all music stays Alice's.
             let music = !matches!(
                 intent,
-                Intent::Pc(_) | Intent::Tv(_) | Intent::On(..) | Intent::Address | Intent::BtOut(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
+                Intent::Pc(_) | Intent::Tv(_) | Intent::On(..) | Intent::Address | Intent::BtOut(_) | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
             ) && !is_alarm(&intent);
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
+                crate::volume::heard(&text);
                 continue;
             }
             let ours = owns(&intent, &Who::of(shared));
+            // The TV named, its address saved, the block switched off: say so.
+            if !ours && matches!(intent, Intent::Tv(_)) && TV_OFF.load(std::sync::atomic::Ordering::Acquire) && strip_tv(&normalize(&text)).is_some() {
+                eprintln!("voice: {text:?} -> {intent:?}: the TV is switched off in the settings");
+                take();
+                say("Управление телевизором выключено в настройках саунди. Откройте страницу саунди и включите блок Телевизор".into());
+                continue;
+            }
             if !ours {
-                eprintln!("voice: {text:?} -> {intent:?}, left to Alice (SoundCloud is not playing)");
+                let why = match &intent {
+                    Intent::Tv(_) => "no TV is set up",
+                    Intent::Pc(_) => "no computer is set up",
+                    _ => "SoundCloud is not playing",
+                };
+                eprintln!("voice: {text:?} -> {intent:?}, left to Alice ({why})");
+                crate::volume::heard(&text);
                 continue;
             }
             eprintln!("voice: {text:?} -> {intent:?}");
-            *HEARD_AT.lock().unwrap() = Some(std::time::Instant::now());
-            cancel_alice();
-            suppress_until = Some(std::time::Instant::now() + Duration::from_secs(6));
+            take();
+            // The owner moved on: the question he did not answer is over.
+            clear_question();
+            if music {
+                tv_forget_pause();
+            }
             let _ = tx.send(Cmd::Voice(intent));
         }
         if data.capacity() > 64 * 1024 {
@@ -1949,7 +2806,7 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
-        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
+        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
         Intent::Alarm(_) => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
@@ -1961,6 +2818,12 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Shuffle(_) | Intent::Repeat(_) => w.has_queue && (w.playing || !w.alice_music),
         _ => w.ours(),
     }
+}
+
+/// `owns` for what plays right now (the panel's «hear» in the developer build).
+#[cfg(feature = "dev")]
+pub fn owns_now(intent: &Intent, shared: &Shared) -> bool {
+    owns(intent, &Who::of(shared))
 }
 
 /// Where the music comes from, for the page: "soundcloud", "airplay",
@@ -2269,6 +3132,16 @@ mod tests {
             _ => None,
         };
         assert_eq!(t("Алиса, включи проектор"), Some(TvAction::Wake));
+        assert_eq!(t("Сделай проектор тише на 10"), Some(TvAction::Key("KEYCODE_VOLUME_DOWN", 10)));
+        assert_eq!(t("громче на пять на телевизоре"), Some(TvAction::Key("KEYCODE_VOLUME_UP", 5)));
+        assert_eq!(t("убавь звук на проекторе"), Some(TvAction::Key("KEYCODE_VOLUME_DOWN", 3)));
+        assert_eq!(intent("сделай проектор синим", false), Some(Intent::Tv(TvAction::Unclear)), "about the projector: never Alice's");
+        assert_eq!(intent("какой телевизор лучше купить", false), None, "a question about TVs is hers");
+        assert_eq!(intent("телевизор", false), None);
+        assert!(macro_matches(&normalize_phrase("Выполни буду смотреть youtube"), &normalize_phrase("буду смотреть ютуб")));
+        assert!(macro_matches(&normalize_phrase("Алиса, каточку в Deadlock"), &normalize_phrase("каточку в дедлок")));
+        assert!(macro_matches(&normalize_phrase("запусти рабочий режим"), &normalize_phrase("запусти рабочий режим")));
+        assert!(!macro_matches(&normalize_phrase("буду смотреть ютуб завтра"), &normalize_phrase("буду смотреть ютуб")), "still the whole phrase");
         // Inside apps, like the remote.
         assert_eq!(t("Алиса, наведись выше на проекторе"), Some(TvAction::Key(UP, 1)));
         assert_eq!(t("ниже на три на проекторе"), Some(TvAction::Key(DOWN, 3)));
@@ -2285,6 +3158,8 @@ mod tests {
         assert_eq!(t("открой ютуб на проекторе"), Some(TvAction::Open("ютуб".into())));
         assert_eq!(t("запусти кинопоиск на телевизоре"), Some(TvAction::Open("кинопоиск".into())));
         assert_eq!(t("найди фильм дюна на проекторе"), Some(TvAction::Search("дюна".into())));
+        assert_eq!(t("найди маму в 16 на рутубе на телевизоре"), Some(TvAction::SearchIn("рутубе".into(), "маму в 16".into())));
+        assert_eq!(t("найди фильм дюна в кинопоиске на проекторе"), Some(TvAction::SearchIn("кинопоиске".into(), "дюна".into())));
         assert_eq!(t("включи на ютубе котиков на проекторе"), Some(TvAction::YouTube("котиков".into())));
         assert_eq!(t("найди на ютубе как приготовить плов на телевизоре"), Some(TvAction::YouTube("как приготовить плов".into())));
         assert_eq!(t("пауза на проекторе"), Some(TvAction::Key("KEYCODE_MEDIA_PAUSE", 1)));
@@ -2500,7 +3375,7 @@ mod tests {
     }
 
     /// The device names are global: the tests that set them take turns.
-    static DEVICES_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static DEVICES_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn devices_by_their_names() {
@@ -2533,3 +3408,230 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+
+    fn choice(label: &str, words: &[&str], cmd: &str) -> Choice {
+        Choice { label: label.into(), words: words.iter().map(|w| w.to_string()).collect(), step: Step::Control(cmd.into()) }
+    }
+
+    #[test]
+    fn bluetooth_by_voice() {
+        let i = |t: &str| intent(t, false);
+        // The saved device.
+        for t in ["Алиса, переключись на блютус", "переключи звук на блютуз", "переключи музыку на блютуз", "включи блютуз колонку",
+            "подключись к блютуз колонке", "переключись на наушники", "включи музыку в наушниках", "переключи блютуз"] {
+            assert_eq!(i(t), Some(Intent::BtOut(true)), "{t}");
+        }
+        // A new one: look around and ask.
+        for t in ["Алиса, подключись к новому устройству блютус", "найди блютуз устройства", "добавь блютуз колонку",
+            "подключи новые наушники", "подключи новую колонку", "поищи bluetooth устройства"] {
+            assert_eq!(i(t), Some(Intent::BtFind), "{t}");
+        }
+        // Back to the speaker.
+        for t in ["верни звук на колонку", "вернись на колонку", "вернись на станцию", "возвращайся на колонку", "верни музыку на колонку", "отключи блютуз колонку", "переключи музыку на колонку", "выключи блютуз наушники"] {
+            assert_eq!(i(t), Some(Intent::BtOut(false)), "{t}");
+        }
+        // The Station as a Bluetooth speaker for a phone is Alice's own.
+        for t in ["включи блютуз", "выключи блютуз", "включи блютус"] {
+            assert_eq!(i(t), None, "{t}");
+        }
+        assert_eq!(i("верни звук"), Some(Intent::Duck(DuckCmd::Restore)), "ducking keeps its phrase");
+    }
+
+    #[test]
+    fn an_answer_is_the_whole_phrase() {
+        let o = vec![
+            choice("колонка", &["колонка", "колонке", "станция"], "volume down 3"),
+            choice("телевизор", &["телевизор", "проектор", "проекторе", "тв"], "tv"),
+            choice("мак", &["мак"], "pc"),
+        ];
+        let a = |t: &str| answer(&o, &normalize_phrase(t));
+        assert_eq!(a("Алиса, на проекторе"), Answer::Pick(1));
+        assert_eq!(a("проектор"), Answer::Pick(1));
+        assert_eq!(a("на колонке"), Answer::Pick(0));
+        assert_eq!(a("на мак"), Answer::Pick(2));
+        assert_eq!(a("второе"), Answer::Pick(1));
+        assert_eq!(a("3"), Answer::Pick(2));
+        assert_eq!(a("последнее"), Answer::Pick(2));
+        assert_eq!(a("четвертое"), Answer::No, "there are three");
+        assert_eq!(a("ко второму"), Answer::Pick(1));
+        assert_eq!(a("на маке"), Answer::Pick(2), "a short name in another case");
+        assert_eq!(a("отмена"), Answer::Cancel);
+        assert_eq!(a("не надо"), Answer::Cancel);
+        for t in ["включи первое видео", "включи музыку", "какая погода", "поставь таймер на пять минут", "сделай тише на проекторе на пять"] {
+            assert_eq!(a(t), Answer::No, "{t}");
+        }
+        // Bluetooth names: by number, or by the name's words.
+        let bt = vec![choice("JBL Flip 5", &["jbl", "flip", "5"], "a"), choice("Sony WH", &["sony", "wh"], "b")];
+        assert_eq!(answer(&bt, "первое"), Answer::Pick(0));
+        assert_eq!(answer(&bt, "sony"), Answer::Pick(1));
+        assert_eq!(answer(&bt, "никакое"), Answer::Cancel);
+    }
+
+    #[test]
+    fn a_question_waits_and_is_taken_once() {
+        put_question(vec![choice("телевизор", &["проекторе", "телевизор"], "tv key volup"), choice("колонка", &["колонке"], "volume up 1")], Duration::from_secs(30));
+        assert_eq!(take_answer("какая погода"), None, "an unrelated phrase leaves the question");
+        assert_eq!(take_answer("Алиса, на проекторе"), Some(Some(Step::Control("tv key volup".into()))));
+        assert_eq!(take_answer("на проекторе"), None, "answered already");
+        put_question(vec![choice("а", &["а"], "x")], Duration::from_secs(30));
+        assert_eq!(take_answer("отмена"), Some(None));
+        put_question(vec![choice("а", &["а"], "x")], Duration::ZERO);
+        assert_eq!(take_answer("первое"), None, "too late");
+    }
+
+    #[test]
+    fn a_named_tv_always_wins() {
+        set_tv(true);
+        let t = |s: &str| match intent(s, false) {
+            Some(Intent::Tv(a)) => Some(a),
+            _ => None,
+        };
+        assert_eq!(t("Алиса, сделай звук тише на проекторе"), Some(TvAction::Key("KEYCODE_VOLUME_DOWN", 3)));
+        assert_eq!(t("перемотай на 30 секунд на проекторе"), Some(TvAction::Key("KEYCODE_MEDIA_FAST_FORWARD", 2)));
+        assert_eq!(t("перемотай назад на минуту на проекторе"), Some(TvAction::Key("KEYCODE_MEDIA_REWIND", 4)));
+        assert_eq!(t("продолжи видео на проекторе"), Some(TvAction::Key("KEYCODE_MEDIA_PLAY", 1)));
+        assert_eq!(t("останови видео на проекторе"), Some(TvAction::Key("KEYCODE_MEDIA_PAUSE", 1)));
+        assert_eq!(t("поставь видео на паузу на проекторе"), Some(TvAction::Key("KEYCODE_MEDIA_PAUSE", 1)));
+        assert_eq!(t("следующее видео на проекторе"), Some(TvAction::Key("KEYCODE_MEDIA_NEXT", 1)));
+        assert_eq!(t("закрой ютуб на проекторе"), Some(TvAction::Close("ютуб".into())));
+        assert_eq!(t("сделай красиво на проекторе"), Some(TvAction::Unclear));
+        // After its pause «продолжи» is the film's; after music is asked for — the music's.
+        assert_eq!(intent("продолжи", false), Some(Intent::Resume));
+        tv_used(Some("KEYCODE_MEDIA_PAUSE"));
+        assert_eq!(t("продолжи"), Some(TvAction::Key("KEYCODE_MEDIA_PLAY", 1)));
+        tv_forget_pause();
+        assert_eq!(intent("продолжи", false), Some(Intent::Resume));
+        // Not commands to the TV.
+        assert_eq!(t("напомни в восемь посмотреть фильм на телевизоре"), None);
+        assert_eq!(t("поставь таймер на десять минут на телевизоре"), None);
+    }
+
+    #[test]
+    fn a_screen_only_phrase_is_the_tvs() {
+        let t = |s: &str| intent(s, false);
+        // No TV: as before (music or Alice).
+        assert_ne!(t("включи первое видео"), Some(Intent::Tv(TvAction::PlayFirst)));
+        set_tv(true);
+        assert_eq!(t("Алиса, включи первое видео"), Some(Intent::Tv(TvAction::PlayFirst)));
+        assert_eq!(t("следующая серия"), Some(Intent::Tv(TvAction::Key("KEYCODE_MEDIA_NEXT", 1))));
+        assert_eq!(t("включи следующую серию"), Some(Intent::Tv(TvAction::Key("KEYCODE_MEDIA_NEXT", 1))));
+        assert_eq!(t("предыдущая серия"), Some(Intent::Tv(TvAction::Key("KEYCODE_MEDIA_PREVIOUS", 1))));
+        assert_eq!(t("найди фильм дюна"), Some(Intent::Tv(TvAction::Search("дюна".into()))));
+        assert_eq!(t("включи сериал друзья"), Some(Intent::Tv(TvAction::Search("друзья".into()))));
+        // Found by the review: the band Кино, a pause, a question and the computer keep their phrases.
+        assert!(matches!(t("включи кино группа крови"), Some(Intent::Play(_))));
+        assert!(matches!(t("включи аниме опенинги"), Some(Intent::Play(_))));
+        assert_eq!(t("найди кино дюна"), Some(Intent::Tv(TvAction::Search("дюна".into()))));
+        assert!(!matches!(t("поставь фильм на паузу"), Some(Intent::Tv(TvAction::Search(_)))));
+        assert_eq!(t("поставь фильм на паузу на проекторе"), Some(Intent::Tv(TvAction::Key("KEYCODE_MEDIA_PAUSE", 1))));
+        assert_eq!(t("поставь аниме на паузу на проекторе"), Some(Intent::Tv(TvAction::Key("KEYCODE_MEDIA_PAUSE", 1))));
+        assert!(!matches!(t("какой следующий выпуск новостей"), Some(Intent::Tv(_))));
+        assert!(!matches!(t("найди фильм дюна в гугле"), Some(Intent::Tv(_))));
+        assert!(!matches!(t("включи премьеру"), Some(Intent::Tv(_) | Intent::Ask(_))));
+        // Bluetooth words inside other phrases are not a search for devices.
+        assert_ne!(t("найди блютуз наушники в интернете"), Some(Intent::BtFind));
+        assert_ne!(t("добавь в список покупок блютуз колонку"), Some(Intent::BtFind));
+        assert_eq!(t("включи блютуз на колонке"), None, "the Station's own Bluetooth is Alice's");
+        // Music stays music.
+        assert_eq!(t("следующий трек"), Some(Intent::Next));
+        assert!(matches!(t("включи музыку из фильма интерстеллар"), Some(Intent::Play(_))));
+        assert!(matches!(t("включи bonobo"), Some(Intent::Play(_))));
+    }
+
+    #[test]
+    fn volume_and_apps_go_where_the_settings_say() {
+        let i = |t: &str| intent(t, false);
+        // The speaker's own volume is Alice's unless told otherwise.
+        set_tv(true);
+        assert_eq!(i("сделай тише"), None);
+        assert_eq!(i("громче на пять"), None);
+        set_routes(Routes { volume: Route::Tv, apps: Route::Auto, pc: false });
+        assert_eq!(i("сделай тише"), Some(Intent::Tv(TvAction::Key("KEYCODE_VOLUME_DOWN", 3))));
+        set_routes(Routes { volume: Route::Ask, apps: Route::Auto, pc: false });
+        assert_eq!(i("громче на пять"), Some(Intent::Ask(Ambig::Volume(true, Some(5)))));
+        assert_eq!(i("сделай потише"), Some(Intent::Ask(Ambig::Volume(false, None))));
+        assert_eq!(i("говори тише"), Some(Intent::VoiceLevel(-15)), "her voice keeps its phrase");
+        // Apps: the only screen, or a question.
+        set_routes(Routes { volume: Route::Auto, apps: Route::Auto, pc: false });
+        assert_eq!(i("открой ютуб"), Some(Intent::Tv(TvAction::Open("ютуб".into()))));
+        assert_eq!(i("включи кинопоиск"), Some(Intent::Tv(TvAction::Open("кинопоиск".into()))));
+        assert_eq!(i("закрой ютуб"), Some(Intent::Tv(TvAction::Close("ютуб".into()))));
+        set_routes(Routes { volume: Route::Auto, apps: Route::Auto, pc: true });
+        assert_eq!(i("открой ютуб"), Some(Intent::Ask(Ambig::App(true, "ютуб".into(), "открой ютуб".into()))));
+        set_routes(Routes { volume: Route::Auto, apps: Route::Pc, pc: true });
+        assert_eq!(i("включи ютуб"), Some(Intent::Pc(PcAction::Command("открой ютуб".into()))));
+        set_routes(Routes { volume: Route::Auto, apps: Route::Tv, pc: true });
+        assert_eq!(i("включи ютуб"), Some(Intent::Tv(TvAction::Open("ютуб".into()))));
+        // A named device still wins, and programs that are not video apps are the computer's as before.
+        assert_eq!(i("открой ютуб на компьютере"), Some(Intent::Pc(PcAction::Command("открой ютуб".into()))));
+        assert_eq!(i("открой стим"), Some(Intent::Pc(PcAction::Command("открой стим".into()))));
+        assert!(!matches!(i("включи яндекс музыку"), Some(Intent::Tv(_) | Intent::Ask(_))));
+        // No TV and no computer: nothing changes.
+        set_tv(false);
+        set_routes(Routes::default());
+        assert!(!matches!(i("открой ютуб"), Some(Intent::Tv(_) | Intent::Ask(_))));
+    }
+
+    #[test]
+    fn a_room_named_like_a_tv_keeps_its_lamp() {
+        let _g = super::tests::DEVICES_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        set_tv(true);
+        set_devices(vec![("спальня".into(), true)]);
+        assert_eq!(intent("включи свет в спальне", false), None, "the lamp is Alice's");
+        assert!(matches!(intent("включи ютуб в спальне", false), Some(Intent::On(n, _)) if n == "спальня"));
+        set_devices(Vec::new());
+    }
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+
+    #[test]
+    fn everyday_wordings_become_plain_commands() {
+        for (said, plain) in [
+            ("Алиса, вруби проектор", "включи проектор"),
+            ("слушай а ну-ка выруби телек", "выключи телек"),
+            ("можешь открыть ютуб на телевизоре", "открой ютуб на телевизоре"),
+            ("давай запускай рутуб на проекторе", "запусти рутуб на проекторе"),
+            ("сначала включи проектор", "включи проектор"),
+            ("отыщи фильм дюна на проекторе", "найди фильм дюна на проекторе"),
+            // Not commands: as they were.
+            ("а что идёт по тв", "а что идет по тв"),
+            ("да", "да"),
+            ("ответь да, приду", "ответь да, приду"),
+        ] {
+            assert_eq!(plain_command(said), plain, "{said}");
+        }
+        assert_eq!(intent("вруби проектор", false), Some(Intent::Tv(TvAction::Wake)));
+        assert_eq!(intent("давай выруби телевизор", false), Some(Intent::Tv(TvAction::Sleep)));
+        assert_eq!(intent("можешь открыть ютуб на проекторе", false), Some(Intent::Tv(TvAction::Open("ютуб".into()))));
+    }
+
+    #[test]
+    fn several_commands_in_one_phrase() {
+        // The owner's own phrase, as the recogniser writes it (no commas) and with them.
+        for said in [
+            "включи проектор открой впн и потом найди на рутубе фильм дюна",
+            "Алиса, включи проектор, открой впн, потом найди на рутубе фильм дюна",
+            "вруби проектор затем открой впн и найди на рутубе фильм дюна",
+        ] {
+            let c = chain(said, false).unwrap_or_else(|| panic!("not a chain: {said}"));
+            assert_eq!(c.len(), 3, "{said}: {c:?}");
+            assert_eq!(c[0], Intent::Tv(TvAction::Wake), "{said}");
+            assert!(matches!(&c[1], Intent::Tv(TvAction::Open(a)) if a == "впн"), "{said}: {:?}", c[1]);
+            assert!(matches!(&c[2], Intent::Tv(TvAction::SearchIn(app, q)) if app.contains("рутуб") && q.contains("дюна")), "{said}: {:?}", c[2]);
+        }
+        let c = chain("поставь на паузу на проекторе и выключи проектор", false).unwrap();
+        assert_eq!(c, [Intent::Tv(TvAction::Key("KEYCODE_MEDIA_PAUSE", 1)), Intent::Tv(TvAction::Sleep)]);
+        // One command, or not all of it commands: not a chain.
+        for said in ["включи проектор", "включи битлз и роллинг стоунз", "найди фильм война и мир на проекторе", "ответь маме потом открой дверь",
+            "включи проектор и расскажи анекдот"] {
+            assert_eq!(chain(said, false), None, "{said}");
+        }
+    }
+}

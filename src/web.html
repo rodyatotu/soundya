@@ -269,6 +269,25 @@
   ol.steps .stepline > span { flex: 1 1 150px; font-size: 14px; }
   ol.steps input, ol.steps select { flex: 1 1 120px; min-width: 0; }
   ol.steps button { padding: 4px 9px; }
+  .ditoobox { margin-top: 14px; }
+  .questionbox { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; }
+  .questionbox[hidden] { display: none; }
+  .questionbox .row { margin-top: 6px; flex-wrap: wrap; }
+  .pcfound { display: grid; gap: 6px; margin: 8px 0; }
+  .foundrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px;
+    border: 1px solid var(--line); border-radius: 12px; }
+  #importtext { width: 100%; box-sizing: border-box; font: inherit; resize: vertical; }
+  .dropzone.over #importtext { border-color: var(--accent); background: rgba(255, 90, 31, .08); }
+  .promptbox { white-space: pre-wrap; font-size: 12.5px; background: rgba(255,255,255,.04); border-radius: 10px; padding: 10px 12px; }
+  .dmode { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 8px 0; }
+  .dmode .dhead { display: flex; gap: 8px; align-items: center; }
+  .dmode .dhead input[type=text] { flex: 1; min-width: 0; }
+  .dmode .dscreens { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0; }
+  .dmode .dscreens label { display: flex; gap: 5px; align-items: center; font-size: 13px; }
+  .dmode .dnums { display: flex; gap: 10px; flex-wrap: wrap; }
+  .dmode .dnums label { font-size: 13px; }
+  .dmode .dnums input { width: 70px; }
+  .dmode .dtext { width: 100%; box-sizing: border-box; margin-top: 6px; }
   .macroedit { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
   .wizsteps { display: flex; gap: 6px; margin-bottom: 10px; }
   .wizdemo { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: #fff; display: inline-block; padding: 4px 10px; border-radius: 999px;
@@ -523,6 +542,10 @@
   html.glass #listennote, html.glass .homeedit, html.glass #tab-home .msg:empty, html.glass .msg:empty { display: none !important; }
   html.glass #tab-home { padding-bottom: 4px; }
   html.glass #tab-home .widget { margin-bottom: 10px; }
+  /* The speaker's microphone switched off: a small crossed mic beside the status dot. */
+  .micoff { display: inline-flex; align-items: center; color: var(--err); }
+  .micoff[hidden] { display: none; }
+  .micoff svg { width: 17px; height: 17px; }
   .glassbtn { display: none; }
   html.glass .glassbtn { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0;
     border-radius: 50%; background: transparent; border: 0; color: var(--muted); }
@@ -586,6 +609,36 @@
   .chip.accent { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); color: #fff; border-color: transparent; }
   ul.news { margin: 0; padding-left: 18px; }
   ul.news li { margin: 4px 0; }
+  /* «Пункт управления»: Wi-Fi and Bluetooth tiles, as on an iPhone. */
+  .cc { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 2px 0 14px; }
+  .cctile { position: relative; display: flex; align-items: center; gap: 10px; text-align: left; padding: 12px 22px 12px 12px; min-width: 0; border-radius: 20px;
+    background: var(--hover); border: 1px solid var(--line); color: var(--ink); min-height: 64px; cursor: pointer; }
+  .cctile .ccic { flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center;
+    background: color-mix(in srgb, var(--muted) 28%, transparent); color: var(--ink); transition: background .2s, color .2s; }
+  .cctile .ccic svg { width: 20px; height: 20px; }
+  .cctile.on .ccic { background: #0a84ff; color: #fff; }
+  .cctile .cct { min-width: 0; flex: 1; }
+  .cctile .cct b { display: block; font-size: 14px; }
+  .cctile .cct small { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cctile .ccmore { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: var(--muted); padding: 2px 6px; font-size: 16px; }
+  .cctile.busy .ccic { animation: ccpulse 1s ease-in-out infinite; }
+  @keyframes ccpulse { 50% { opacity: .45; } }
+  .wifipanel { margin: -4px 0 14px; padding: 10px 12px; border-radius: 16px; background: var(--hover); border: 1px solid var(--line); }
+  .wifilist li { align-items: center !important; }
+  .wifilist li .t { display: flex; align-items: center; gap: 10px; }
+  .wifilist li .t > span { min-width: 0; overflow-wrap: anywhere; }
+  .wifilist li.cur { font-weight: 600; }
+  .wifilist li.muted { opacity: .55; cursor: default; }
+  .wifilist { max-height: 300px; overflow: auto; }
+  .wifilist li .d { display: inline-flex; align-items: center; gap: 8px; }
+  .wifilist .wcheck { color: #0a84ff; font-weight: 700; }
+  .wbars { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; flex-shrink: 0; }
+  .wbars i { display: block; width: 3px; border-radius: 1px; background: color-mix(in srgb, var(--muted) 45%, transparent); }
+  .wbars i:nth-child(1) { height: 4px; } .wbars i:nth-child(2) { height: 7px; } .wbars i:nth-child(3) { height: 10px; } .wbars i:nth-child(4) { height: 14px; }
+  .wbars i.f { background: var(--ink); }
+  .wifiask { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  .wifiask input { flex: 1; min-width: 160px; }
+  .wifiask[hidden], .wifipanel[hidden] { display: none; }
   .statusgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
   .stat { display: flex; flex-direction: column; gap: 2px; padding: 9px 11px; border-radius: 14px; background: var(--field);
     border: 1px solid var(--glass-edge); cursor: pointer; text-align: left; font: inherit; color: inherit; }
@@ -995,6 +1048,8 @@
   <header>
     <h1>sound<span>ya</span></h1>
     <div class="headright">
+      <span class="micoff" id="micoff" hidden role="img" title="Микрофон колонки выключен: Алиса не слышит команды. Нажмите кнопку микрофона на колонке."
+        aria-label="Микрофон колонки выключен"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 12.6 4.2M19 11v0M12 18v3M4 4l16 16"/></svg></span>
       <button class="netpill statusdot" id="netpill" onclick="openStatus()" title="Состояние" aria-label="Состояние">
         <i class="dot" id="netdot"></i><span id="nettext" hidden></span>
       </button>
@@ -1045,6 +1100,7 @@
       <button class="icon" id="openbtn" onclick="openCurrent()" title="Открыть трек на SoundCloud: лайк, плейлисты, репост" aria-label="Открыть на SoundCloud"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg></button>
     </div>
     <div class="volpop" id="volpop" hidden>
+      <span class="hint" id="volwhere">Громкость колонки</span>
       <div class="volline">
         <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/></svg>
         <input type="range" id="volrange" min="1" max="10" step="1" value="5" aria-label="Громкость Алисы, 1–10"
@@ -1065,6 +1121,10 @@
       <ul class="list" id="pickerlist"></ul>
     </div>
     <div class="msg" id="actmsg"></div>
+    <div class="questionbox" id="questionbox" hidden>
+      <span class="hint" id="questiontext">Колонка спрашивает, на чём выполнить:</span>
+      <div class="row" id="questionopts"></div>
+    </div>
     <div class="hint" id="listennote" hidden></div>
     <audio id="listenaudio" preload="none"></audio>
 </section>
@@ -1159,6 +1219,27 @@
       <p class="hint" id="addhint"></p>
       <div class="msg" id="planmsg"></div>
     </div>
+    <details class="psect" id="importbox"><summary>Загрузить список дел или расписание</summary>
+      <p class="hint">Загрузите файл или вставьте текст — задачи сразу появятся на колонке и в окне «Задачи». Понимает список дел
+        (по строке на задачу, «- [ ] задача», нумерованный), расписание со временем («18:00–18:10 | Блок | Задача» или таблица из чата
+        с ИИ), календарь .ics. В строке задачи можно написать «завтра», «15.11», «в 18:00»; «!» в начале — важное. То, что со
+        временем, колонка скажет вслух в срок. Повторная загрузка дубли не создаёт.</p>
+      <div class="dropzone" id="importdrop">
+        <textarea id="importtext" rows="7" placeholder="- [ ] Купить молоко&#10;- [ ] ! Оплатить интернет до 18:00&#10;18:10–19:05 | Текст | Флоу воронки&#10;…или перетащите сюда файл"></textarea>
+      </div>
+      <input type="file" id="importfile" accept=".txt,.md,.markdown,.docx,.csv,.ics,.json,text/plain" hidden>
+      <div class="row">
+        <button onclick="$('importfile').click()">Выбрать файл…</button>
+        <div class="seg chips" id="importday"><button data-d="0" class="on">С сегодня</button><button data-d="1">С завтра</button></div>
+        <button onclick="importPreview()">Показать, что получится</button>
+        <button class="primary" id="importgo" onclick="importSchedule()" hidden>Добавить в планы</button>
+      </div>
+      <ul class="list plans" id="importlist"></ul>
+      <div class="msg" id="importmsg"></div>
+      <p class="hint">Чтобы ИИ сразу писал в нужном виде, дайте ему этот промт и допишите в конце свои задачи:</p>
+      <div class="row"><button onclick="copyPrompt()">Скопировать промт для ИИ</button></div>
+      <pre class="promptbox" id="aiprompt" hidden></pre>
+    </details>
     <details class="donelist"><summary>Выполненные на колонке</summary><ul class="list plans" id="plandone"></ul></details>
 
     <details class="psect"><summary>Настройки планировщика</summary>
@@ -1598,6 +1679,18 @@
           например, для лаунчера Ditoo Plus («какая погода» → погода на экране). Её сможет прочитать любое
           устройство в домашней сети, поэтому по умолчанию выключено.</span></span>
     </label>
+    <div id="ditoobox" class="ditoobox" hidden>
+      <h3>Ditoo Plus <span class="muted">(dev)</span></h3>
+      <p class="hint">Что лаунчер на ПК показывает на Ditoo — в каждом режиме свой набор экранов, они сменяются по кругу.
+        Режим переключает сценарий: шаг «Режим Ditoo» в «Устройства → Сценарии» (например, «Алиса, играю» → режим «игра»).
+        Лаунчер читает <code>GET /api/ditoo</code>: режим, экраны, время показа и данные для них.</p>
+      <div id="ditoomodes"></div>
+      <div class="row">
+        <button onclick="addDitooMode()">+ Режим</button>
+        <button class="primary" onclick="saveDitoo()">Сохранить режимы</button>
+      </div>
+      <div class="msg" id="ditoomsg"></div>
+    </div>
     <div class="row">
       <button class="primary" onclick="saveSettings('spkmsg')">Сохранить</button>
     </div>
@@ -1842,7 +1935,12 @@
       <p class="hint">У каждого — своё имя: «Алиса, усыпи ноутбук», «выключи компьютер в спальне». Без имени — первый.
         Ключ показывает приложение soundya на том компьютере.</p>
       <div id="pcsmore"></div>
-      <button class="ghost" onclick="addDev('pc')">+ Добавить компьютер</button>
+      <div class="pcfound" id="pcfound"></div>
+      <div class="row">
+        <button onclick="loadFound(true)">Найти компьютеры с soundya</button>
+        <button class="ghost" onclick="addDev('pc')">+ Вписать вручную</button>
+      </div>
+      <div class="msg" id="thispcmsg"></div>
     </div>
     <div class="field">Контакты Telegram
       <p class="hint">Для «напиши контакту в телеграм …». Слева — как вы называете человека, через запятую:
@@ -1892,7 +1990,9 @@
     <div class="row"><button class="primary" id="btscan" onclick="btScan()">Найти устройства</button></div>
     <ul class="list btlist" id="btlist"></ul>
     <div class="msg" id="btmsg"></div>
-    <p class="hint">Голосом: «Алиса, включи музыку в наушниках», «верни музыку на колонку». В плеере — значок Bluetooth в «Где играет».</p>
+    <p class="hint">Голосом: «Алиса, переключись на блютуз» — музыка в сохранённое устройство (колонка сама подключит его);
+      «Алиса, подключись к новому устройству блютуз» — колонка поищет устройства рядом, назовёт их и спросит, какое подключить
+      (ответ: «Алиса, первое»); «Алиса, верни звук на колонку» — обратно. В плеере — значок Bluetooth в «Где играет».</p>
 
     <h2 class="section" id="tvsection">Телевизор / проектор</h2>
     <p class="hint">Android TV голосом: «включи проектор», «открой ютуб на проекторе», «найди фильм дюна на телевизоре» (сам включит телевизор),
@@ -1986,6 +2086,31 @@
     <div class="msg" id="tgmsg"></div>
     <button class="link bugbtn" onclick="openReport('telegram')">Сообщить об ошибке</button>
 
+    <h2 class="section" id="routesection">Команды без названия устройства</h2>
+    <p class="hint">Названо устройство («… на проекторе», «… на компьютере» или его имя) — команда всегда идёт ему, и Алиса от себя
+      ничего не говорит. «Включи первое видео», «следующая серия», «найди фильм …» — сразу телевизору: у колонки экрана нет.
+      Для остального выберите, куда отправлять. «Спрашивать» — колонка спросит «На каком устройстве?»; ответ с обращением:
+      «Алиса, на проекторе» (или кнопкой под плеером).</p>
+    <label class="field">Громкость: «сделай тише», «громче на пять»
+      <select id="routevolume">
+        <option value="">Колонка — как обычно, громкость самой Алисы</option>
+        <option value="tv">Телевизор</option>
+        <option value="ask">Спрашивать</option>
+      </select>
+    </label>
+    <label class="field">Видеоприложения: «открой ютуб», «включи кинопоиск», «закрой ютуб»
+      <select id="routeapps">
+        <option value="">Авто: единственный экран; есть и телевизор, и компьютер — спрашивать</option>
+        <option value="tv">Телевизор</option>
+        <option value="pc">Компьютер</option>
+        <option value="ask">Спрашивать</option>
+      </select>
+    </label>
+    <p class="hint">«Пауза» и «продолжи» колонка решает сама: играет SoundCloud — это музыка; видео на телевизоре поставили на паузу
+      голосом — «продолжи» продолжит его. В сценариях устройство выбирается в каждом шаге.</p>
+    <div class="row"><button class="primary" onclick="saveRoutes()">Сохранить</button></div>
+    <div class="msg" id="routemsg"></div>
+
     <h2 class="section" id="macrosection">Сценарии</h2>
     <p class="hint">Своя фраза для Алисы запускает цепочку действий. Например, «Алиса, включи кино»: разбудить телевизор →
       подождать 5 с → открыть Кинопоиск. Срабатывает только фраза целиком. Сценарий может управлять музыкой, громкостью,
@@ -2014,9 +2139,12 @@
           </optgroup>
           <optgroup label="Компьютер">
             <option value="pc wake">Включить компьютер</option>
+            <option value="pc open">Открыть программу</option>
+            <option value="pc close">Закрыть программу</option>
             <option value="pc do">Команда компьютеру (как Алисе)</option>
             <option value="pc click">Клик мышью</option>
             <option value="pc key">Нажать клавишу</option>
+            <option value="pc type">Напечатать текст</option>
             <option value="pc sleep">Усыпить компьютер</option>
             <option value="pc shutdown">Выключить компьютер</option>
           </optgroup>
@@ -2032,6 +2160,13 @@
             <option value="timer start">Таймер, минут</option>
             <option value="timer pause">Пауза таймера</option>
             <option value="timer stop">Остановить таймер</option>
+          </optgroup>
+          <optgroup label="Bluetooth">
+            <option value="bt on">Музыку в Bluetooth-устройство</option>
+            <option value="bt off">Музыку на колонку</option>
+          </optgroup>
+          <optgroup label="Ditoo" id="ditoostep">
+            <option value="ditoo">Режим Ditoo</option>
           </optgroup>
           <option value="wait">Подождать</option>
         </select>
@@ -2147,9 +2282,23 @@
     <label class="field">Токен бота для ссылок
       <input type="password" id="meetbot" placeholder="123456789:AA… — бот, который крутится на вашем VPS" autocomplete="off">
     </label>
-    <p class="hint">Колонка этим ботом только <b>отправляет</b> ссылку в группу и не читает его сообщения — боту на VPS она не мешает.
-      Пусто — отправит бот из «Устройства → Telegram». Не вписывайте токен VPS-бота туда же: тот раздел читает сообщения и будет
-      спорить с VPS за обновления.</p>
+    <p class="hint">Этим ботом колонка <b>отправляет</b> ссылку в группу. Пусто — отправит бот из «Устройства → Telegram».</p>
+    <label class="field">Прокси для Telegram
+      <input type="text" id="tgproxy" placeholder="http://логин:пароль@адрес:порт — если провайдер блокирует Telegram" autocomplete="off" spellcheck="false">
+    </label>
+    <p class="hint">Через него идут только запросы ботов к Telegram; SoundCloud и остальное — как обычно. Соединение зашифровано от
+      колонки до Telegram: прокси видит только, что вы обращаетесь к api.telegram.org.</p>
+    <label class="switch"><input type="checkbox" id="tgmentions"><span><b>Собирать упоминания в группе</b></span></label>
+    <p class="hint">Колонка сама читает группу этим ботом. Сообщение с вашим ником или ником бота, где что-то просят («сделай», «нужно»,
+      «пришли», «глянь»), сразу становится задачей в «Планах» — с тем, кто попросил. Остальное — сообщение: в рабочее время
+      Алиса скажет, кто написал; в нерабочее — посчитает и скажет, когда начнётся рабочий день. Бот должен читать сообщения только
+      здесь: одного бота может читать одна программа.</p>
+    <label class="field">Мой ник в Telegram
+      <input type="text" id="tgme" placeholder="@nickname" maxlength="33" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="msg" id="mentionstate"></div>
+    <ul class="list plans" id="mentionlist"></ul>
+    <div class="row" id="mentionclear" hidden><button class="link" onclick="clearMentions()">Очистить список</button></div>
     <div id="teamlist"></div>
     <div class="row"><button onclick="addTeam()">＋ Команда</button></div>
     <label class="field">Длительность созвона
@@ -2341,6 +2490,10 @@
       <label class="field">Раздел
         <select id="fbmodule"></select>
       </label>
+      <label class="field">Модель колонки
+        <input type="text" id="fbmodel" maxlength="60" placeholder="Например: Станция Мини 2, Лайт, Макс, Миди">
+        <span class="hint" id="fbmodelhint"></span>
+      </label>
       <label class="field">Что случилось
         <textarea id="fbtext" rows="3" maxlength="3000" placeholder="Например: после «Алиса, включи Bonobo» играет Яндекс Музыка"></textarea>
       </label>
@@ -2395,7 +2548,31 @@
 
 <div class="modal" id="statussheet" hidden onclick="if (event.target === this) closeStatus()">
   <div class="modal-card statuscard" role="dialog" aria-modal="true" aria-label="Состояние">
-    <div class="whead"><b>Сервисы</b><button class="link" onclick="closeStatus()" aria-label="Закрыть">Готово</button></div>
+    <div class="whead"><b>Пункт управления</b><button class="link" onclick="closeStatus()" aria-label="Закрыть">Готово</button></div>
+    <div class="cc">
+      <div class="cctile" id="ccwifi" role="button" tabindex="0" onclick="toggleWifiPanel()" title="Сети Wi-Fi рядом">
+        <span class="ccic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.8a15 15 0 0 1 20 0M5.5 12.4a10 10 0 0 1 13 0M9 15.9a5 5 0 0 1 6 0"/><circle cx="12" cy="19.2" r="1.1" fill="currentColor"/></svg></span>
+        <span class="cct"><b>Wi-Fi</b><small id="ccwifisub">…</small></span>
+      </div>
+      <div class="cctile" id="ccbt" role="button" tabindex="0" onclick="ccBluetooth()" title="Музыка в наушники или Bluetooth-колонку">
+        <span class="ccic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg></span>
+        <span class="cct"><b>Bluetooth</b><small id="ccbtsub">…</small></span>
+        <button class="ccmore" onclick="event.stopPropagation(); closeStatus(); openSettings('devices', 'btsection')" title="Настройки Bluetooth" aria-label="Настройки Bluetooth">›</button>
+      </div>
+    </div>
+    <div class="wifipanel" id="wifipanel" hidden>
+      <div class="whead"><b>Сети рядом</b><button class="link" id="wifiscanbtn" onclick="wifiScan()">Обновить</button></div>
+      <ul class="list wifilist" id="wifilist"></ul>
+      <form class="wifiask" id="wifiask" hidden onsubmit="event.preventDefault(); wifiJoin(wifiAsking, $('wifipsk').value)">
+        <input type="password" id="wifipsk" placeholder="Пароль сети" autocomplete="off" minlength="8" maxlength="64">
+        <button class="primary" type="submit">Подключить</button>
+        <button type="button" onclick="$('wifiask').hidden = true">Отмена</button>
+      </form>
+      <div class="msg" id="wifimsg"></div>
+      <p class="hint">При переключении связь с панелью пропадёт на полминуты. Если колонка не подключится к новой сети,
+        она сама вернётся в прежнюю. В другой сети панель откроется по адресу <b>soundya.local:8765</b>.</p>
+    </div>
+    <div class="whead"><b>Сервисы</b></div>
     <div class="statusgrid" id="homeservices"></div>
     <div class="whead"><b>Устройства</b></div>
     <div class="devlist" id="homedevices"></div>
@@ -2498,6 +2675,7 @@ window.addEventListener('unhandledrejection', e => notePageError('unhandled: ' +
 // ---- отчёты об ошибках и обратная связь ----
 let fbKind = 'bug';
 let fbModules = [];
+let fbModelGuess = '';
 function setFbKind(k) {
   fbKind = k;
   document.querySelectorAll('#fbkind button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.kind === k)));
@@ -2513,8 +2691,13 @@ async function openReport(module, kind) {
   for (const id of ['fbtext', 'fbexpected', 'fbactual', 'fbshot']) $(id).value = '';
   $('fbphrases').checked = false; $('fbid').checked = false;
   if (!fbModules.length) {
-    try { fbModules = (await (await fetch('/api/report/list')).json()).modules || []; } catch (e) { notePageError('report list: ' + e); }
+    try { const l = await (await fetch('/api/report/list')).json(); fbModules = l.modules || []; fbModelGuess = l.model_guess || ''; } catch (e) { notePageError('report list: ' + e); }
   }
+  // «Ваша колонка — Станция Лайт?»: what the speaker could tell itself, to confirm or correct.
+  $('fbmodel').value = fbModelGuess;
+  $('fbmodelhint').textContent = fbModelGuess
+    ? 'Определила сама: ' + fbModelGuess + '. Если это не так — исправьте.'
+    : 'Сама определить не смогла — впишите, как называется ваша колонка.';
   $('fbmodule').innerHTML = '';
   for (const [k, v] of fbModules) { const o = document.createElement('option'); o.value = k; o.textContent = v; $('fbmodule').appendChild(o); }
   $('fbmodule').value = module || 'general';
@@ -2535,6 +2718,7 @@ async function reportBody() {
     kind: fbKind, module: $('fbmodule').value, description: $('fbtext').value.trim(),
     expected: fbKind === 'bug' ? $('fbexpected').value.trim() : '', actual: fbKind === 'bug' ? $('fbactual').value.trim() : '',
     logs: $('fblogs').checked, phrases: $('fbphrases').checked, install_id: $('fbid').checked,
+    model_said: $('fbmodel').value.trim(),
     frontend_errors: pageErrors.slice(),
   }, await readShot());
 }
@@ -2906,13 +3090,17 @@ let tvKeys = [['home', 'Домой'], ['back', 'Назад'], ['ok', 'ОК']];
 const STEP_LABEL = {
   'tv wake': 'Разбудить телевизор', 'tv sleep': 'Усыпить телевизор', 'tv openpkg': 'Открыть приложение', 'tv open': 'Открыть приложение',
   'tv close': 'Закрыть приложение', 'tv key': 'Кнопка пульта', 'tv tap': 'Нажать на экране', 'tv first': 'Первое видео на экране', 'tv search': 'Найти фильм', 'tv youtube': 'Найти на YouTube',
-  'pc wake': 'Включить компьютер', 'pc do': 'Команда компьютеру', 'pc click': 'Клик мышью', 'pc key': 'Нажать клавишу', 'pc sleep': 'Усыпить компьютер', 'pc shutdown': 'Выключить компьютер',
+  'pc wake': 'Включить компьютер', 'pc do': 'Команда компьютеру', 'pc click': 'Клик мышью', 'pc key': 'Нажать клавишу',
+  'ditoo': 'Режим Ditoo', 'bt on': 'Музыку в Bluetooth', 'bt off': 'Музыку на колонку', 'pc open': 'Открыть программу', 'pc close': 'Закрыть программу', 'pc type': 'Напечатать текст', 'pc sleep': 'Усыпить компьютер', 'pc shutdown': 'Выключить компьютер',
   'play': 'Включить музыку', 'likes': 'Мои лайки', 'pause': 'Пауза', 'resume': 'Продолжить', 'volume set': 'Громкость', wait: 'Подождать, с',
   'timer pomodoro': 'Запустить помодоро', 'timer start': 'Таймер, минут', 'timer pause': 'Пауза таймера', 'timer stop': 'Остановить таймер',
 };
-const NO_ARG = ['tv first', 'tv wake', 'tv sleep', 'pc wake', 'pc sleep', 'pc shutdown', 'likes', 'pause', 'resume', 'timer pomodoro', 'timer pause', 'timer stop'];
+const NO_ARG = ['tv first', 'tv wake', 'tv sleep', 'pc wake', 'pc sleep', 'pc shutdown', 'likes', 'pause', 'resume', 'timer pomodoro', 'timer pause', 'timer stop', 'bt on', 'bt off'];
 // A script line → {kind, arg}; unknown lines stay as they are.
 function parseLine(l) {
+  // «pc@ноутбук sleep»: a step for one of several computers / TVs.
+  const dm = /^(pc|tv)@(\S+)\s+(.*)$/.exec(l);
+  if (dm) { const st = parseLine(dm[1] + ' ' + dm[3]); st.dev = dm[2].replace(/_/g, ' '); return st; }
   const kinds = Object.keys(STEP_LABEL).sort((a, b) => b.length - a.length);
   if (/^wait \d+/.test(l)) return { kind: 'wait', arg: String(Math.round(Number(l.split(' ')[1]) / 1000)) };
   if (/^timer start \d+/.test(l)) return { kind: 'timer start', arg: String(Math.round(Number(l.split(' ')[2]) / 60)) };
@@ -2920,6 +3108,17 @@ function parseLine(l) {
   return { kind: 'raw', arg: l };
 }
 function stepLine(st) {
+  const line = stepLine0(st);
+  return st.dev && /^(pc|tv) /.test(line) ? line.replace(/^(pc|tv) /, `$1@${st.dev.trim().replace(/\s+/g, '_')} `) : line;
+}
+// The devices a step may go to: [name, label]; the first («» — the main one) has no name.
+function stepDevices(group) {
+  const s = settings || {};
+  const main = group === 'tv' ? (s.tv_name || '') : (s.pc_name || '');
+  const more = (group === 'tv' ? s.tvs_more : s.pcs_more) || [];
+  return [['', main ? `${main} (основной)` : 'Основной'], ...more.filter(d => (d.name || '').trim()).map(d => [d.name.trim(), d.name.trim()])];
+}
+function stepLine0(st) {
   if (st.kind === 'raw') return st.arg;
   if (st.kind === 'wait') return 'wait ' + Math.max(0, Math.round(Number(st.arg || 1) * 1000));
   if (st.kind === 'timer start') return 'timer start ' + Math.max(60, Math.round(Number(st.arg || 10) * 60));
@@ -2944,6 +3143,12 @@ function renderSteps() {
       for (const a of sorted) { const o = document.createElement('option'); o.value = a; o.textContent = tvNames[a] || a; input.appendChild(o); }
       if (!st.arg) st.arg = tvApps[0];
       input.value = st.arg;
+    } else if (st.kind === 'ditoo') {
+      input = document.createElement('select');
+      for (const m of ditooModes()) { const o = document.createElement('option'); o.value = m.name; o.textContent = m.name; input.appendChild(o); }
+      if (!st.arg) st.arg = (ditooModes()[0] || {}).name || '';
+      if (st.arg && ![...input.options].some(o => o.value === st.arg)) { const o = document.createElement('option'); o.value = o.textContent = st.arg; input.appendChild(o); }
+      input.value = st.arg;
     } else if (st.kind === 'tv key') {
       input = document.createElement('select');
       for (const [k, l] of tvKeys) { const o = document.createElement('option'); o.value = k; o.textContent = l; input.appendChild(o); }
@@ -2952,11 +3157,29 @@ function renderSteps() {
     } else if (!NO_ARG.includes(st.kind)) {
       input = document.createElement('input'); input.type = st.kind === 'wait' || st.kind === 'volume set' || st.kind === 'timer start' ? 'number' : 'text';
       input.placeholder = { wait: '5', 'volume set': '0–10', 'timer start': '10', 'tv openpkg': 'имя пакета или загрузите список', 'tv close': 'ютуб', 'tv tap': 'История, Подключить…', play: 'Bonobo', 'pc do': 'открой телеграм', raw: 'команда',
-        'pc click': 'x y — например 500 300 (двойной: 500 300 double)', 'pc key': 'enter, cmd+t, ctrl+shift+esc' }[st.kind] || '';
+        'pc click': 'x y — например 500 300 (двойной: 500 300 double)', 'pc key': 'enter, cmd+t, ctrl+shift+esc',
+        'pc open': 'стим, телеграм или путь к программе', 'pc close': 'стим', 'pc type': 'текст, который напечатать' }[st.kind] || '';
       input.value = st.arg;
     }
     const argrow = document.createElement('div'); argrow.className = 'sarg';
+    // Several computers or TVs: which one this step is for.
+    const grp = stepGroup(st.kind);
+    if ((grp === 'pc' || grp === 'tv') && stepDevices(grp).length > 1) {
+      const sel = document.createElement('select'); sel.className = 'sdev'; sel.title = 'На каком устройстве';
+      for (const [v, label] of stepDevices(grp)) { const o = document.createElement('option'); o.value = v; o.textContent = label; sel.appendChild(o); }
+      if (st.dev && ![...sel.options].some(o => o.value.toLowerCase() === st.dev.toLowerCase())) { const o = document.createElement('option'); o.value = st.dev; o.textContent = st.dev + ' (нет в настройках)'; sel.appendChild(o); }
+      sel.value = [...sel.options].find(o => o.value.toLowerCase() === (st.dev || '').toLowerCase())?.value ?? '';
+      sel.onchange = () => { st.dev = sel.value; };
+      argrow.appendChild(sel);
+    }
     if (input) { input.onchange = () => { st.arg = input.value; }; input.oninput = input.onchange; argrow.appendChild(input); }
+    // Where to click: the pointer's place on the PC, taken a few seconds after the press.
+    if (st.kind === 'pc click' && input) {
+      const pick = document.createElement('button'); pick.type = 'button'; pick.className = 'link';
+      pick.textContent = 'Взять позицию мыши с компьютера';
+      pick.onclick = () => pickMouse(pick, input, st);
+      argrow.appendChild(pick);
+    }
     // A saved step before the list is loaded: say what it opens.
     if (st.kind === 'tv openpkg' && !tvApps.length && st.arg && tvNames[st.arg]) {
       const what = document.createElement('small'); what.className = 'muted'; what.textContent = tvNames[st.arg]; argrow.appendChild(what);
@@ -3012,7 +3235,7 @@ function openPalette() {
   const p = $('palette');
   if (!p.hidden) { p.hidden = true; return; }
   p.replaceChildren();
-  const groups = [...$('macroadd').children].filter(x => x.tagName === 'OPTGROUP' || (x.tagName === 'OPTION' && x.value));
+  const groups = [...$('macroadd').children].filter(x => !x.hidden && (x.tagName === 'OPTGROUP' || (x.tagName === 'OPTION' && x.value)));
   const add = k => { macroSteps.push({ kind: k, arg: k === 'wait' ? '3' : '' }); p.hidden = true; renderSteps(); };
   const tile = o => {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'ptile ' + stepGroup(o.value);
@@ -3100,6 +3323,82 @@ async function loadTvApps() {
   if (r.error || !r.apps) { show($('macromsg'), 'error: ' + (r.error || 'телевизор не ответил')); return; }
   tvApps = r.apps; tvNames = r.names || {}; renderSteps(); show($('macromsg'), `OK: приложений на телевизоре: ${tvApps.length}`);
 }
+async function saveRoutes() {
+  const r = await post('/api/settings', JSON.stringify({ route_volume: $('routevolume').value, route_apps: $('routeapps').value }));
+  show($('routemsg'), r);
+  if (!r.startsWith('error')) { settingsLoaded = false; refresh(); }
+}
+
+// ---- Ditoo Plus (developer build): modes and what each shows ----
+let ditooEdit = null;
+function ditooModes() { return ditooEdit || (settings.ditoo_modes || []); }
+function renderDitoo() {
+  const box = $('ditoobox');
+  // The scenario step only where the modes are set up.
+  const step = $('ditoostep'); if (step) step.hidden = !window.SOUNDYA_DEV;
+  if (!box) return;
+  box.hidden = !window.SOUNDYA_DEV;
+  if (!window.SOUNDYA_DEV) return;
+  if (!ditooEdit) ditooEdit = JSON.parse(JSON.stringify(settings.ditoo_modes || []));
+  const screens = settings.ditoo_screens || [];
+  const list = $('ditoomodes'); list.innerHTML = '';
+  ditooEdit.forEach((m, i) => {
+    const d = document.createElement('div'); d.className = 'dmode';
+    const head = document.createElement('div'); head.className = 'dhead';
+    const name = document.createElement('input'); name.type = 'text'; name.value = m.name; name.placeholder = 'игра, работа, кино…'; name.maxLength = 40;
+    name.oninput = () => { m.name = name.value; };
+    const del = document.createElement('button'); del.className = 'link sdel'; del.textContent = '✕'; del.title = 'Удалить режим';
+    del.onclick = () => { ditooEdit.splice(i, 1); renderDitoo(); };
+    if (m.name.trim().toLowerCase() === 'обычный') { name.disabled = true; del.hidden = true; name.title = 'Режим по умолчанию: когда сценарии ничего не включили'; }
+    head.append(name, del);
+    const sc = document.createElement('div'); sc.className = 'dscreens';
+    for (const [k, label] of screens) {
+      const l = document.createElement('label'); const c = document.createElement('input'); c.type = 'checkbox';
+      c.checked = (m.show || []).includes(k);
+      c.onchange = () => {
+        const set = new Set(m.show || []); if (c.checked) set.add(k); else set.delete(k);
+        m.show = screens.map(x => x[0]).filter(x => set.has(x));
+        renderDitoo();
+      };
+      l.append(c, document.createTextNode(label)); sc.appendChild(l);
+    }
+    const nums = document.createElement('div'); nums.className = 'dnums';
+    const num = (label, key, max) => {
+      const l = document.createElement('label'); const n = document.createElement('input'); n.type = 'number'; n.min = 0; n.max = max;
+      n.value = m[key] || 0; n.oninput = () => { m[key] = Math.max(0, Math.min(max, Number(n.value) || 0)); };
+      l.append(document.createTextNode(label + ' '), n); return l;
+    };
+    nums.append(num('Каждый экран, с', 'rotate', 3600), num('Яркость, % (0 — не менять)', 'brightness', 100));
+    d.append(head, sc, nums);
+    if ((m.show || []).includes('text')) {
+      const t = document.createElement('input'); t.type = 'text'; t.className = 'dtext'; t.placeholder = 'Свой текст на экран'; t.maxLength = 200;
+      t.value = m.text || ''; t.oninput = () => { m.text = t.value; }; d.appendChild(t);
+    }
+    list.appendChild(d);
+  });
+}
+function addDitooMode() { ditooModes(); ditooEdit.push({ name: '', show: ['clock'], rotate: 10, text: '', brightness: 0 }); renderDitoo(); }
+async function saveDitoo() {
+  const modes = (ditooEdit || []).filter(m => m.name.trim());
+  const r = await post('/api/settings', JSON.stringify({ ditoo_modes: modes }));
+  show($('ditoomsg'), r);
+  if (!r.startsWith('error')) { ditooEdit = null; settingsLoaded = false; await refresh(); }
+}
+
+// Counts down so there is time to move the pointer on the PC, then asks the PC where it is.
+async function pickMouse(btn, input, st) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  for (let n = 5; n > 0; n--) { btn.textContent = `Наведите мышь на компьютере… ${n}`; await new Promise(r => setTimeout(r, 1000)); }
+  btn.textContent = 'Спрашиваю компьютер…';
+  const r = await post('/api/cmd', 'pc mouse');
+  const m = /(\d{1,5}),(\d{1,5})\s*$/.exec(r);
+  const mode = (st.arg.split(/\s+/)[2] || '');
+  if (m) { st.arg = (m[1] + ' ' + m[2] + (mode ? ' ' + mode : '')); input.value = st.arg; show($('macromsg'), 'Позиция: ' + m[1] + ', ' + m[2]); }
+  else if (/Неизвестная команда/i.test(r)) show($('macromsg'), 'error: программа soundya на компьютере старая и этого не умеет — обновите её (приложение soundya → «Установщик и обновление»)');
+  else show($('macromsg'), r.startsWith('error') ? r : 'error: компьютер не сказал, где мышь (' + r + ')');
+  btn.textContent = label; btn.disabled = false;
+}
 async function tryMacro() {
   if (!macroSteps.length) { show($('macromsg'), 'error: добавьте шаги'); return; }
   show($('macromsg'), await post('/api/cmd', 'macro try ' + macroScript()));
@@ -3125,18 +3424,43 @@ let listening = false, listenTrack = null, listenOffset = 0, listenGen = null, l
 // and a moment late. After that only a real jump (seek, new track) restarts it.
 let listenBase = null, listenAlign = null;
 const la = () => $('listenaudio');
+// The player's own events keep coming while the page is in the background (its timers slow
+// down there): «I listen» goes with them too, every 5 s at most.
+let lastBeat = 0;
+$('listenaudio').addEventListener('timeupdate', () => {
+  if (!listening || Date.now() - lastBeat < 5000) return;
+  lastBeat = Date.now();
+  beat(true);
+});
 // Safari and the Mac app's window (WebKit) do not play the speaker's stream from a plain
 // address: it has no length and no byte ranges. There the page fetches it itself and hands
 // it to the player through MediaSource (Chrome keeps the plain address).
 const APPLE_WEBKIT = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|OPR/.test(navigator.userAgent);
 let mseCtl = null;
+// Where this browser's stream begins in the track (the speaker's X-Soundya-Offset; an MP4
+// begins at its segment, a few seconds before the asked place). Known with MediaSource only:
+// what is heard is then exactly listenStart + currentTime (the buffer starts at 0).
+let listenStart = null, listenJumped = false, listenDur = 0, switchSince = 0;
+// next / prev / a track picked here (cmd): the last track stays paused until the speaker's
+// status has another one.
+let switchHold = null;
+function heardMs() {
+  const a = la();
+  return listenStart === null || a.readyState < 2 ? null : listenStart + a.currentTime * 1000;
+}
+// The track ended here: go on to the next one at once (not at the next status answer).
+$('listenaudio').addEventListener('ended', () => { if (listening) refresh(); });
 function stopListenAudio() {
   if (mseCtl) { mseCtl.abort(); mseCtl = null; }
+  listenStart = null;
   const a = la(); a.pause(); a.removeAttribute('src'); a.load();
 }
 function streamInto(a, url) {
   if (mseCtl) { mseCtl.abort(); mseCtl = null; }
-  if (!APPLE_WEBKIT || !window.MediaSource) { a.src = url; return; }
+  listenStart = null; listenJumped = false;
+  // MediaSource everywhere it exists (Chrome too): the page then knows where the stream
+  // begins, so the bar shows what is heard and the start lines up with the speaker.
+  if (!window.MediaSource) { a.src = url; return; }
   const ms = new MediaSource(), ctl = new AbortController();
   mseCtl = ctl;
   a.src = URL.createObjectURL(ms);
@@ -3144,38 +3468,73 @@ function streamInto(a, url) {
     try {
       const r = await fetch(url, { signal: ctl.signal });
       if (!r.ok) throw new Error('stream ' + r.status);
+      const off = parseInt(r.headers.get('X-Soundya-Offset') || '', 10);
       const mime = (r.headers.get('Content-Type') || 'audio/mp4').split(';')[0].trim();
       const type = mime === 'audio/mp4' ? 'audio/mp4; codecs="mp4a.40.2"' : mime;
       if (!MediaSource.isTypeSupported(type)) { ctl.abort(); mseCtl = null; a.src = url; return; }
       const sb = ms.addSourceBuffer(type);
       sb.mode = 'sequence';
+      if (!ctl.signal.aborted && Number.isFinite(off)) listenStart = off;
       const idle = () => new Promise(res => sb.updating ? sb.addEventListener('updateend', res, { once: true }) : res());
+      const pause = t => new Promise(res => setTimeout(res, t));
+      const ahead = () => sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) - a.currentTime : 0;
       const reader = r.body.getReader();
-      for (;;) {
+      // The speaker sends faster than it plays. WebKit (Safari, the Mac app) holds only ~12 MB
+      // per buffer (≈ 11 min) and refused the rest of a long mix with QuotaExceededError: the
+      // sound stopped there. So: no more than 2 minutes ahead, in pieces — WebKit's fetch keeps
+      // reading while the page waits and then hands over megabytes at once.
+      const STEP = 256 * 1024;
+      reading: for (;;) {
         const { done, value } = await reader.read();
         if (done || ctl.signal.aborted) break;
-        await idle();
-        // Not the whole track in memory: what played more than a minute ago goes.
-        if (a.currentTime > 120 && sb.buffered.length && sb.buffered.start(0) < a.currentTime - 90) {
-          try { sb.remove(0, a.currentTime - 60); await idle(); } catch (e) {}
+        for (let at = 0; at < value.length; at += STEP) {
+          const piece = value.subarray(at, at + STEP);
+          await idle();
+          while (!ctl.signal.aborted && ahead() > 120) await pause(1000);
+          if (ctl.signal.aborted) break reading;
+          // Not the whole track in memory: what played more than a minute ago goes.
+          if (a.currentTime > 120 && sb.buffered.length && sb.buffered.start(0) < a.currentTime - 90) {
+            try { sb.remove(0, a.currentTime - 60); await idle(); } catch (e) {}
+          }
+          if (ctl.signal.aborted) break reading;
+          for (let tries = 0; ; tries++) {
+            await idle();
+            if (ctl.signal.aborted) break reading;
+            try { sb.appendBuffer(piece); break; } catch (e) {
+              // WebKit now and then is still busy with the buffer here (InvalidStateError): the
+              // stream stopped and the track with it. Wait for it and append again.
+              if (e.name === 'InvalidStateError' && sb.updating && tries < 5 && !ctl.signal.aborted) continue;
+              // Full all the same (a smaller quota): drop what played and try again.
+              if (e.name !== 'QuotaExceededError' || tries >= 5 || ctl.signal.aborted) throw e;
+              try { if (a.currentTime > 10) { sb.remove(0, a.currentTime - 5); await idle(); } } catch (x) {}
+              await pause(2000);
+            }
+          }
         }
-        sb.appendBuffer(value);
       }
       await idle();
       if (ms.readyState === 'open' && !ctl.signal.aborted) ms.endOfStream();
     } catch (e) {
-      if (e.name !== 'AbortError') notePageError('listen (MediaSource): ' + e);
+      // After a switch the old stream's last steps fail on a closed MediaSource: not an error.
+      if (e.name !== 'AbortError' && !ctl.signal.aborted) notePageError('listen (MediaSource): ' + e);
     }
   }, { once: true });
 }
-async function beat(on) {
-  try { const r = await authed('/api/listen', { method: 'POST', body: JSON.stringify({ id: tabId, on }) }); return r.ok; } catch (e) { return false; }
+async function beat(on, start = false) {
+  try { const r = await authed('/api/listen', { method: 'POST', body: JSON.stringify({ id: tabId, on, start }) }); return r.ok; } catch (e) { return false; }
+}
+// «No longer listening», and once more a moment later: a «still listening» already on its way
+// could arrive after the first one and keep the speaker silent for the whole LISTEN_TTL.
+async function unbeat() {
+  const r = await beat(false);
+  setTimeout(() => { if (!listening) beat(false); }, 1500);
+  return r;
 }
 async function setOutput(where) {
   document.querySelectorAll('#outseg button').forEach(b => b.classList.toggle('on', b.dataset.out === where));
   // Bluetooth: the speaker sends its music to the chosen device (bt.rs); «Колонка» takes it back.
   if (where === 'bt' || (where === 'speaker' && settings && settings.bt_on)) {
-    if (listening) { listening = false; clearInterval(listenBeat); stopListenAudio(); beat(false); }
+    if (listening) { listening = false; volumeMode(false); clearInterval(listenBeat); stopListenAudio(); unbeat(); }
     // The switch itself shows where it plays: only a failure is worth a message.
     const res = await post('/api/cmd', where === 'bt' ? 'bt on' : 'bt off');
     if (res.startsWith('error')) show($('actmsg'), res);
@@ -3184,14 +3543,15 @@ async function setOutput(where) {
   }
   if (where === 'here' && !listening) {
     // At once, before the speaker answers: a status in between put the switch back on «Колонка».
-    listening = true; listenTrack = null; listenGen = null;
-    if (!(await beat(true))) { listening = false; setOutput('speaker'); return; }
+    listening = true; listenTrack = null; listenGen = null; volumeMode(true);
+    if (!(await beat(true, true))) { listening = false; volumeMode(false); setOutput('speaker'); return; }
     listenBeat = setInterval(() => beat(true), 5000);
+    lastBeat = Date.now();
     refresh();
   } else if (where === 'speaker' && listening) {
-    listening = false; clearInterval(listenBeat);
+    listening = false; volumeMode(false); clearInterval(listenBeat);
     stopListenAudio();
-    beat(false); refresh();
+    await unbeat(); refresh();
   }
 }
 document.querySelectorAll('#outseg button').forEach(b => b.onclick = () => setOutput(b.dataset.out));
@@ -3216,22 +3576,60 @@ function syncListen(s) {
   else if (L.gen !== listenGen) { setOutput('speaker'); $('listennote').hidden = false; $('listennote').textContent = 'Звук вернули на колонку.'; return; }
   const a = la();
   if (s.state === 'stopped' || !s.current_id) { a.pause(); return; }
+  // «Назад» late in a track starts the same one again: its time goes back, the id stays.
+  let again = false;
+  if (switchHold) {
+    const h = heardMs(), late = Date.now() > switchHold.until;
+    if (s.current_id === switchHold.from && h !== null && s.position_ms + 3000 < h) { switchHold = null; again = true; }
+    // Still loading the next one (it may take the speaker seconds): the last one stays paused.
+    else if (s.current_id !== switchHold.from || (late && (!s.loading || Date.now() > switchHold.until + 17000))) switchHold = null;
+  }
+  if (switchHold) return;
+  const heard = heardMs();
+  if (s.current_id !== listenTrack) {
+    // The speaker went on to the next track while this browser, a moment behind, still plays
+    // the end of the last one: let it finish (up to 4 s) instead of cutting it off.
+    if (!switchSince) switchSince = Date.now();
+    const left = heard === null || !listenDur ? Infinity : listenDur - heard;
+    if (listenTrack !== null && !a.paused && !a.ended && left < 4000 && Date.now() - switchSince < 4500) return;
+  } else switchSince = 0;
+  let restart = false;
+  if (heard !== null && s.current_id === listenTrack) {
+    // Started behind the speaker (the stream begins at a segment, and a moment late):
+    // one jump forward inside what is already downloaded.
+    const behind = s.position_ms - heard;
+    if (!listenJumped && s.state === 'playing' && !a.paused && behind > 1200) {
+      const to = (s.position_ms - listenStart) / 1000, b = a.buffered;
+      if (b.length && to < b.end(b.length - 1) - 0.5) { a.currentTime = to; listenJumped = true; }
+    }
+    // A seek on the speaker (or a jump that could not be made): start again from there.
+    const now = heardMs();
+    if (again || (L.seekable && s.state === 'playing' && !a.paused && now !== null && Math.abs(s.position_ms - now) > 6000)) restart = true;
+    else {
+      if (s.state === 'playing' && a.paused) a.play().catch(e => { if (e.name !== 'AbortError') notePageError('listen: ' + e); });
+      if (s.state === 'paused' && !a.paused) a.pause();
+      return;
+    }
+  }
   const played = listenBase === null ? 0 : (a.currentTime - listenBase) * 1000;
   if (listenBase !== null && listenAlign === null && s.state === 'playing' && !a.paused) {
     listenAlign = s.position_ms - (listenOffset + played);
   }
   const drift = Math.abs(listenOffset + (listenAlign || 0) + played - s.position_ms);
-  if (s.current_id !== listenTrack || (s.state === 'playing' && L.seekable && !a.paused && listenAlign !== null && drift > 4000)) {
-    listenTrack = s.current_id;
+  if (s.current_id !== listenTrack || restart || (s.state === 'playing' && L.seekable && !a.paused && listenAlign !== null && drift > 4000)) {
+    listenTrack = s.current_id; switchSince = 0;
+    listenDur = s.duration_ms || 0;
     listenOffset = L.seekable ? s.position_ms : 0;
     listenBase = null; listenAlign = null;
     a.addEventListener('playing', () => { listenBase = a.currentTime; }, { once: true });
-    streamInto(a, `/api/stream?id=${s.current_id}&t=${listenOffset}`);
+    streamInto(a, `/api/stream?id=${s.current_id}&t=${listenOffset}&tab=${tabId}`);
     if (!L.seekable) note.append(' Этот трек в браузере начнётся с начала.');
   }
-  if (s.state === 'playing' && a.paused) a.play().catch(e => notePageError('listen: ' + e));
+  if (s.state === 'playing' && a.paused) a.play().catch(e => { if (e.name !== 'AbortError') notePageError('listen: ' + e); });
   if (s.state === 'paused' && !a.paused) a.pause();
 }
+// Back in front after a long sleep: say «I listen» at once, not at the next slowed timer.
+document.addEventListener('visibilitychange', () => { if (listening && !document.hidden) { lastBeat = Date.now(); beat(true); } });
 window.addEventListener('pagehide', () => {
   if (listening) fetch('/api/listen', { method: 'POST', body: JSON.stringify({ id: tabId, on: false }), keepalive: true }).catch(() => {});
 });
@@ -3916,13 +4314,134 @@ function statusProblems(s) {
 }
 function renderStatusRow(s) {
   const { bad, warn } = statusProblems(s), net = s.net || {};
+  // The microphone switched off on the speaker: said where everyone looks, not only under the dot.
+  $('micoff').hidden = s.mic_muted !== true;
   const netWord = { good: 'сеть хорошая', slow: 'сеть медленная', bad: 'сеть плохая', down: 'нет связи' }[net.level] || 'сеть проверяется';
   $('netdot').className = 'dot ' + (bad.length ? 'bad' : warn.length ? 'slow' : net.level === 'good' ? 'good' : net.level ? 'good' : '');
   const title = bad.concat(warn).join('\n') || 'Всё в порядке · ' + netWord;
   $('netpill').title = title; $('netpill').setAttribute('aria-label', 'Состояние: ' + title.replace(/\n/g, '; '));
 }
-function openStatus() { $('statussheet').hidden = false; }
-function closeStatus() { $('statussheet').hidden = true; }
+function openStatus() { $('statussheet').hidden = false; loadWifi(); clearInterval(wifiTimer); wifiTimer = setInterval(() => { if (!$('statussheet').hidden) loadWifi(); }, 5000); }
+function closeStatus() { $('statussheet').hidden = true; clearInterval(wifiTimer); }
+
+// ---- Пункт управления: Wi-Fi и Bluetooth ----
+let wifiTimer = null, wifiState = null, wifiAsking = null, wifiWatch = null;
+function wifiBars(n) {
+  const b = document.createElement('span'); b.className = 'wbars'; b.setAttribute('aria-hidden', 'true');
+  for (let i = 1; i <= 4; i++) { const x = document.createElement('i'); if (i <= (n || 0)) x.className = 'f'; b.append(x); }
+  return b;
+}
+async function loadWifi() {
+  let w;
+  try { w = await (await authed('/api/wifi')).json(); } catch (e) { return; }
+  wifiState = w;
+  const t = $('ccwifi'), sub = $('ccwifisub');
+  if (!w.available) { t.classList.remove('on'); sub.textContent = 'недоступен'; return; }
+  t.classList.toggle('on', !!w.connected);
+  sub.textContent = w.connected ? (w.ssid || 'подключено') : 'нет сети';
+  t.title = w.connected ? `${w.ssid} · ${w.band || ''} · ${w.ip || ''}` : 'Сети Wi-Fi рядом';
+  if (wifiWatch && w.job && w.job.state !== 'connecting') finishWifiWatch(w.job);
+}
+function renderCcBt(st) {
+  const t = $('ccbt'); if (!t) return;
+  t.classList.toggle('on', !!(st.bt_mac && st.bt_on));
+  $('ccbtsub').textContent = st.bt_mac ? (st.bt_name || st.bt_mac) + (st.bt_on ? '' : ' · выкл.') : 'не подключено';
+}
+async function ccBluetooth() {
+  const st = settings || {};
+  if (!st.bt_mac) { closeStatus(); openSettings('devices', 'btsection'); return; }
+  const t = $('ccbt'); t.classList.add('busy'); t.classList.toggle('on', !st.bt_on);
+  const r = await post('/api/cmd', st.bt_on ? 'bt off' : 'bt on');
+  t.classList.remove('busy');
+  if (r.startsWith('error')) show($('homemsg'), r);
+  settingsLoaded = false; refresh();
+}
+function toggleWifiPanel() {
+  const p = $('wifipanel');
+  p.hidden = !p.hidden;
+  if (!p.hidden) wifiScan();
+}
+async function wifiScan() {
+  $('wifiscanbtn').disabled = true; busy($('wifimsg'), 'Ищу сети…');
+  let r;
+  try { r = await (await authed('/api/wifi', { method: 'POST', body: JSON.stringify({ action: 'scan' }) })).json(); } catch (e) { r = { error: 'колонка не ответила' }; }
+  $('wifiscanbtn').disabled = false;
+  if (r.error) { show($('wifimsg'), 'error: ' + r.error); return; }
+  if (!wifiWatch) $('wifimsg').textContent = '';
+  const nets = r.networks || [];
+  // The one in use: the band it is actually on (a scan lists the strongest access point of a name).
+  const rows = nets.map(n => wifiRow(n.ssid, [n.current ? 'подключено' : n.saved ? 'сохранена' : '', n.current && wifiState && wifiState.band ? wifiState.band : n.band, n.secure ? '' : 'открытая'].filter(Boolean).join(' · '),
+    n.bars, n.secure, n.current ? 'cur' : '', () => wifiPick(n)));
+  // Saved networks not around now: still listed, so they can be forgotten.
+  for (const s of (wifiState && wifiState.saved) || []) {
+    if (nets.some(n => n.ssid === s.ssid)) continue;
+    rows.push(wifiRow(s.ssid, 'сохранена · не в зоне', 0, true, 'muted', null, s.id));
+  }
+  for (const n of nets) {
+    const s = n.saved && !n.current && ((wifiState && wifiState.saved) || []).find(x => x.ssid === n.ssid);
+    if (s) rows[nets.indexOf(n)].append(forgetBtn(s.id, s.ssid));
+  }
+  $('wifilist').replaceChildren(...rows);
+  if (!nets.length) $('wifimsg').textContent = 'Сетей не видно.';
+}
+function forgetBtn(id, ssid) {
+  const del = document.createElement('button'); del.className = 'link sdel'; del.textContent = '✕'; del.title = 'Забыть сеть «' + ssid + '»';
+  del.onclick = async e => {
+    e.stopPropagation();
+    const r = await (await authed('/api/wifi', { method: 'POST', body: JSON.stringify({ action: 'forget', id }) })).json();
+    show($('wifimsg'), r.error ? 'error: ' + r.error : r.message);
+    await loadWifi(); wifiScan();
+  };
+  return del;
+}
+function wifiRow(ssid, sub, bars, secure, cls, onclick, forgetId) {
+  const li = document.createElement('li'); if (cls) li.className = cls;
+  const t = document.createElement('div'); t.className = 't';
+  const name = document.createElement('span'); name.textContent = ssid;
+  if (sub) { const s = document.createElement('small'); s.textContent = sub; name.append(s); }
+  t.append(wifiBars(bars), name);
+  const d = document.createElement('div'); d.className = 'd';
+  if (cls === 'cur') { const c = document.createElement('span'); c.className = 'wcheck'; c.textContent = '✓'; d.append(c); }
+  if (secure) d.insertAdjacentHTML('beforeend', '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" aria-label="с паролем"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>');
+  li.append(t, d);
+  if (forgetId) li.append(forgetBtn(forgetId, ssid));
+  if (onclick) li.onclick = onclick;
+  return li;
+}
+function wifiPick(n) {
+  if (n.current) { show($('wifimsg'), 'OK: колонка уже в этой сети'); return; }
+  if (n.saved || !n.secure) { wifiJoin(n.ssid, null); return; }
+  wifiAsking = n.ssid;
+  $('wifiask').hidden = false; $('wifipsk').value = ''; $('wifipsk').placeholder = 'Пароль сети «' + n.ssid + '»';
+  setTimeout(() => $('wifipsk').focus(), 30);
+}
+async function wifiJoin(ssid, psk) {
+  if (psk !== null && psk.length < 8) { show($('wifimsg'), 'error: пароль Wi-Fi — от 8 символов'); return; }
+  $('wifiask').hidden = true; $('wifipsk').value = '';
+  let r;
+  try { r = await (await authed('/api/wifi', { method: 'POST', body: JSON.stringify({ action: 'connect', ssid, psk }) })).json(); }
+  catch (e) { r = { error: 'колонка не ответила' }; }
+  if (r.error) { show($('wifimsg'), 'error: ' + r.error); return; }
+  if (/уже в сети/.test(r.message || '')) { show($('wifimsg'), r.message); return; }
+  busy($('wifimsg'), 'Переключаюсь на «' + ssid + '»… связь с панелью может пропасть до минуты');
+  $('ccwifi').classList.add('busy');
+  wifiWatch = { ssid, since: Date.now() };
+}
+function finishWifiWatch(job) {
+  wifiWatch = null; $('ccwifi').classList.remove('busy');
+  show($('wifimsg'), (job.state === 'done' ? 'OK: ' : 'error: ') + job.message);
+  if (!$('wifipanel').hidden) wifiScan();
+}
+// While switching: ask every 2 s (the speaker may be away for a while), give up after 90 s.
+setInterval(async () => {
+  if (!wifiWatch) return;
+  if (Date.now() - wifiWatch.since > 90000) {
+    wifiWatch = null; $('ccwifi').classList.remove('busy');
+    show($('wifimsg'), 'error: колонка не отвечает по этому адресу. Если она перешла в другую сеть, подключите этот телефон или компьютер к той же сети и откройте soundya.local:8765');
+    return;
+  }
+  loadWifi();
+}, 2000);
 
 // ---- Поиск и очередь в плеере ----
 function openSearch() { $('psearch').hidden = false; $('psearchbtn').classList.add('on'); $('psearchbtn').setAttribute('aria-expanded', 'true'); setTimeout(() => $('query').focus(), 30); }
@@ -3989,6 +4508,7 @@ function stat(key, value, cls, go) {
   b.querySelector('.k').append(key); b.querySelector('.v').textContent = value; return b;
 }
 function renderBt(st) {
+  renderCcBt(st);
   const has = !!st.bt_mac;
   $('btnow').hidden = !has; $('btactions').hidden = !has;
   $('btname').textContent = st.bt_name || st.bt_mac || '';
@@ -4043,8 +4563,8 @@ function renderHome(s) {
   const net = s.net || {}, login = s.login;
   const g = $('homeservices'); g.innerHTML = '';
   g.append(
-    stat('SoundCloud', !st.soundcloud ? 'выключен' : login === 'refused' ? 'вход устарел' : s.user ? s.user : login === 'checking' ? 'проверяю вход' : 'без входа',
-      !st.soundcloud ? '' : login === 'refused' ? 'bad' : s.user ? 'good' : 'slow', () => openSettings('account')),
+    stat('SoundCloud', !st.soundcloud ? 'выключен' : login === 'refused' ? 'вход устарел' : s.user ? s.user : login === 'offline' ? 'нет связи с SoundCloud' : login === 'checking' ? 'проверяю вход' : 'без входа',
+      !st.soundcloud ? '' : login === 'refused' || login === 'offline' ? 'bad' : s.user ? 'good' : 'slow', () => openSettings('account')),
     stat('Соединение', { good: 'хорошее', slow: 'медленное', bad: 'плохое', down: 'нет связи', unknown: 'проверяю' }[net.level] || '—',
       net.level === 'good' ? 'good' : net.level === 'slow' ? 'slow' : net.level === 'unknown' ? '' : 'bad', () => openSettings('net')),
     stat('Музыка по умолчанию', st.music_default === 'yandex' ? 'Яндекс Музыка' : 'SoundCloud', 'good', () => openSettings('speaker')),
@@ -4543,6 +5063,63 @@ async function loadPlans(fresh) {
   renderAddForm();
 }
 async function speakPlan() { show($('planmsg'), await post('/api/cmd', 'plan speak ' + VIEW_ASK[planView])); }
+// ---- «Вставить расписание»: a pasted day plan → reminders (planner::parse_schedule) ----
+let importDay = 0;
+document.querySelectorAll('#importday button').forEach(b => b.onclick = () => {
+  importDay = Number(b.dataset.d);
+  document.querySelectorAll('#importday button').forEach(x => x.classList.toggle('on', x === b));
+  if (!$('importgo').hidden) importPreview();
+});
+function importBody(dry) { return 'plan import ' + JSON.stringify({ text: $('importtext').value, day: importDay, dry }); }
+async function importPreview() {
+  const ul = $('importlist'); ul.innerHTML = ''; $('importgo').hidden = true;
+  if (!$('importtext').value.trim()) { show($('importmsg'), 'error: выберите файл или вставьте текст'); return; }
+  const r = await postJSON(importBody(true));
+  if (r.error || !r.items) { show($('importmsg'), 'error: ' + (r.error || 'не получилось разобрать')); return; }
+  for (const i of r.items) {
+    const li = document.createElement('li');
+    const t = document.createElement('span'); t.textContent = (i.high ? '! ' : '') + i.title;
+    const w = document.createElement('small'); w.className = 'muted';
+    w.textContent = ' — ' + [i.when || 'без срока', i.category].filter(Boolean).join(' · ');
+    li.append(t, w); ul.appendChild(li);
+  }
+  $('importgo').hidden = false;
+  $('importgo').textContent = `Добавить в планы (${r.items.length})`;
+  show($('importmsg'), '');
+}
+async function importSchedule() {
+  const r = await post('/api/cmd', importBody(false));
+  show($('importmsg'), r);
+  if (!r.startsWith('error')) { $('importtext').value = ''; $('importlist').innerHTML = ''; $('importgo').hidden = true; loadPlans(true); }
+}
+// A file picked or dropped: its text goes into the box and the preview opens (import.js reads
+// it; a .docx is unpacked right here).
+async function importFile(file) {
+  if (!file) return;
+  busy($('importmsg'), 'Читаю «' + file.name + '»…');
+  try {
+    $('importtext').value = await readDocFile(file);
+    await importPreview();
+  } catch (e) {
+    show($('importmsg'), 'error: ' + (e.message || e));
+  }
+}
+$('importfile').onchange = e => { importFile(e.target.files[0]); e.target.value = ''; };
+{
+  const zone = $('importdrop');
+  // Files only: text dragged into the box is still dropped as text.
+  const files = e => [...e.dataTransfer.types].includes('Files');
+  zone.ondragover = e => { if (!files(e)) return; e.preventDefault(); zone.classList.add('over'); };
+  zone.ondragleave = () => zone.classList.remove('over');
+  zone.ondrop = e => { if (!files(e)) return; e.preventDefault(); zone.classList.remove('over'); importFile(e.dataTransfer.files[0]); };
+}
+async function copyPrompt() {
+  const p = await post('/api/cmd', 'plan prompt');
+  $('aiprompt').textContent = p; $('aiprompt').hidden = false;
+  try { await navigator.clipboard.writeText(p); show($('importmsg'), 'Промт скопирован — вставьте его в чат с ИИ и допишите свои задачи'); }
+  catch (e) { show($('importmsg'), 'Скопируйте промт ниже вручную'); }
+}
+
 async function addPlan() {
   const title = $('plantitle').value.trim();
   if (!title) { show($('planmsg'), 'error: напишите название'); return; }
@@ -4653,6 +5230,10 @@ function renderTeams(st) {
   if (!teamsDirty) teams = JSON.parse(JSON.stringify(st.teams || []));
   if (document.activeElement !== $('meetmin')) $('meetmin').value = String(st.meet_minutes || 30);
   if (document.activeElement !== $('meetbot') && !teamsDirty) $('meetbot').value = st.meet_bot_token || '';
+  if (!teamsDirty) $('tgmentions').checked = st.tg_mentions === true;
+  if (document.activeElement !== $('tgproxy') && !teamsDirty) $('tgproxy').value = st.tg_proxy || '';
+  if (document.activeElement !== $('tgme') && !teamsDirty) $('tgme').value = st.tg_me ? '@' + st.tg_me : '';
+  renderMentions(state.mentions);
   const sig = JSON.stringify([teams, tgGroups]);
   if (sig === teamsSig || $('teamlist').contains(document.activeElement)) return;
   teamsSig = sig;
@@ -4699,14 +5280,44 @@ function renderTeams(st) {
     box.appendChild(c);
   });
 }
+// What the bot collected in the group (mentions.rs): its state and the last mentions.
+let mentionsSig = '';
+function renderMentions(m) {
+  if (!m) return;
+  const sig = JSON.stringify(m);
+  if (sig === mentionsSig) return;
+  mentionsSig = sig;
+  const s = $('mentionstate');
+  if (!m.on) { s.textContent = ''; s.className = 'msg'; }
+  else if (m.error) show(s, 'error: ' + m.error);
+  else if (m.sees_all === false) {
+    show(s, `Читаю группу как @${m.bot}. Бот по своим настройкам видит в группе только сообщения со своим ником. Если бот — администратор группы, он видит все, и делать ничего не нужно. Иначе: в @BotFather → /setprivacy → выберите бота → Disable, затем удалите бота из группы и добавьте снова.`);
+  } else show(s, m.bot ? `Читаю группу как @${m.bot}` + (m.waiting ? `; ждут рабочего времени: ${m.waiting}` : '') : 'Подключаюсь к Telegram…', false);
+  const ul = $('mentionlist'); ul.innerHTML = '';
+  for (const i of m.items || []) {
+    const li = document.createElement('li');
+    const t = document.createElement('span'); t.textContent = (i.task ? '✓ задача: ' : '') + i.text;
+    const w = document.createElement('small'); w.className = 'muted';
+    w.textContent = ` — ${i.from}, «${i.chat}», ${new Date(i.at * 1000).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`;
+    li.append(t, w); ul.appendChild(li);
+  }
+  $('mentionclear').hidden = !(m.items || []).length;
+}
+async function clearMentions() { await post('/api/cmd', 'mentions clear'); refresh(); }
+$('tgmentions').onchange = () => { teamsDirty = true; };
+$('tgme').oninput = () => { teamsDirty = true; };
+$('tgproxy').oninput = () => { teamsDirty = true; };
+
 function addTeam() { teams = teams || []; teams.push({ name: teams.length ? '' : 'команда', emails: [], tg_chat: 0, tg_chat_name: '', tg_bot: 0 }); teamsDirty = true; teamsSig = ''; renderTeams(settings); }
 async function saveTeams() {
   const bad = teams.flatMap(t => t.emails || []).find(e => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
   if (bad) { show($('teammsg'), 'error: «' + bad + '» — не адрес почты'); return; }
   busy($('teammsg'), 'Сохраняю…');
-  const body = { teams, meet_minutes: Number($('meetmin').value) };
+  const body = { teams, meet_minutes: Number($('meetmin').value), tg_mentions: $('tgmentions').checked, tg_me: $('tgme').value.trim() };
   const tok = $('meetbot').value.trim();
   if (!tok.includes('•')) body.meet_bot_token = tok;
+  const prox = $('tgproxy').value.trim();
+  if (!prox.includes('•')) body.tg_proxy = prox;
   const r = await post('/api/settings', JSON.stringify(body));
   show($('teammsg'), r);
   if (!r.startsWith('error')) { teamsDirty = false; teamsSig = ''; settingsLoaded = false; refresh(); }
@@ -5297,6 +5908,9 @@ function drawPosition() {
   if (seeking) return;
   const c = playClock;
   let pos = c.pos + (c.running ? Math.min(Date.now() - c.at, 3000) : 0);
+  // Listening here: the bar follows what this browser plays, not the speaker's clock.
+  const h = listening && lastStatus && lastStatus.current_id === listenTrack ? heardMs() : null;
+  if (h !== null) pos = h;
   if (c.dur) pos = Math.min(pos, c.dur);
   $('pos').textContent = mmss(pos);
   const pct = c.dur ? Math.min(100, 100 * pos / c.dur) : 0;
@@ -5311,9 +5925,11 @@ let refreshSeq = 0, refreshShown = 0;
 // One status request at a time: a Station Lite may take over a second to answer, and the
 // once-a-second timer used to pile requests up on it — the page and the speaker lagged.
 let refreshBusy = 0;
-async function refresh() {
+// A command on its way (cmd): its own status follows, the timer's would be the old one.
+let cmdBusy = false;
+async function refresh(force = false) {
   let s;
-  if (refreshBusy && Date.now() - refreshBusy < 8000) return;
+  if (force !== true && (cmdBusy || (refreshBusy && Date.now() - refreshBusy < 8000))) return;
   refreshBusy = Date.now();
   const seq = ++refreshSeq;
   try {
@@ -5384,7 +6000,7 @@ async function refresh() {
     q.innerHTML = '';
     s.queue.forEach((name, i) => {
       const h = writes && settings.token && s.queue_ids ? heart(s.queue_ids[i], s.queue_liked[i], refresh) : null;
-      q.appendChild(item(name, '', String(i + 1), async () => { await post('/api/cmd', 'goto ' + i); refresh(); },
+      q.appendChild(item(name, '', String(i + 1), () => cmd('goto ' + i),
         i === s.pos && s.state !== 'stopped' ? 'now' : '', h));
     });
     $('qempty').style.display = s.queue.length ? 'none' : 'block';
@@ -5400,6 +6016,7 @@ async function refresh() {
     if (!/проверяю вход/.test(el.textContent)) continue;
     if (s.user) show(el, 'OK: вход подтверждён — ' + s.user);
     else if (s.login === 'refused') show(el, 'error: SoundCloud не принял вход — войдите заново');
+    else if (s.login === 'offline') show(el, 'error: вход сохранён, но SoundCloud не отвечает' + (settings.bypass_on ? '' : ' — включите «Обход блокировок» в настройках') + '. Проверю ещё раз сама');
   }
   const logged = !!settings.token;
   $('loggedout').style.display = logged ? 'none' : 'block';
@@ -5408,6 +6025,7 @@ async function refresh() {
   $('mineloggedin').style.display = logged ? 'block' : 'none';
   renderForYou(logged);
   $('username').textContent = s.user || (s.login === 'refused' ? 'токен больше не принимается'
+    : s.login === 'offline' ? 'токен сохранён, но SoundCloud не отвечает' + (settings.bypass_on ? '' : ': включите «Обход блокировок» в настройках')
     : logged ? 'токен сохранён, проверяю…' : '');
   $('relogin').hidden = s.login !== 'refused';
   renderRenew(s);
@@ -5428,6 +6046,8 @@ async function refresh() {
   renderHome(s);
   renderBypassLog(s.bypass_log || [], s.bypass_busy);
   renderVolume(s.volume);
+  renderQuestion(s.question);
+  renderMentions(s.mentions);
   // The switch, the line above it and the list always show what the speaker has
   // on now, also when a check ends while the page waited (or was reloaded).
   if (!s.bypass_busy) {
@@ -5467,6 +6087,7 @@ async function refresh() {
     $('pcname').value = settings.pc_name || '';
     $('tvname').value = settings.tv_name || '';
     renderDevs('pc', settings.pcs_more || []);
+    loadFound();
     renderDevs('tv', settings.tvs_more || []);
     $('pctoken').value = settings.pc_token || '';
     $('pcmac').value = settings.pc_mac || '';
@@ -5475,6 +6096,9 @@ async function refresh() {
     $('fair').checked = $('airplay').checked;
     $('stats').checked = settings.stats !== false;
     $('shareheard').checked = settings.share_heard === true;
+    $('routevolume').value = settings.route_volume || '';
+    $('routeapps').value = settings.route_apps || '';
+    renderDitoo();
     $('tvhost').value = settings.tv_host || '';
     renderTvSearch(settings);
     $('fsc').checked = settings.soundcloud !== false;
@@ -5487,14 +6111,37 @@ async function refresh() {
     $('airplayname').value = settings.airplay_name || '';
     $('airplayicon').value = settings.airplay_icon || 'speaker';
     settingsLoaded = true;
+    settingsSnap = settingsAll({});
   }
 }
 
 async function cmd(c) {
+  // Listening here: this browser reacts at once, not at the next status answer.
+  if (listening) {
+    const a = la();
+    if (c === 'toggle') { if (a.paused) a.play().catch(() => {}); else a.pause(); }
+    else if (c === 'pause' || c === 'next' || c === 'prev' || c === 'stop' || c.startsWith('goto ')) a.pause();
+  }
   const b = document.activeElement && document.activeElement.tagName === 'BUTTON' ? document.activeElement : null;
   if (b) b.classList.add('pending');
-  await post('/api/cmd', c);
-  await refresh();
+  // Another track: the speaker answers before its status has it. Until the status does (3 s at
+  // most), a status must not put the last track back on here — it did, for up to a second —
+  // and the page asks again and again instead of waiting for the once-a-second timer.
+  const jump = c === 'next' || c === 'prev' || c.startsWith('goto ');
+  const from = lastStatus && lastStatus.current_id, fromPos = (lastStatus && lastStatus.position_ms) || 0;
+  const until = Date.now() + 3000;
+  if (jump) switchHold = { from, until };
+  refreshShown = ++refreshSeq;
+  cmdBusy = jump;
+  try {
+    await post('/api/cmd', c);
+    refreshShown = ++refreshSeq;
+    await refresh(true);
+    while (jump && lastStatus && lastStatus.current_id === from && lastStatus.position_ms + 3000 >= fromPos && Date.now() < until) {
+      await new Promise(r => setTimeout(r, 150));
+      await refresh(true);
+    }
+  } finally { cmdBusy = false; }
   if (b) b.classList.remove('pending');
 }
 
@@ -5581,8 +6228,19 @@ async function search() {
 $('query').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
 
 // ---- account ----
+// What this page sends on «Сохранить»: only the fields changed here since the settings were
+// loaded. The whole form used to go, so a second open panel (the app's window, a phone) wrote
+// its old values back over what was just saved elsewhere — a computer's name came back empty.
+let settingsSnap = null;
 function settingsBody(extra) {
-  return JSON.stringify(Object.assign({
+  const all = settingsAll({}), out = {};
+  for (const k of Object.keys(all)) {
+    if (!settingsSnap || JSON.stringify(all[k]) !== JSON.stringify(settingsSnap[k])) out[k] = all[k];
+  }
+  return JSON.stringify(Object.assign(out, extra));
+}
+function settingsAll(extra) {
+  return Object.assign({
     proxy: $('proxy').value, proxy_on: $('proxyon').checked, bypass_on: $('bypasson').checked, keyword_only: $('keyword').checked, ring: $('ring').checked, token: settings.token,
     light_mode: lightMode, light_color: $('lightc1').value, light_color2: $('lightc2').value, light_bright: Number($('lightbright').value),
     light_speed: Number($('lightspeed').value), light_intensity: Number($('lightint').value),
@@ -5597,7 +6255,7 @@ function settingsBody(extra) {
     tv_host: $('tvhost').value,
     soundcloud: $('fsc').checked, pc_on: $('fpc').checked, tv_on: $('ftv').checked,
     eq_on: $('eqon').checked, eq: eqValues()
-  }, extra));
+  }, extra);
 }
 
 async function login() {
@@ -5836,11 +6494,18 @@ function devRow(kind, d) {
   test.onclick = async () => {
     const name = row.querySelector('.dname').value.trim(), msg = $(kind === 'pc' ? 'pcmsg' : 'tvmsg');
     if (!name) { show(msg, 'error: сначала дайте устройству имя'); return; }
-    busy(msg, 'Сохраняю и проверяю «' + name + '»…');
+    // The answer right under this row: «Сохранить» and its message are far below. Kept by the
+    // device's name (devNotes): the rows are drawn again when the settings come back.
+    const key = kind + ':' + name.toLowerCase();
+    const say = text => { devNotes[key] = { text, at: Date.now() }; drawDevNote(row, kind, name); };
+    say('Сохраняю и проверяю «' + name + '»…');
+    test.disabled = true;
     const saved = await post('/api/settings', settingsBody({}));
-    if (saved.startsWith('error')) { show(msg, saved); return; }
+    if (saved.startsWith('error')) { say(saved); test.disabled = false; return; }
+    say('Проверяю «' + name + '»…');
+    say(await post('/api/cmd', 'on ' + name + '\t' + (kind === 'pc' ? 'pc ping' : 'tv ping')));
+    test.disabled = false;
     settingsLoaded = false;
-    show(msg, await post('/api/cmd', 'on ' + name + '\t' + (kind === 'pc' ? 'pc ping' : 'tv ping')));
     refresh();
   };
   const del = document.createElement('button');
@@ -5849,17 +6514,61 @@ function devRow(kind, d) {
   row.append(...parts, test, del);
   return row;
 }
+// The last «Проверить» answer of each extra device, shown under its row for two minutes.
+const devNotes = {};
+function drawDevNote(row, kind, name) {
+  const n = devNotes[kind + ':' + (name || '').trim().toLowerCase()];
+  let el = row.nextElementSibling;
+  if (el && !el.classList.contains('devnote')) el = null;
+  if (!n || Date.now() - n.at > 120000) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); row.after(el); }
+  show(el, n.text);
+  el.classList.add('devnote');
+}
 function renderDevs(kind, list) {
   const box = $(kind === 'pc' ? 'pcsmore' : 'tvsmore');
   // Not while it is being filled in (the status comes back every few seconds).
   if (box.contains(document.activeElement)) return;
   box.innerHTML = '';
-  list.forEach(d => box.append(devRow(kind, d)));
+  list.forEach(d => { const row = devRow(kind, d); box.append(row); drawDevNote(row, kind, d.name); });
 }
 function addDev(kind) {
   const row = devRow(kind, {});
   $(kind === 'pc' ? 'pcsmore' : 'tvsmore').append(row);
   row.querySelector('input').focus();
+}
+// «Найдены компьютеры»: soundya on a Mac or a Windows PC tells the speaker it is there
+// (POST /api/pc/hello: address, MAC, key); «Добавить» puts it into the settings. The key
+// stays on the speaker: the page never sees it.
+async function loadFound(asked) {
+  const box = $('pcfound'); if (!box) return;
+  const r = await postJSON('pc found');
+  const list = Array.isArray(r) ? r : [];
+  box.innerHTML = '';
+  for (const f of list) {
+    const row = document.createElement('div'); row.className = 'foundrow';
+    const t = document.createElement('span');
+    t.innerHTML = '';
+    const b = document.createElement('b'); b.textContent = f.name || (f.os === 'mac' ? 'Mac' : 'Компьютер');
+    const m = document.createElement('small'); m.className = 'muted'; m.textContent = ` ${f.os === 'mac' ? 'Mac' : f.os === 'windows' ? 'Windows' : ''} · ${f.ip}`;
+    t.append(b, m);
+    row.appendChild(t);
+    if (f.added) {
+      const ok = document.createElement('span'); ok.className = 'muted'; ok.textContent = '✓ подключён'; row.appendChild(ok);
+    } else {
+      const add = document.createElement('button'); add.className = 'primary';
+      add.textContent = f.known ? 'Обновить' : 'Добавить';
+      add.onclick = async () => {
+        add.disabled = true;
+        const res = await post('/api/cmd', 'pc adopt ' + f.ip);
+        show($('thispcmsg'), res.startsWith('error') ? res : res + '. Нажмите «Проверить связь».');
+        settingsLoaded = false; await refresh(); loadFound();
+      };
+      row.appendChild(add);
+    }
+    box.appendChild(row);
+  }
+  if (asked) show($('thispcmsg'), list.length ? '' : 'Пока ни один компьютер не отозвался. Откройте на нём приложение soundya (Mac — soundya.dmg, Windows — soundya.exe, кнопки выше): через несколько секунд он появится здесь.');
 }
 function readDevs(kind) {
   return [...document.querySelectorAll(`#${kind === 'pc' ? 'pcsmore' : 'tvsmore'} .devrow`)].map(r => {
@@ -5961,17 +6670,92 @@ function renderBypassLog(lines, running) {
 }
 
 // Alice's volume: the level soundya follows (null until known), the slider shows it.
+// soundya asked something aloud («На каком устройстве?», «Какое подключить?») and waits:
+// the same choice by a click here, instead of «Алиса, на проекторе».
+let questionShown = '';
+function renderQuestion(q) {
+  const box = $('questionbox');
+  const sig = q ? JSON.stringify(q.options) : '';
+  box.hidden = !q;
+  if (q) $('questiontext').textContent = `Колонка спрашивает (ещё ${q.left} с): скажите «Алиса, …» или выберите здесь`;
+  if (sig === questionShown) return;
+  questionShown = sig;
+  const row = $('questionopts'); row.innerHTML = '';
+  if (!q) return;
+  const button = (label, answer) => {
+    const b = document.createElement('button'); b.textContent = label;
+    b.onclick = async () => { box.hidden = true; show($('actmsg'), await post('/api/cmd', 'answer ' + answer)); refresh(); };
+    row.appendChild(b);
+  };
+  q.options.forEach((o, i) => button(o, String(i + 1)));
+  button('Отмена', 'отмена');
+}
+
 let volumeKnown = null, volumeMoving = false;
 // The level just set from the slider: the status may still carry the old one
 // for a second, and the slider must not jump back to it.
 let volumeHold = null;
 function renderVolume(v) {
   volumeKnown = v ?? null;
+  // Playing here: the slider is this window's own volume (below), the speaker is silent.
+  volumeMode(listening);
+  if (listening) return;
   if (volumeHold && (volumeKnown === volumeHold.v || Date.now() > volumeHold.until)) volumeHold = null;
   if (volumeMoving || volumeHold) return;
   if (volumeKnown !== null) $('volrange').value = Math.max(1, volumeKnown);
   $('volval').textContent = volumeKnown === null ? '?' : volumeKnown;
   $('volbtn').title = 'Громкость Алисы' + (volumeKnown === null ? '' : ': ' + volumeKnown);
+}
+
+// «Где играет → этот браузер»: the slider sets the volume of the sound on this page (0–100,
+// kept for this page), not Alice's — in the Mac and Windows apps there is no browser tab whose
+// volume one could turn instead. When the sound goes back to the speaker it is Alice's again.
+const LISTEN_VOL_KEY = 'soundya-listen-volume';
+let listenVol = (() => {
+  try { const t = localStorage.getItem(LISTEN_VOL_KEY), v = Number(t); return t !== null && v >= 0 && v <= 100 ? v : 100; } catch (e) { return 100; }
+})();
+let volMode = null, volRamp = 0;
+function volumeMode(here) {
+  if (volMode === here) return;
+  volMode = here;
+  const r = $('volrange');
+  if (here) {
+    r.min = 0; r.max = 100; r.value = listenVol;
+    r.setAttribute('aria-label', 'Громкость в этом окне, 0–100');
+    $('volval').textContent = listenVol;
+    $('volwhere').textContent = 'Громкость в этом окне';
+    $('volbtn').title = 'Громкость в этом окне: ' + listenVol;
+    applyListenVolume(false);
+  } else {
+    r.min = 1; r.max = 10;
+    r.setAttribute('aria-label', 'Громкость Алисы, 1–10');
+    $('volwhere').textContent = 'Громкость колонки';
+    volumeHold = null; volumeMoving = false;
+    if (volumeKnown !== null) r.value = Math.max(1, volumeKnown);
+    $('volval').textContent = volumeKnown === null ? '?' : volumeKnown;
+    $('volbtn').title = 'Громкость Алисы' + (volumeKnown === null ? '' : ': ' + volumeKnown);
+  }
+}
+// The ear hears volume roughly as its square; a jump in the level clicks, so it glides (80 ms).
+// On timers, not requestAnimationFrame: frames do not come while the window is not drawn
+// (the menu bar's window, the app's window in the background), and the volume never changed.
+function applyListenVolume(glide = true) {
+  const a = la(), to = Math.min(1, Math.max(0, (listenVol / 100) ** 2));
+  clearInterval(volRamp);
+  if (!glide || a.paused) { a.volume = to; return; }
+  const from = a.volume, t0 = Date.now();
+  volRamp = setInterval(() => {
+    const k = Math.min(1, (Date.now() - t0) / 80);
+    a.volume = from + (to - from) * k;
+    if (k >= 1) clearInterval(volRamp);
+  }, 10);
+}
+function setListenVolume(v) {
+  listenVol = Math.max(0, Math.min(100, Math.round(v)));
+  $('volval').textContent = listenVol;
+  $('volbtn').title = 'Громкость в этом окне: ' + listenVol;
+  try { localStorage.setItem(LISTEN_VOL_KEY, String(listenVol)); } catch (e) {}
+  applyListenVolume();
 }
 
 function toggleVolume() {
@@ -5985,6 +6769,7 @@ function toggleVolume() {
 let volumeSending = false, volumeNext = null;
 async function setVolume(v) {
   v = Number(v);
+  if (listening) { setListenVolume(v); return; }
   $('volval').textContent = v;
   volumeHold = { v, until: Date.now() + 3000 };
   if (volumeSending) { volumeNext = v; return; }
@@ -6064,8 +6849,10 @@ async function testPc() {
 
 
 refresh();
-// A hidden tab does not ask the speaker every second.
-setInterval(() => { if (!document.hidden) refresh(); }, 1000);
+// A hidden tab does not ask the speaker every second — unless the music plays here: then it
+// must follow the speaker's track (the Mac app's menu bar window hides at any click elsewhere,
+// and a «next» from the menu, the voice or the buttons left the last track playing there).
+setInterval(() => { if (!document.hidden || listening) refresh(); }, 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 // A new release shows up as soon as the page is opened, not hours later.
 post('/api/cmd', 'update auto').then(refresh);
@@ -6114,6 +6901,8 @@ post('/api/cmd', 'update auto').then(refresh);
       </div>
       <input type="text" id="mnewsurl" placeholder="https://… ссылка на RSS" hidden style="margin-top:8px">
       <input type="text" id="mnewstg" placeholder="@meduzalive, @rbc_news, @breakingmash — открытые каналы через запятую" hidden style="margin-top:8px">
+      <input type="text" id="mlike" placeholder="Интересно: слова через запятую — такие новости идут первыми (steam, нейросети)" style="margin-top:8px">
+      <input type="text" id="mskip" placeholder="Не читать: слова через запятую (крипта, футбол)" style="margin-top:8px">
       <input type="text" id="mintro" placeholder="Заставка: трек SoundCloud — ссылка или название (необязательно)" style="margin-top:8px">
       <div class="row" style="flex-wrap:wrap;gap:12px;margin-top:6px">
         <label class="check"><input type="checkbox" id="mweather"><span>Погода</span></label>
@@ -6181,6 +6970,8 @@ post('/api/cmd', 'update auto').then(refresh);
     $('mnewsurl').hidden = $('mnews').value !== 'url';
     $('mnewstg').hidden = $('mnews').value !== 'tg';
     $('mintro').value = st.morning_intro || '';
+    $('mlike').value = st.morning_like || '';
+    $('mskip').value = st.morning_skip || '';
     $('mweather').checked = st.morning_weather !== false;
     $('mplans').checked = st.morning_plans !== false;
   }
@@ -6193,6 +6984,7 @@ post('/api/cmd', 'update auto').then(refresh);
   const morningBody = () => JSON.stringify({
     morning_on: $('mon').checked, morning_greet: $('mgreet').value.trim(),
     morning_news: $('mnews').value === 'url' ? $('mnewsurl').value.trim() : $('mnews').value === 'tg' ? 'tg:' + $('mnewstg').value.trim() : $('mnews').value,
+    morning_like: $('mlike').value.trim(), morning_skip: $('mskip').value.trim(),
     morning_intro: $('mintro').value.trim(), morning_weather: $('mweather').checked, morning_plans: $('mplans').checked,
   });
   $('msave').onclick = async () => { show(await fetch('/api/settings', { method: 'POST', body: morningBody() }).then(r => r.text()).catch(e => 'error: ' + e)); };
@@ -6211,5 +7003,6 @@ post('/api/cmd', 'update auto').then(refresh);
   setInterval(load, 5000);
 })();
 </script>
+<script src="/import.js"></script>
 </body>
 </html>

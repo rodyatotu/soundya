@@ -141,24 +141,30 @@ pub fn parse_info(mac: &str, out: &str) -> Option<Device> {
     })
 }
 
-/// BlueALSA's arguments with the sending profile added; None if it already sends.
-/// Old BlueALSA takes «-p a2dp-source», newer also «--profile=a2dp-source».
+/// BlueALSA's arguments as soundya needs them; None if it already runs so.
+/// - The sending profile added (old BlueALSA takes «-p a2dp-source», newer also
+///   «--profile=a2dp-source»; started with no profile it does both sides already).
+/// - The SBC encoder at «medium» instead of the Station's «high» (~345 kbit/s): with a weak
+///   signal or a crowded 2.4 GHz band the radio cannot keep up with «high», the chip's queue
+///   of 8 packets fills and the sound stutters. «Medium» is a third less to send.
 pub fn with_source(args: &[String]) -> Option<Vec<String>> {
     let sends = args.windows(2).any(|w| w[0] == "-p" && w[1] == "a2dp-source")
         || args.iter().any(|a| a == "--profile=a2dp-source" || a == "-pa2dp-source");
-    if sends {
-        return None;
-    }
-    let mut out = args.to_vec();
-    // Started with no profile: BlueALSA's default is both sides; nothing to add.
     let has_profiles = args.iter().any(|a| a == "-p" || a.starts_with("--profile") || (a.starts_with("-p") && a.len() > 2));
-    if !has_profiles {
-        return None;
+    let mut out = args.to_vec();
+    if has_profiles && !sends {
+        out.push("-p".into());
+        out.push("a2dp-source".into());
     }
-    out.push("-p".into());
-    out.push("a2dp-source".into());
-    Some(out)
+    match out.iter_mut().find(|a| a.starts_with("--sbc-quality")) {
+        Some(q) if matches!(q.as_str(), "--sbc-quality=medium" | "--sbc-quality=low") => {}
+        Some(q) => *q = SBC_QUALITY.into(),
+        None => out.push(SBC_QUALITY.into()),
+    }
+    (out != args).then_some(out)
 }
+
+const SBC_QUALITY: &str = "--sbc-quality=medium";
 
 /// The BlueALSA ALSA plugin, where the speaker's libasound looks for it.
 pub fn plugin(root: &Path) -> Option<String> {
@@ -212,7 +218,7 @@ fn make_source() -> Result<(), String> {
         return Err("BlueALSA на колонке не запущена".into());
     };
     let Some(new_args) = with_source(&args) else {
-        eprintln!("bt: bluealsa already sends ({})", args.join(" "));
+        eprintln!("bt: bluealsa already set up ({})", args.join(" "));
         return Ok(());
     };
     eprintln!("bt: restarting bluealsa: {} → {}", args.join(" "), new_args.join(" "));
@@ -317,8 +323,26 @@ fn ctl_until(steps: &[(&str, u64, &[&str])], limit: Duration) -> Result<String, 
 
 /// Looks for devices around for `secs` seconds: the ones that can play sound first.
 pub fn scan(secs: u64) -> Result<Vec<Device>, String> {
+    scan_some(secs, false)
+}
+
+/// The voice search: only devices that show a name. Each `info` is a second of its own, and a
+/// flat full of nameless Bluetooth gadgets made the silence after «Ищу…» a minute long.
+pub fn scan_named(secs: u64) -> Result<Vec<Device>, String> {
+    scan_some(secs, true)
+}
+
+/// Why the speaker cannot send sound over Bluetooth, if the last try to set it up failed.
+pub fn source_error() -> Option<String> {
+    SOURCE.lock().unwrap().clone().and_then(Result::err)
+}
+
+fn scan_some(secs: u64, named_only: bool) -> Result<Vec<Device>, String> {
     let out = ctl(&[("power on", 500), ("scan on", secs * 1000), ("scan off", 300), ("devices", 700)], Duration::from_secs(secs + 10))?;
     let mut list = parse_devices(&out);
+    if named_only {
+        list.retain(|d| !d.name.is_empty());
+    }
     for d in list.iter_mut() {
         if let Some(i) = info(&d.mac) {
             d.audio = i.audio;
@@ -339,41 +363,139 @@ pub fn info(mac: &str) -> Option<Device> {
     if !valid_mac(mac) {
         return None;
     }
-    let out = ctl(&[(&format!("info {mac}"), 900)], Duration::from_secs(5)).ok()?;
+    // The answer comes in one piece: no need to sit out the whole wait (it was a second of
+    // every connection, twice).
+    let out = ctl_until(&[(&format!("info {mac}"), 900, &["Connected:", "not available"])], Duration::from_secs(5)).ok()?;
     parse_info(mac, &out)
 }
+
+/// «Audio Sink»: what a speaker or headphones take music with.
+const A2DP_SINK: &str = "0000110b-0000-1000-8000-00805f9b34fb";
+
+/// Is `mac` among the devices BlueALSA can play to, in `bluealsa-aplay -l`'s words?
+fn in_playback_list(list: &str, mac: &str) -> bool {
+    let playback = list.split("List of CAPTURE").next().unwrap_or(list);
+    playback.to_ascii_uppercase().contains(&mac.to_ascii_uppercase())
+}
+
+/// Can music go to the device right now? «Connected» alone does not say it: a Ditoo is two
+/// devices on one address — a Bluetooth LE one («Ditoo-Plus-light») and the speaker
+/// («Ditoo-Plus-audio») — and BlueZ's own `connect` reaches the LE one: connected, no sound.
+/// None = no `bluealsa-aplay` to ask.
+fn audio_link(mac: &str) -> Option<bool> {
+    let out = Command::new("bluealsa-aplay").arg("-l").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    out.status.success().then(|| in_playback_list(&String::from_utf8_lossy(&out.stdout), mac))
+}
+
+/// For the watcher and the panel: the sound link, not just any link.
+pub fn audio_up(mac: &str) -> bool {
+    valid_mac(mac) && audio_link(mac).unwrap_or_else(|| info(mac).is_some_and(|d| d.connected))
+}
+
+/// Calls the device's sound profile itself (Device1.ConnectProfile) and waits for the link.
+/// None = no `dbus-send` here: the caller falls back to bluetoothctl's `connect`.
+fn connect_audio(mac: &str) -> Option<bool> {
+    let path = format!("/org/bluez/hci0/dev_{}", mac.to_ascii_uppercase().replace(':', "_"));
+    let status = Command::new("dbus-send")
+        .args(["--system", "--print-reply", "--reply-timeout=9000", "--dest=org.bluez", &path, "org.bluez.Device1.ConnectProfile", &format!("string:{A2DP_SINK}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    if !status.success() {
+        return Some(false);
+    }
+    // BlueALSA lists the device a moment after the profile is up.
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(2500) {
+        if audio_link(mac)? {
+            return Some(true);
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+    Some(false)
+}
+
+/// The device shows up in a scan but refuses the connection.
+pub const BUSY: &str = "устройство видно, но не принимает подключение: скорее всего, оно сейчас подключено к другому устройству (компьютеру или телефону). Отключите его там или переведите в режим сопряжения и повторите";
 
 /// Pairs (if needed), trusts and connects; the device must be in pairing mode the first time.
 pub fn connect(mac: &str) -> Result<Device, String> {
     if !valid_mac(mac) {
         return Err("неверный адрес устройства".into());
     }
+    let started = Instant::now();
     ensure_source()?;
     let known = info(mac);
     if !known.as_ref().is_some_and(|d| d.paired) {
-        // The scan only until the device is seen; pairing until it says how it went.
+        // A device BlueZ has forgotten (the speaker restarted, or it was let go for a phone)
+        // needs up to a quarter of a minute to show up. The scan is stopped before pairing
+        // (paging while it runs fails more often), and a pairing that did not connect is tried
+        // once more: the device is dropped from BlueZ's list after a failure, so it is looked
+        // for again.
         let seen_it = format!("Device {mac}");
-        ctl_until(
-            &[
-                ("power on", 500, &[]),
-                ("scan on", 4000, &[seen_it.as_str()]),
-                (&format!("pair {mac}"), 9000, &["Pairing successful", "Failed to pair", "AlreadyExists", "not available"]),
-                ("scan off", 300, &[]),
-            ],
-            Duration::from_secs(20),
-        )?;
+        let wait = if known.is_some() { 6000 } else { 15000 };
+        let mut refused = false;
+        for attempt in 0..3 {
+            let out = ctl_until(
+                &[
+                    ("power on", 500, &[]),
+                    // The Station's adapter is «Pairable: no»: BlueZ then pairs with «No
+                    // Bonding», the key is not stored and the device is forgotten as soon as it
+                    // goes away — every «переключись на блютуз» searched and paired from
+                    // scratch (half a minute, and it fails now and then). Pairable on = the
+                    // key is kept, the next time is a plain `connect`.
+                    ("pairable on", 300, &["succeeded", "Pairable: yes"]),
+                    ("agent NoInputNoOutput", 300, &["Agent registered", "already registered"]),
+                    ("default-agent", 300, &["successful", "No agent"]),
+                    ("scan on", wait, &[seen_it.as_str()]),
+                    ("scan off", 1200, &["Discovery stopped"]),
+                    (&format!("pair {mac}"), 12000, &["Pairing successful", "Failed to pair", "AlreadyExists", "not available"]),
+                ],
+                Duration::from_secs(36),
+            )?;
+            refused = out.contains("ConnectionAttemptFailed") || out.contains("Connect Failed") || out.contains("Page Timeout");
+            if !refused {
+                break;
+            }
+            eprintln!("bt: {mac}: seen, but it did not take the connection (try {})", attempt + 1);
+        }
+        // Seen in the scan but it does not answer the call itself: it is busy with another
+        // device (a Ditoo held by the PC's launcher, headphones on a phone) or not pairable.
+        if refused {
+            return Err(BUSY.into());
+        }
     }
-    ctl_until(
-        &[
-            (&format!("trust {mac}"), 700, &["trust succeeded", "not available"]),
-            (&format!("connect {mac}"), 7000, &["Connection successful", "Failed to connect", "not available"]),
-        ],
-        Duration::from_secs(12),
-    )?;
-    let now = info(mac);
+    // A remembered device: its sound profile is called directly — well under a second. A Ditoo
+    // that has just lost the link does not answer for a few seconds (it is calling its last
+    // host itself), so a missed call is made again.
+    let mut now = None;
+    for attempt in 0..3 {
+        let _ = ctl_until(&[(&format!("trust {mac}"), 500, &["trust succeeded", "not available"])], Duration::from_secs(4));
+        let up = match connect_audio(mac) {
+            Some(up) => up,
+            None => ctl_until(
+                &[(&format!("connect {mac}"), 7000, &["Connection successful", "Failed to connect", "not available"])],
+                Duration::from_secs(12),
+            )?
+            .contains("Connection successful"),
+        };
+        // The call's answer is the answer: no second look needed.
+        now = match info(mac) {
+            Some(d) if up => Some(Device { connected: true, ..d }),
+            Some(d) => Some(Device { connected: false, ..d }),
+            None => None,
+        };
+        if up || now.is_none() {
+            break;
+        }
+        eprintln!("bt: {mac}: did not answer the call (try {})", attempt + 1);
+        thread::sleep(Duration::from_millis(1500));
+    }
     // In the log: what the device was before and is now (the page only says the outcome).
     let say = |d: &Option<Device>| d.as_ref().map_or("not known".to_owned(), |d| format!("«{}» audio={} paired={} connected={}", d.name, d.audio, d.paired, d.connected));
-    eprintln!("bt: connect {mac}: before {}, after {}", say(&known), say(&now));
+    eprintln!("bt: connect {mac}: before {}, after {}, {:.1} s", say(&known), say(&now), started.elapsed().as_secs_f32());
     match now {
         Some(d) if d.connected => Ok(d),
         Some(d) if !d.paired => Err("не удалось сопрячь: переведите наушники в режим сопряжения (обычно — долго держать кнопку питания) и попробуйте снова".into()),
@@ -453,6 +575,14 @@ mod tests {
     }
 
     #[test]
+    fn the_sound_link_is_read_from_bluealsa() {
+        let list = "**** List of PLAYBACK Bluetooth Devices ****\nhci0: 11:75:58:E8:92:34 [Ditoo-Plus-audio], trusted unknown\n  A2DP (SBC): S16_LE 2 channels 48000 Hz\n**** List of CAPTURE Bluetooth Devices ****\nhci0: AA:BB:CC:DD:EE:FF [Phone], trusted phone\n";
+        assert!(in_playback_list(list, "11:75:58:e8:92:34"));
+        assert!(!in_playback_list(list, "AA:BB:CC:DD:EE:FF"), "a phone playing to the Station is not an output");
+        assert!(!in_playback_list("**** List of PLAYBACK Bluetooth Devices ****\n**** List of CAPTURE Bluetooth Devices ****\n", "11:75:58:E8:92:34"), "connected over LE only");
+    }
+
+    #[test]
     fn devices_from_a_scan() {
         let out = "\u{1b}[0;94m[bluetooth]\u{1b}[0m# scan on\r\nDiscovery started\n\
             [\u{1b}[0;92mNEW\u{1b}[0m] Device 11:22:33:44:55:66 11-22-33-44-55-66\n\
@@ -485,11 +615,16 @@ mod tests {
     #[test]
     fn bluealsa_gets_the_sending_profile_and_keeps_receiving() {
         let a = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
-        assert_eq!(with_source(&a("-p a2dp-sink -i hci0")), Some(a("-p a2dp-sink -i hci0 -p a2dp-source")));
-        assert_eq!(with_source(&a("-p a2dp-sink -p a2dp-source")), None);
-        assert_eq!(with_source(&a("--profile=a2dp-sink --profile=a2dp-source")), None);
+        assert_eq!(with_source(&a("-p a2dp-sink -i hci0")), Some(a("-p a2dp-sink -i hci0 -p a2dp-source --sbc-quality=medium")));
+        assert_eq!(with_source(&a("-p a2dp-sink -p a2dp-source --sbc-quality=medium")), None);
+        assert_eq!(with_source(&a("--profile=a2dp-sink --profile=a2dp-source --sbc-quality=low")), None);
+        // The Station's own start line, after soundya made it send: the encoder is eased.
+        assert_eq!(
+            with_source(&a("-p a2dp-sink -p a2dp-source -p hfp-ag --sbc-quality=high")),
+            Some(a("-p a2dp-sink -p a2dp-source -p hfp-ag --sbc-quality=medium"))
+        );
         // No profiles given: BlueALSA already does both.
-        assert_eq!(with_source(&a("-i hci0")), None);
+        assert_eq!(with_source(&a("-i hci0 --sbc-quality=medium")), None);
     }
 
     #[test]

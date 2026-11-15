@@ -482,9 +482,14 @@ pub fn add(title: &str, due: Option<i64>, repeat: &str, remind: bool, category: 
         t.id = l.iter().map(|t| t.id).max().unwrap_or(0) + 1;
         l.push(t.clone());
     });
-    save();
+    if SAVE_EACH.load(std::sync::atomic::Ordering::Acquire) {
+        save();
+    }
     t
 }
+
+/// Off while a document is imported: its tasks are saved once, not a file write for each.
+static SAVE_EACH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// The best match for a spoken title among open tasks.
 fn find(title: &str) -> Option<u64> {
@@ -1788,6 +1793,11 @@ pub fn after_silence(t: &mut Task, now: i64, every: u16, times: u8) {
 }
 
 /// Working time now: «я работаю» / «я закончил работать» said today, else the hours.
+/// Working hours right now, by the settings («Планы → рабочее время»).
+pub fn working_now() -> bool {
+    work_active(now(), offset(), &plan(), None)
+}
+
 pub fn work_active(now: i64, off: i64, p: &Plan, said: Option<(bool, i64)>) -> bool {
     let (day, secs) = local(now, off);
     if let Some((on, d)) = said {
@@ -1975,6 +1985,11 @@ fn warn_deadlines(now: i64, off: i64, local_on: bool) {
     }
 }
 
+/// Where the planner keeps its files (the speaker's state folder), once it runs.
+pub fn dir() -> Option<PathBuf> {
+    DIR.lock().unwrap().clone()
+}
+
 /// The morning after the alarm already told today's plans: the timed brief
 /// keeps quiet today («в 12 часов доброе утро и шарманку по планам»).
 pub fn brief_told_today() {
@@ -2004,6 +2019,507 @@ fn morning_brief(file: &Path) {
     let text = agenda_text(Ask::Brief, n, off);
     eprintln!("planner: brief: {text}");
     crate::alice::say(text);
+}
+
+// ---------------------------------------------------------------- schedule import
+
+/// «18:00», «9.30» at the start of `s` → (minutes of the day, bytes used).
+fn clock_at(s: &str) -> Option<(i64, usize)> {
+    let mut digits = 0;
+    let b = s.as_bytes();
+    while digits < b.len() && digits < 2 && b[digits].is_ascii_digit() {
+        digits += 1;
+    }
+    if digits == 0 || b.get(digits).is_none_or(|c| *c != b':' && *c != b'.') {
+        return None;
+    }
+    let m = s.get(digits + 1..digits + 3)?;
+    if !m.bytes().all(|c| c.is_ascii_digit()) || b.get(digits + 3).is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
+    let (h, m): (i64, i64) = (s[..digits].parse().ok()?, m.parse().ok()?);
+    (h <= 24 && m < 60).then_some(((h % 24) * 60 + m, digits + 3))
+}
+
+/// «18:00–18:10» (also «18.00 - 18.10», «9:00—9:30») at the start of a line → (start, end in
+/// minutes of the day, the rest of the line).
+fn time_range(line: &str) -> Option<(i64, i64, &str)> {
+    let t = line.trim_start();
+    let hm = clock_at;
+    let (a, used) = hm(t)?;
+    let rest = t[used..].trim_start();
+    let rest = rest.strip_prefix('–').or_else(|| rest.strip_prefix('—')).or_else(|| rest.strip_prefix('-'))?.trim_start();
+    let (b, used2) = hm(rest)?;
+    // «15.11 – 17.11» are two dates of one month, not a quarter past three.
+    let dotted = |s: &str, used: usize| s[..used].contains('.');
+    if dotted(t, used) && dotted(rest, used2) && a % 60 == b % 60 && (1..=12).contains(&(a % 60)) && a / 60 >= 1 && b / 60 > a / 60 {
+        return None;
+    }
+    Some((a, b, &rest[used2..]))
+}
+
+// ---------------------------------------------------------------- a to-do list from a document
+
+/// One task from an uploaded or pasted document.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Entry {
+    pub title: String,
+    /// Unix time; None = no date.
+    pub due: Option<i64>,
+    pub high: bool,
+    pub category: String,
+    /// Said aloud at its time (a line of a timed plan); a list item with a date is a task
+    /// with a deadline, as one added by voice or on the page.
+    pub remind: bool,
+}
+
+/// «- [ ] купить молоко», «* задача», «1. задача», «• задача», «☐ задача» → (is a list item,
+/// already done, the text).
+fn list_item(line: &str) -> (bool, bool, &str) {
+    let l = line.trim();
+    for (mark, done) in [("- [ ]", false), ("* [ ]", false), ("[ ]", false), ("☐", false), ("- [x]", true), ("- [X]", true), ("* [x]", true), ("[x]", true), ("[X]", true), ("- [х]", true), ("☑", true), ("✅", true), ("✓", true), ("✔", true)] {
+        if let Some(rest) = l.strip_prefix(mark) {
+            return (true, done, rest.trim());
+        }
+    }
+    for mark in ["- ", "* ", "• ", "– ", "— ", "+ ", "· "] {
+        if let Some(rest) = l.strip_prefix(mark) {
+            return (true, false, rest.trim());
+        }
+    }
+    // «1. », «12) »
+    let digits = l.bytes().take_while(u8::is_ascii_digit).count();
+    if (1..=3).contains(&digits) {
+        if let Some(rest) = l[digits..].strip_prefix(". ").or_else(|| l[digits..].strip_prefix(") ")) {
+            return (true, false, rest.trim());
+        }
+    }
+    (false, false, l)
+}
+
+/// «15.11», «15.11.2026», «2026-11-15» → the local day number.
+fn date_token(w: &str, today: i64) -> Option<i64> {
+    let parts: Vec<&str> = w.split(['.', '-', '/']).collect();
+    if !w.is_ascii() || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    // «15.11», «1.05», «15.11.26», «15.11.2026» — not «1.5 кг», «версия 2.0», «1.2.3».
+    if w.contains('.') && (parts.len() < 2 || parts[1].len() != 2 || parts[0].len() > 2 || parts.get(2).is_some_and(|y| y.len() != 2 && y.len() != 4)) {
+        return None;
+    }
+    let nums: Vec<i64> = parts.iter().map(|p| p.parse::<i64>().ok()).collect::<Option<Vec<_>>>()?;
+    let (y0, _, _) = civil_from_days(today);
+    let (y, m, d) = match nums.as_slice() {
+        [d, m] if w.contains('.') => (y0, *m, *d),
+        [d, m, y] if w.contains('.') => (if *y < 100 { 2000 + *y } else { *y }, *m, *d),
+        [y, m, d] if w.contains('-') && *y > 1999 => (*y, *m, *d),
+        _ => return None,
+    };
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let day = days_from_civil(y, m as u32, d as u32);
+    // «15.01» said in December is next January.
+    Some(if nums.len() == 2 && day < today - 30 { days_from_civil(y + 1, m as u32, d as u32) } else { day })
+}
+
+/// A task line without its list mark: the title, and the day / clock time written in it
+/// («завтра», «15.11», «в 18:00», «до 9:30»), the «!» / «важно» mark.
+fn task_line(text: &str, today: i64) -> (String, Option<i64>, Option<i64>, bool) {
+    let mut high = false;
+    let mut t = text.trim().to_owned();
+    for mark in ["(!)", "‼", "❗", "[важно]", "(важно)", "важно:", "Важно:", "ВАЖНО:"] {
+        if t.contains(mark) {
+            high = true;
+            t = t.replace(mark, " ");
+        }
+    }
+    let trimmed = t.trim();
+    if trimmed.starts_with('!') || (trimmed.ends_with('!') && !trimmed.ends_with("?!")) {
+        high = true;
+    }
+    let t = trimmed.trim_matches('!').trim().to_owned();
+    let words: Vec<&str> = t.split_whitespace().collect();
+    let (mut day, mut time) = (None, None);
+    let mut keep = vec![true; words.len()];
+    for (i, w) in words.iter().enumerate() {
+        let bare = w.trim_matches(|c: char| matches!(c, ',' | ';' | '(' | ')' | '.'));
+        let lower = bare.to_lowercase();
+        let found_day = match lower.as_str() {
+            "сегодня" => Some(today),
+            "завтра" => Some(today + 1),
+            "послезавтра" => Some(today + 2),
+            _ => date_token(bare, today),
+        };
+        if day.is_none() && found_day.is_some() {
+            day = found_day;
+            keep[i] = false;
+            // «до 15.11», «к завтра»: the little word goes too.
+            if i > 0 && matches!(words[i - 1].to_lowercase().as_str(), "до" | "к" | "на" | "с" | "по") {
+                keep[i - 1] = false;
+            }
+            continue;
+        }
+        // «18:00» is a time anywhere; «18.00» only after «в / до / к» — else it is «2.50 рубля».
+        let before = if i > 0 { words[i - 1].to_lowercase() } else { String::new() };
+        let dotted_ok = bare.contains(':') || matches!(before.as_str(), "в" | "до" | "к" | "с");
+        if time.is_none() && dotted_ok {
+            if let Some((m, used)) = clock_at(bare).filter(|(_, used)| *used == bare.len()) {
+                let _ = used;
+                time = Some(m);
+                keep[i] = false;
+                // «в 18:00», «до 9:30», «к 12:00»: the little word goes too.
+                if i > 0 && matches!(words[i - 1].to_lowercase().as_str(), "в" | "до" | "к" | "на" | "с") {
+                    keep[i - 1] = false;
+                }
+            }
+        }
+    }
+    let title = words.iter().zip(&keep).filter(|(_, k)| **k).map(|(w, _)| *w).collect::<Vec<_>>().join(" ");
+    let title = title.trim_matches(|c: char| matches!(c, ',' | ';' | '—' | '–' | '-' | ':' | ' ')).to_owned();
+    (title, day, time, high)
+}
+
+/// Year, month, day of a day number (the inverse of days_from_civil).
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// An iCalendar file (.ics): every VEVENT / VTODO that is not done and not in the past.
+fn parse_ics(text: &str, off: i64, now: i64) -> Vec<Entry> {
+    // Long lines are folded: a line starting with a space continues the one before.
+    let mut lines: Vec<String> = Vec::new();
+    for l in text.lines() {
+        match lines.last_mut() {
+            Some(last) if l.starts_with(' ') || l.starts_with('\t') => last.push_str(&l[1..]),
+            _ => lines.push(l.trim_end().to_owned()),
+        }
+    }
+    let stamp = |v: &str| -> Option<i64> {
+        let v = v.trim();
+        // Bytes are sliced below: only ASCII, or a stray letter would end the whole program.
+        if !v.is_ascii() {
+            return None;
+        }
+        let d = v.get(..8)?;
+        let (y, m, dd): (i64, u32, u32) = (d[..4].parse().ok()?, d[4..6].parse().ok()?, d[6..8].parse().ok()?);
+        let day = days_from_civil(y, m, dd);
+        match v.get(9..13) {
+            Some(hm) if v.as_bytes().get(8) == Some(&b'T') => {
+                let secs = hm[..2].parse::<i64>().ok()? * 3600 + hm[2..4].parse::<i64>().ok()? * 60;
+                Some(day * 86_400 + secs - if v.ends_with('Z') { 0 } else { off })
+            }
+            // A whole day: nine in the morning, as the planner does for «завтра».
+            _ => Some(day * 86_400 + 9 * 3600 - off),
+        }
+    };
+    let mut out = Vec::new();
+    let mut cur: Option<(String, Option<i64>, bool)> = None;
+    for l in &lines {
+        let (key, value) = l.split_once(':').unwrap_or((l.as_str(), ""));
+        let name = key.split(';').next().unwrap_or("").to_ascii_uppercase();
+        match (name.as_str(), value) {
+            ("BEGIN", "VEVENT" | "VTODO") => cur = Some((String::new(), None, false)),
+            ("END", "VEVENT" | "VTODO") => {
+                if let Some((title, due, done)) = cur.take() {
+                    if !title.trim().is_empty() && !done && due.is_none_or(|d| d >= now) {
+                        out.push(Entry { title: title.trim().chars().take(200).collect(), due, ..Entry::default() });
+                    }
+                }
+            }
+            ("SUMMARY", v) => {
+                if let Some(c) = cur.as_mut() {
+                    c.0 = v.replace("\\,", ",").replace(r"\;", ";").replace("\\n", " ").replace("\\N", " ").replace("\\\\", "\\");
+                }
+            }
+            ("DTSTART" | "DUE", v) => {
+                if let Some(c) = cur.as_mut() {
+                    // A task's DUE wins over its DTSTART.
+                    if c.1.is_none() || name == "DUE" {
+                        c.1 = stamp(v).or(c.1);
+                    }
+                }
+            }
+            ("STATUS", "COMPLETED" | "CANCELLED") => {
+                if let Some(c) = cur.as_mut() {
+                    c.2 = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// JSON from a program or an AI: ["задача", …] or [{"title", "time": "18:00", "date":
+/// "2026-11-15" | "завтра", "due": unix, "priority": "high", "done": true, "category"}, …],
+/// also {"tasks": […]}.
+fn parse_json(v: &Value, day: i64, today: i64, off: i64) -> Vec<Entry> {
+    let list = v.as_array().or_else(|| ["tasks", "items", "todo", "plan"].iter().find_map(|k| v[*k].as_array()));
+    let Some(list) = list else { return Vec::new() };
+    let mut out = Vec::new();
+    for item in list {
+        let text = |keys: &[&str]| keys.iter().find_map(|k| item[*k].as_str()).unwrap_or("").trim().to_owned();
+        let raw = item.as_str().map(str::to_owned).unwrap_or_else(|| text(&["title", "task", "name", "text", "summary"]));
+        if raw.is_empty() || item["done"].as_bool().unwrap_or(false) || item["completed"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let (title, mut day_said, mut time, mut high) = task_line(&raw, today);
+        let date = text(&["date", "day"]);
+        if !date.is_empty() {
+            day_said = task_line(&date, today).1.or(day_said);
+        }
+        let at = text(&["time", "start", "at"]);
+        if !at.is_empty() {
+            time = clock_at(at.trim()).map(|(m, _)| m).or(time);
+        }
+        let prio = text(&["priority"]).to_lowercase();
+        high |= matches!(prio.as_str(), "high" | "важно" | "высокий" | "высокая") || item["important"].as_bool().unwrap_or(false);
+        let due = item["due"].as_i64().filter(|d| *d > 1_000_000_000).or_else(|| when_of(day_said, time, day, off));
+        if !title.is_empty() {
+            out.push(Entry { title: title.chars().take(200).collect(), due, high, category: text(&["category", "block", "list"]).chars().take(40).collect(), remind: false });
+        }
+    }
+    out
+}
+
+/// A day and/or a clock time → unix time: a time alone is today's, a day alone is its 9:00.
+fn when_of(day: Option<i64>, time: Option<i64>, today: i64, off: i64) -> Option<i64> {
+    match (day, time) {
+        (None, None) => None,
+        (d, t) => {
+            // The settings' «время дедлайна» (as for a task added by voice), else nine o'clock.
+            let usual = if plan().due_time < 1440 { i64::from(plan().due_time) } else { 9 * 60 };
+            Some(d.unwrap_or(today) * 86_400 + t.unwrap_or(usual) * 60 - off)
+        }
+    }
+}
+
+/// A document with things to do → tasks from `day` (local day number) on. Understood:
+/// - a day plan with time ranges («18:00–18:10 | Блок | Задача», a table copied from an AI
+///   chat, CSV with «;»): each range is a reminder at its start; after midnight — the next day;
+/// - check lists and plain lists («- [ ] купить молоко», «1. …», «• …», one task per line):
+///   tasks; «- [x] …» is done and skipped; «# Раздел» / «Раздел:» names the category;
+///   «завтра», «15.11», «в 18:00», «до 9:30» set the day and time, «!» / «важно» — the priority;
+/// - .ics calendars and JSON (see parse_ics, parse_json).
+/// In a document that has time ranges only they and marked list items count — the sentences
+/// around a table are not tasks.
+pub fn parse_document(text: &str, day: i64, off: i64, now: i64) -> Vec<Entry> {
+    // «завтра» and «15.11» in a line are counted from the real today, whatever day the plan starts on.
+    let today = (now + off).div_euclid(86_400);
+    let text = text.trim_start_matches('\u{feff}').trim();
+    if text.starts_with('[') || text.starts_with('{') {
+        // Valid JSON is only JSON: its lines are never tasks themselves.
+        if let Ok(v) = serde_json::from_str::<Value>(text) {
+            return capped(parse_json(&v, day, today, off));
+        }
+    }
+    if text.contains("BEGIN:VEVENT") || text.contains("BEGIN:VTODO") {
+        return capped(parse_ics(text, off, now));
+    }
+    // A Markdown table row: «| 18:00–18:10 | Блок | Задача |».
+    let lines: Vec<&str> = text.lines().map(|l| l.trim().trim_start_matches('|').trim()).collect();
+    let timed = lines.iter().any(|l| time_range(l).is_some());
+    let mut out: Vec<Entry> = Vec::new();
+    let mut category = String::new();
+    let (mut cur_day, mut last) = (day, -1);
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        i += 1;
+        if line.is_empty() || line.chars().all(|c| matches!(c, '-' | ':' | '|' | ' ' | '=' | '_')) {
+            continue;
+        }
+        if let Some((a, _, rest)) = time_range(line) {
+            let mut parts: Vec<String> = rest
+                .split(['\t', '|', ';'])
+                .map(|p| p.trim().trim_matches(|c: char| c == '—' || c == '-' || c == ':').trim().to_owned())
+                .filter(|p| !p.is_empty())
+                .collect();
+            // The block and the task may be on the next lines; a numbered one («1. Флоу воронки»)
+            // is the plan's own task, a check box or a bullet starts a list of its own.
+            let bullet = |l: &str| list_item(l).0 && !l.starts_with(|c: char| c.is_ascii_digit());
+            let rule = |l: &str| l.starts_with('#') || l.chars().all(|c| matches!(c, '-' | ':' | '|' | ' ' | '=' | '_'));
+            while parts.len() < 2 && i < lines.len() && time_range(lines[i]).is_none() && !lines[i].is_empty() && !bullet(lines[i]) && !rule(lines[i]) {
+                parts.push(lines[i].to_owned());
+                i += 1;
+            }
+            if a < last {
+                cur_day += 1;
+            }
+            last = a;
+            let title = match parts.as_slice() {
+                [] => continue,
+                [one] => one.clone(),
+                [block, task, ..] if task.to_lowercase().contains(&block.to_lowercase()) => task.clone(),
+                [block, task, ..] => format!("{block}: {task}"),
+            };
+            out.push(Entry { title: title.chars().take(200).collect(), due: Some(cur_day * 86_400 + a * 60 - off), high: false, category: category.clone(), remind: true });
+            continue;
+        }
+        // «# Раздел», «## Работа»: the category of what follows.
+        if let Some(h) = line.strip_prefix('#') {
+            category = h.trim_start_matches('#').trim().chars().take(40).collect();
+            continue;
+        }
+        let (marked, done, rest) = list_item(line);
+        if !marked && !timed && rest.ends_with(':') && rest.chars().count() <= 41 {
+            category = rest.trim_end_matches(':').trim().to_owned();
+            continue;
+        }
+        // Around a timed plan only marked items are tasks; a long unmarked line is a sentence.
+        if done || rest.is_empty() || (!marked && (timed || rest.chars().count() > 140)) {
+            continue;
+        }
+        let (title, d, t, high) = task_line(rest, today);
+        if title.chars().count() < 2 {
+            continue;
+        }
+        out.push(Entry { title: title.chars().take(200).collect(), due: when_of(d, t, day, off), high, category: category.clone(), remind: false });
+    }
+    capped(out)
+}
+
+/// The same thing twice in one document is one task; two hundred at most.
+fn capped(mut out: Vec<Entry>) -> Vec<Entry> {
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|e| seen.insert((e.title.to_lowercase(), e.due)));
+    out.truncate(200);
+    out
+}
+
+/// Adds what is not there yet (an open task with the same title and time): a document
+/// uploaded twice does not double the list. Returns (added, already there).
+pub fn import(entries: &[Entry], now: i64) -> (usize, usize) {
+    let key = |title: &str| title.trim().to_lowercase().replace('ё', "е");
+    let mut have: std::collections::HashSet<(String, Option<i64>)> = with(|l| l.iter().filter(|t| !t.done).map(|t| (key(&t.title), t.due)).collect());
+    let (mut added, mut dup) = (0, 0);
+    // One write of planner.json for the whole document.
+    SAVE_EACH.store(false, std::sync::atomic::Ordering::Release);
+    for e in entries {
+        if !have.insert((key(&e.title), e.due)) {
+            dup += 1;
+            continue;
+        }
+        // Already gone by (a plan uploaded at 19:00 that starts at 18:00): kept, without a reminder.
+        add(&e.title, e.due, "", e.remind && e.due.is_some_and(|d| d > now), &e.category, if e.high { "high" } else { "normal" });
+        added += 1;
+    }
+    SAVE_EACH.store(true, std::sync::atomic::Ordering::Release);
+    if added > 0 {
+        save();
+    }
+    (added, dup)
+}
+
+/// What to give ChatGPT, Claude or another AI so that its answer uploads straight in
+/// («Планы → Загрузить список или расписание»).
+pub const SCHEDULE_PROMPT: &str = "Составь мне план по задачам ниже. Ответ — только строки плана, без вступления и выводов.\n\
+Формат строк:\n\
+- дело со временем: ЧЧ:ММ–ЧЧ:ММ | Блок | Задача\n\
+- дело без времени: - [ ] Задача\n\
+Правила:\n\
+- время 24-часовое, строки по порядку; после полуночи просто продолжай (00:30–01:00…);\n\
+- «Блок» — одно-два слова (Текст, Созвон, Перерыв, Еда, Сон, Спорт…), «Задача» — что именно сделать, коротко;\n\
+- перерывы и еду тоже отдельными строками;\n\
+- у дела без времени можно дописать в конце день или срок: «завтра», «15.11», «до 18:00»; важное начинай с «!»;\n\
+- разделы, если нужны, отдельной строкой: # Название;\n\
+- ничего кроме таких строк не пиши.\n\
+Мои задачи и ограничения:\n";
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+
+    const DAY: i64 = 20_000;
+    const OFF: i64 = 3 * 3600;
+
+    fn doc(text: &str) -> Vec<Entry> {
+        parse_document(text, DAY, OFF, DAY * 86_400)
+    }
+
+    #[test]
+    fn a_pasted_day_plan_becomes_reminders() {
+        let text = "Сдвинул старт на 18:00.\nВремя\nБлок\nЗадача\n18:00–18:10\nПодготовка\nВода, перекус\n\
+            18:10–19:05\nТекст\n1. Флоу воронки\n21:50–22:00\nПерерыв\n23:00–00:00\nТекст\n3. Посты\n\
+            00:00–00:35\tТехническое\t5. Сайт в HTML\n01:30–07:30 | Сон |\n11:45–12:00\nПроверка\nЗвук, ссылки\n\
+            Пошаговые шаги по каждой задаче не меняются.";
+        let s = doc(text);
+        let titles: Vec<&str> = s.iter().map(|x| x.title.as_str()).collect();
+        assert_eq!(titles, ["Подготовка: Вода, перекус", "Текст: 1. Флоу воронки", "Перерыв", "Текст: 3. Посты",
+            "Техническое: 5. Сайт в HTML", "Сон", "Проверка: Звук, ссылки"]);
+        assert_eq!(s[0].due, Some(DAY * 86_400 + 18 * 3600 - OFF));
+        assert_eq!(s[4].due, Some((DAY + 1) * 86_400 - OFF), "00:00 is the next day");
+        assert_eq!(s[6].due, Some((DAY + 1) * 86_400 + (11 * 60 + 45) * 60 - OFF));
+        assert!(doc("просто длинное предложение о том, как прошёл день, без единой задачи и без времени, которое не должно стать задачей, потому что оно слишком длинное для задачи").is_empty());
+        assert_eq!(doc("9.00 - 9.30 Зарядка")[0].title, "Зарядка");
+        // A Markdown table and CSV with «;».
+        let t = doc("| Время | Блок | Задача |\n|---|---|---|\n| 18:00–18:10 | Подготовка | Вода |\n19:00-19:30;Текст;Посты");
+        assert_eq!(t.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(), ["Подготовка: Вода", "Текст: Посты"]);
+    }
+
+    #[test]
+    fn a_check_list_becomes_tasks() {
+        let s = doc("# Дом\n- [ ] Купить молоко\n- [x] Вынести мусор\n* ! Оплатить интернет до 18:00\n\nРабота:\n1. Позвонить клиенту завтра в 9:30\n2) Отправить отчёт 15.11\n• Забрать посылку (важно)");
+        let got: Vec<(&str, Option<i64>, bool, &str)> = s.iter().map(|e| (e.title.as_str(), e.due, e.high, e.category.as_str())).collect();
+        let at = |day: i64, h: i64, m: i64| Some((DAY + day) * 86_400 + h * 3600 + m * 60 - OFF);
+        assert_eq!(got[0], ("Купить молоко", None, false, "Дом"));
+        assert_eq!(got[1], ("Оплатить интернет", at(0, 18, 0), true, "Дом"), "the done one is skipped");
+        assert_eq!(got[2], ("Позвонить клиенту", at(1, 9, 30), false, "Работа"));
+        assert_eq!(got[3].0, "Отправить отчёт");
+        assert!(got[3].1.is_some() && got[3].3 == "Работа");
+        assert_eq!(got[4], ("Забрать посылку", None, true, "Работа"));
+        assert_eq!(s.len(), 5);
+        // No marks at all: a line is a task. Twice the same line is one task.
+        let plain = doc("Купить хлеб\nПомыть машину\nКупить хлеб");
+        assert_eq!(plain.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["Купить хлеб", "Помыть машину"]);
+        // Around a timed plan only marked lines count.
+        let mixed = doc("План на вечер\n18:00–18:30 | Спорт | Пробежка\n- [ ] Купить воду\nУдачи!");
+        assert_eq!(mixed.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["Спорт: Пробежка", "Купить воду"]);
+    }
+
+    #[test]
+    fn calendars_and_json_are_read() {
+        let ics = "BEGIN:VCALENDAR\nBEGIN:VTODO\nSUMMARY:Сдать отчёт\\, срочно\nDUE:20241006T150000Z\nEND:VTODO\nBEGIN:VEVENT\nSUMMARY:Созвон\nDTSTART;TZID=Europe/Moscow:20241006T120000\nEND:VEVENT\nBEGIN:VTODO\nSUMMARY:Старое\nSTATUS:COMPLETED\nEND:VTODO\nEND:VCALENDAR";
+        // DAY 20000 is 2024-10-04: both are in the future.
+        let s = doc(ics);
+        assert_eq!(s.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["Сдать отчёт, срочно", "Созвон"]);
+        assert_eq!(s[0].due, Some(days_from_civil(2024, 10, 6) * 86_400 + 15 * 3600));
+        assert_eq!(s[1].due, Some(days_from_civil(2024, 10, 6) * 86_400 + 12 * 3600 - OFF));
+        let j = doc(r#"{"tasks": ["Купить молоко", {"title": "Созвон", "time": "12:30", "date": "завтра", "priority": "high"}, {"title": "Готово", "done": true}]}"#);
+        assert_eq!(j.len(), 2);
+        assert_eq!((j[0].title.as_str(), j[0].due), ("Купить молоко", None));
+        assert_eq!((j[1].title.as_str(), j[1].due, j[1].high), ("Созвон", Some((DAY + 1) * 86_400 + (12 * 60 + 30) * 60 - OFF), true));
+        assert_eq!(civil_from_days(days_from_civil(2026, 11, 13)), (2026, 11, 13));
+        // Valid JSON without tasks is not read as lines; a bad date in a calendar is not fatal.
+        assert!(doc(r#"{"note": "просто текст"}"#).is_empty());
+        assert_eq!(doc("BEGIN:VTODO\nSUMMARY:Дело\nDUE:2024ё1006\nEND:VTODO").iter().map(|e| e.due).collect::<Vec<_>>(), [None]);
+    }
+
+    #[test]
+    fn numbers_in_a_title_are_not_dates() {
+        let titles = |t: &str| doc(t).into_iter().map(|e| (e.title, e.due.is_some())).collect::<Vec<_>>();
+        assert_eq!(titles("- Купить 1.5 кг сахара"), [("Купить 1.5 кг сахара".to_owned(), false)]);
+        assert_eq!(titles("- Обновить до версии 2.0"), [("Обновить до версии 2.0".to_owned(), false)]);
+        assert_eq!(titles("- Сдать отчёт до 15.11"), [("Сдать отчёт".to_owned(), true)]);
+        assert_eq!(titles("- Созвон в 18.30"), [("Созвон".to_owned(), true)]);
+        // Two dates are not a time range, and do not hide the rest of the list.
+        assert_eq!(doc("15.11 – 17.11 Командировка\nКупить билеты").len(), 2);
+        // A heading after a bare time range stays a heading.
+        let s = doc("21:50–22:00\n# Вечер\n- [ ] Почитать");
+        assert_eq!(s.last().map(|e| (e.title.as_str(), e.category.as_str())), Some(("Почитать", "Вечер")));
+        // Only a timed plan's lines are said aloud at their time.
+        let s = doc("18:00–18:10 | Блок | Задача\n- [ ] Позвонить завтра в 9:30");
+        assert_eq!(s.iter().map(|e| e.remind).collect::<Vec<_>>(), [true, false]);
+    }
 }
 
 #[cfg(test)]

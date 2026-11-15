@@ -184,12 +184,20 @@ pub fn json() -> Value {
 
 /// Applies the level to the player and AirPlay four times a second.
 pub fn run(shared: Arc<Shared>) {
-    thread::spawn(move || loop {
-        let level = level_now(&mut STATE.lock().unwrap(), Instant::now());
-        shared.duck.set_external(level);
-        // Browser listeners whose page closed stop counting after 12 s.
-        shared.duck.set_listening(crate::web::listeners() > 0);
-        thread::sleep(Duration::from_millis(250));
+    thread::spawn(move || {
+        let mut was = false;
+        loop {
+            let level = level_now(&mut STATE.lock().unwrap(), Instant::now());
+            shared.duck.set_external(level);
+            // Browser listeners whose page closed stop counting after LISTEN_TTL.
+            let now = crate::web::listeners() > 0;
+            if now != was {
+                eprintln!("{}", if now { "listen: music plays in a browser, the speaker is silent" } else { "listen: no browser listens any more, the speaker plays" });
+                was = now;
+            }
+            shared.duck.set_listening(now);
+            thread::sleep(Duration::from_millis(250));
+        }
     });
 }
 

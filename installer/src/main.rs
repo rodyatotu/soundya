@@ -7,13 +7,26 @@
 //! address, key and MAC into the speaker by itself; on a Mac the same binary
 //! is the PC agent (`soundya agent`, agent.rs) started by launchd.
 
-#![cfg_attr(windows, windows_subsystem = "console")]
+// Windows: no console window (the wizard, the tray icon and the agent have their own or none).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(unix)]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod agent;
 #[cfg(target_os = "macos")]
 mod macwin;
+/// The Windows PC agent's protocol and logic (plain Rust: tested on every OS).
+mod winagent;
+#[cfg(windows)]
+mod winffi;
+#[cfg(windows)]
+mod winsys;
+#[cfg(windows)]
+mod winwv2;
+#[cfg(windows)]
+mod winapp;
+#[cfg(windows)]
+mod winsetup;
 #[cfg(feature = "dev")]
 mod dev;
 #[cfg(feature = "dev")]
@@ -73,12 +86,6 @@ fn tar() -> &'static [u8] {
 }
 static PAGE: &str = include_str!("wizard.html");
 static CARGO: &str = include_str!("../../Cargo.toml");
-#[cfg(windows)]
-static PC_FILES: [(&str, &str); 3] = [
-    ("install.ps1", include_str!("../../pc/install.ps1")),
-    ("soundya-pc.ps1", include_str!("../../pc/soundya-pc.ps1")),
-    ("soundya-pc-tray.ps1", include_str!("../../pc/soundya-pc-tray.ps1")),
-];
 
 fn version() -> String {
     let v = CARGO.lines().find_map(|l| l.strip_prefix("version = \"")).and_then(|v| v.strip_suffix('"')).unwrap_or("?");
@@ -236,7 +243,13 @@ fn interfaces() -> Vec<(Ipv4Addr, bool)> {
     out
 }
 
-#[cfg(not(unix))]
+/// Windows: the adapters that are up (tunnels marked, as point-to-point on a Mac).
+#[cfg(windows)]
+fn interfaces() -> Vec<(Ipv4Addr, bool)> {
+    winsys::adapters().into_iter().filter(|a| a.3).map(|a| (a.0, a.4)).collect()
+}
+
+#[cfg(not(any(unix, windows)))]
 fn interfaces() -> Vec<(Ipv4Addr, bool)> {
     Vec::new()
 }
@@ -385,7 +398,7 @@ fn panel_online(ip: &str) -> Result<String, String> {
 }
 
 /// The error in words a person can act on.
-fn offline_reason(err: &str) -> String {
+pub(crate) fn offline_reason(err: &str) -> String {
     let e = err.to_lowercase();
     if e.contains("no route to host") || e.contains("os error 65") {
         // macOS 15 answers so when the app may not use the local network.
@@ -938,43 +951,17 @@ fn outcome(file: &str, panel: Option<&Value>, log: &[String], since: u64) -> (St
 
 // ---------------------------------------------------------------- this PC (Windows)
 
-/// Installs soundya-pc (asks for administrator rights) and fills the PC's
+/// Connects this PC natively (winsetup.rs: soundya.exe as the agent and the tray icon,
+/// started at logon; one administrator question for the firewall) and fills the PC's
 /// address, key and MAC into the speaker's settings.
 #[cfg(windows)]
-fn pc_setup(ip: &str) -> Result<String, String> {
-    let dir = std::env::temp_dir().join("soundya-pc-setup");
-    let _ = std::fs::create_dir_all(&dir);
-    for (name, text) in PC_FILES {
-        std::fs::write(dir.join(name), text).map_err(|e| e.to_string())?;
-    }
-    let local = std::env::var("LOCALAPPDATA").map_err(|_| "нет LOCALAPPDATA".to_owned())?;
-    let result = PathBuf::from(&local).join("soundya-pc").join("setup.json");
-    let _ = std::fs::remove_file(&result);
-    std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(dir.join("install.ps1"))
-        .arg("-Quiet")
-        .status()
-        .map_err(|e| format!("PowerShell не запустился: {e}"))?;
-    // The elevated copy runs on its own: wait for its result file.
-    let t0 = Instant::now();
-    let text = loop {
-        if let Some(t) = fsx::read_string(&result) {
-            break t;
-        }
-        if t0.elapsed() > Duration::from_secs(240) {
-            return Err("установка программы для ПК не закончилась (разрешили доступ администратора?)".into());
-        }
-        thread::sleep(Duration::from_secs(1));
-    };
-    let v: Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| format!("ответ установщика ПК: {e}"))?;
-    let patch = json!({ "pc_on": true, "pc_host": v["ip"], "pc_token": v["key"], "pc_mac": v["mac"] });
-    match speaker_http(ip, "POST", "/api/settings", &patch.to_string()) {
-        Ok((200, body)) if body.starts_with("OK") => Ok(format!("Компьютер {} подключён к колонке", v["ip"].as_str().unwrap_or(""))),
-        Ok((401, _)) => Err("на панели колонки стоит PIN: впишите данные ПК в «Устройства» вручную".into()),
-        Ok((_, body)) => Err(format!("колонка не приняла настройки: {body}")),
-        Err(e) => Err(e),
-    }
+pub(crate) fn pc_setup(ip: &str) -> Result<String, String> {
+    winsetup::pc_setup(ip)
+}
+
+#[cfg(windows)]
+fn pc_remove(ip: &str) -> Result<String, String> {
+    winsetup::pc_remove(ip)
 }
 
 /// Sets up the PC agent on this Mac (a launchd job of this app, no administrator
@@ -1121,9 +1108,9 @@ fn pc_setup(_ip: &str) -> Result<String, String> {
     Err("управление компьютером есть для Windows и macOS".into())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn pc_remove(_ip: &str) -> Result<String, String> {
-    Err("на Windows программа для ПК удаляется файлом pc\\uninstall.cmd".into())
+    Err("управление компьютером есть для Windows и macOS".into())
 }
 
 // ---------------------------------------------------------------- web server
@@ -1294,6 +1281,11 @@ fn handle(conn: TcpStream, port: u16, job: Arc<Mutex<Job>>) {
 }
 
 fn open_browser(url: &str) {
+    // Windows: through the shell (no console window flashing).
+    #[cfg(windows)]
+    if winsys::shell_open(url).is_ok() {
+        return;
+    }
     let r = if cfg!(windows) {
         std::process::Command::new("cmd").args(["/C", "start", "", url]).status()
     } else if cfg!(target_os = "macos") {
@@ -1307,6 +1299,25 @@ fn open_browser(url: &str) {
 }
 
 fn main() {
+    // Windows: the same soundya.exe is the PC agent and the tray icon (started at logon),
+    // and, opened by hand on a PC already connected, soundya's own window, not the installer
+    // (that is in the icon's menu: «Установщик и обновление…»).
+    #[cfg(windows)]
+    match std::env::args().nth(1).as_deref() {
+        Some("agent") => winapp::agent(),
+        // «tray open»: with the player's window at once.
+        Some("tray") => winapp::tray(std::env::args().nth(2).as_deref() == Some("open")),
+        // soundya.exe opened by hand: as soundya.app — the tray icon and the player by it, this PC
+        // connected in the background. A download puts itself in %LOCALAPPDATA%\soundya first (an
+        // update replaces the copy there). The wizard is in the icon's menu.
+        None if std::env::var("SOUNDYA_INSTALLER").is_err() => {
+            if !winapp::installed_copy() && winsetup::install_and_start().is_some() {
+                std::process::exit(0);
+            }
+            winapp::tray(true)
+        }
+        _ => {}
+    }
     // launchd starts the same binary as this Mac's PC agent.
     #[cfg(target_os = "macos")]
     if std::env::args().nth(1).as_deref() == Some("agent") {
@@ -1337,6 +1348,15 @@ fn main() {
     // launchd (or «open soundya.app --args tray») starts it as the menu bar icon.
     #[cfg(target_os = "macos")]
     if std::env::args().nth(1).as_deref() == Some("tray") {
+        // One icon: launchd starting it while soundya.app already shows one, it just ends.
+        let home = agent::home();
+        let other = std::fs::read_to_string(agent::tray_pid_file(&home))
+            .ok()
+            .and_then(|t| t.trim().parse::<i32>().ok())
+            .is_some_and(|pid| pid != std::process::id() as i32 && unsafe { kill(pid, 0) } == 0);
+        if other {
+            std::process::exit(0);
+        }
         let speaker = std::env::args().nth(2).unwrap_or_else(|| agent::speaker_of(&agent::home()));
         if let Err(e) = macwin::tray(&speaker, false) {
             eprintln!("soundya: значок в строке меню не открылся: {e}");
@@ -1373,6 +1393,22 @@ fn main() {
             }
         }
         std::process::exit(0);
+    }
+    // Windows: the wizard in its own window (WebView2); the browser if there is none.
+    #[cfg(windows)]
+    if std::env::var("SOUNDYA_INSTALLER_NO_BROWSER").is_err() {
+        thread::spawn(serve);
+        if winapp::wizard(&format!("{url}?app=1")).is_ok() {
+            std::process::exit(0);
+        }
+        open_browser(&url);
+        // Nobody on the page for 20 minutes: the installer leaves by itself.
+        loop {
+            thread::sleep(Duration::from_secs(30));
+            if now().saturating_sub(LAST_SEEN.load(Ordering::Acquire)) > 20 * 60 {
+                std::process::exit(0);
+            }
+        }
     }
     if std::env::var("SOUNDYA_INSTALLER_NO_BROWSER").is_err() {
         println!("Мастер установки открыт в браузере. Не закрывайте это окно до конца установки.");

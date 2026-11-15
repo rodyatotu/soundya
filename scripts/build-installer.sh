@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds the graphical installers with the speaker build inside:
-#   dist/soundya-setup-windows.exe      (double-click; Windows 10/11, x64)
+#   dist/soundya-setup-windows.exe      (double-click; Windows 10/11, x64: the wizard, then soundya itself —
+#                                        tray icon, the panel's window, the PC agent; installer/src/win*.rs)
 #   dist/soundya.dmg                    (soundya.app, drag to Applications; Intel and Apple Silicon)
 #   dist/soundya-setup-mac.zip          (the same app, zipped)
 # Needs: rustup targets x86_64-pc-windows-gnu, aarch64-apple-darwin, x86_64-apple-darwin; zig + cargo-zigbuild;

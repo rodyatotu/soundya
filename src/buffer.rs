@@ -33,6 +33,11 @@ fn record_speed(bytes: usize, secs: f64) {
 /// How far ahead to download: ~3 minutes of 160 kbit/s AAC.
 const AHEAD: usize = 4 << 20;
 const CHUNK: usize = 32 << 10;
+/// A full buffer is topped up again only when it is down to this. A track longer than the
+/// buffer used to be downloaded a little all the time it played; Wi-Fi and Bluetooth share one
+/// radio on the Station, and that left sound going to a Bluetooth speaker short of air time
+/// (it stuttered on long tracks only). Now: a burst every minute and a half, silence between.
+const REFILL: usize = AHEAD / 2;
 
 struct State {
     data: VecDeque<u8>,
@@ -73,8 +78,10 @@ impl Buffered {
                 // Wait while the buffer is full; stop when the reader is gone.
                 {
                     let mut st = filler.state.lock().unwrap();
-                    while st.data.len() >= AHEAD && !st.closed {
-                        st = filler.changed.wait(st).unwrap();
+                    if st.data.len() >= AHEAD {
+                        while st.data.len() > REFILL && !st.closed {
+                            st = filler.changed.wait(st).unwrap();
+                        }
                     }
                     if st.closed {
                         return;

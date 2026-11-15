@@ -207,6 +207,9 @@ fn choose(
     }
 }
 
+/// Addresses a name is known to answer on besides the one DNS gives.
+const KNOWN: [(&str, &[[u8; 4]]); 1] = [("api.telegram.org", &[[149, 154, 167, 220], [149, 154, 166, 110]])];
+
 impl ureq::Resolver for Resolver {
     fn resolve(&self, netloc: &str) -> io::Result<Vec<SocketAddr>> {
         let (host, port) = netloc
@@ -216,7 +219,21 @@ impl ureq::Resolver for Resolver {
         let host = host.trim_start_matches('[').trim_end_matches(']');
         // System resolver first (fails fast when 127.0.0.1:53 refuses).
         let system: Vec<SocketAddr> = netloc.to_socket_addrs().map(Iterator::collect).unwrap_or_default();
-        choose(host, system, || self.lookup(host), port)
+        let found = choose(host, system, || self.lookup(host), port);
+        // The Bot API answers on more addresses than DNS hands out (one at a time). A provider
+        // may drop the one given and let another through: both are offered, and the one that
+        // failed (`failed`) goes last.
+        if let Some((_, extra)) = KNOWN.iter().find(|(name, _)| *name == host) {
+            let mut all = found.unwrap_or_default();
+            for ip in *extra {
+                let a = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(*ip)), port);
+                if !all.contains(&a) {
+                    all.push(a);
+                }
+            }
+            return Ok(order(host, all));
+        }
+        found
     }
 }
 

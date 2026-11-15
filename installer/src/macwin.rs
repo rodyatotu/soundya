@@ -117,6 +117,10 @@ impl Rt {
         let f: unsafe extern "C" fn(Id, Sel, i8) = std::mem::transmute(self.msg);
         f(o, self.s(sel), b as i8)
     }
+    unsafe fn responds(&self, o: Id, sel: &str) -> bool {
+        let f: unsafe extern "C" fn(Id, Sel, Sel) -> i8 = std::mem::transmute(self.msg);
+        f(o, self.s("respondsToSelector:"), self.s(sel)) != 0
+    }
     unsafe fn send_long(&self, o: Id, sel: &str, n: i64) -> Id {
         let f: unsafe extern "C" fn(Id, Sel, i64) -> Id = std::mem::transmute(self.msg);
         f(o, self.s(sel), n)
@@ -251,6 +255,19 @@ unsafe fn web_view(rt: &Rt, url: &str, frame: Rect) -> Result<Id, String> {
     // «Где играет → этот браузер»: the page starts the sound itself (no click in it), which
     // WebKit refuses by default — the music did not play in the Mac's window.
     rt.send_ulong(config, "setMediaTypesRequiringUserActionForPlayback:", 0);
+    // The window hidden (a click outside, the tray): WebKit slows the page's timers to about one
+    // a minute and suspends it. Its «I listen» to the speaker stopped, and the speaker played the
+    // music itself again while it also played here. Each setter only if this WebKit has it.
+    let prefs = rt.send(config, "preferences");
+    for sel in [
+        "_setHiddenPageDOMTimerThrottlingEnabled:",
+        "_setHiddenPageDOMTimerThrottlingAutoIncreases:",
+        "_setPageVisibilityBasedProcessSuppressionEnabled:",
+    ] {
+        if !prefs.is_null() && rt.responds(prefs, sel) {
+            rt.send_bool(prefs, sel, false);
+        }
+    }
     let web = rt.init_webview(rt.send(rt.class("WKWebView")?, "alloc"), frame, config);
     if web.is_null() {
         return Err("WebKit не создал окно страницы".into());
@@ -337,9 +354,50 @@ pub fn now_line(code: Option<u16>, status: &str) -> (String, bool) {
     }
 }
 
+/// The last /api/status answer for the menu: (code, body); None = not asked yet.
+static MENU_STATUS: std::sync::Mutex<Option<(Option<u16>, String)>> = std::sync::Mutex::new(None);
+static MENU_FETCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The menu opens at once with what is known; the speaker is asked on a thread of its own and
+/// the items change when it answers. Asked on the main thread, it froze the Mac for seconds
+/// (a right click asked it twice: up to 1.5 s to connect and 3 s to answer, each).
 extern "C" fn menu_needs_update(_this: Id, _sel: Sel, _menu: Id) {
-    let r = speaker_call("GET", "/api/status", "");
-    let (line, playing) = now_line(r.as_ref().map(|r| r.0), r.as_ref().map_or("", |r| r.1.as_str()));
+    apply_menu_status();
+    if MENU_FETCHING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let r = speaker_call("GET", "/api/status", "");
+        *MENU_STATUS.lock().unwrap() = Some((r.as_ref().map(|r| r.0), r.map(|r| r.1).unwrap_or_default()));
+        MENU_FETCHING.store(false, Ordering::Release);
+        on_main("applyMenuStatus:");
+    });
+}
+
+/// Runs a selector of the menu's target on the main thread (AppKit is main-thread only).
+fn on_main(sel: &str) {
+    let target = TARGET.load(Ordering::Acquire);
+    if target == 0 {
+        return;
+    }
+    unsafe {
+        if let Ok(rt) = Rt::load() {
+            let f: unsafe extern "C" fn(Id, Sel, Sel, Id, i8) = std::mem::transmute(rt.msg);
+            f(target as Id, rt.s("performSelectorOnMainThread:withObject:waitUntilDone:"), rt.s(sel), std::ptr::null_mut(), 0);
+        }
+    }
+}
+
+extern "C" fn apply_menu_status_sel(_this: Id, _sel: Sel, _arg: Id) {
+    apply_menu_status();
+}
+
+fn apply_menu_status() {
+    let known = MENU_STATUS.lock().unwrap().clone();
+    let (line, playing) = match &known {
+        Some((code, body)) => now_line(*code, body),
+        None => ("…".to_owned(), false),
+    };
     unsafe {
         let Ok(rt) = Rt::load() else { return };
         let (now, play) = (NOW_ITEM.load(Ordering::Acquire) as Id, PLAY_ITEM.load(Ordering::Acquire) as Id);
@@ -409,6 +467,14 @@ unsafe fn toggle_popover(rt: &Rt) -> Result<(), String> {
         rt.send_bool(win, "setReleasedWhenClosed:", false);
         rt.send_bool(win, "setTitlebarAppearsTransparent:", true);
         rt.send_long(win, "setTitleVisibility:", 1); // hidden
+        // No close / minimize / zoom: they sat on top of the page's first heading. It goes
+        // like the menu bar's own windows (a click elsewhere, or on the icon).
+        for button in 0..3 {
+            let b = rt.send_long(win, "standardWindowButton:", button);
+            if !b.is_null() {
+                rt.send_bool(b, "setHidden:", true);
+            }
+        }
         rt.send_bool(win, "setMovableByWindowBackground:", true);
         rt.send_bool(win, "setOpaque:", false);
         rt.send_id(win, "setBackgroundColor:", rt.send(rt.class("NSColor")?, "clearColor"));
@@ -522,13 +588,24 @@ extern "C" fn size_large(_this: Id, _sel: Sel, _sender: Id) {
 
 /// «Подключить этот Mac к колонке»: as the installer's «Только подключить этот компьютер»
 /// (a Windows PC there stays first; the Mac joins as «мак»).
+/// The result of «Подключить этот Mac» for the alert, made on a thread (it is network).
+static CONNECT_TEXT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
 extern "C" fn connect_mac(_this: Id, _sel: Sel, _sender: Id) {
-    use std::net::ToSocketAddrs;
-    let ip = format!("{}:8765", speaker()).to_socket_addrs().ok().and_then(|mut a| a.next()).map(|a| a.ip().to_string());
-    let text = match ip {
-        Some(ip) => crate::pc_setup(&ip).unwrap_or_else(|e| format!("Не получилось: {e}")),
-        None => "Колонка не нашлась в сети".to_owned(),
-    };
+    std::thread::spawn(|| {
+        use std::net::ToSocketAddrs;
+        let ip = format!("{}:8765", speaker()).to_socket_addrs().ok().and_then(|mut a| a.next()).map(|a| a.ip().to_string());
+        let text = match ip {
+            Some(ip) => crate::pc_setup(&ip).unwrap_or_else(|e| format!("Не получилось: {}", crate::offline_reason(&e))),
+            None => "Колонка не нашлась в сети".to_owned(),
+        };
+        *CONNECT_TEXT.lock().unwrap() = text;
+        on_main("showConnectResult:");
+    });
+}
+
+extern "C" fn show_connect_result(_this: Id, _sel: Sel, _arg: Id) {
+    let text = CONNECT_TEXT.lock().unwrap().clone();
     unsafe {
         let Ok(rt) = Rt::load() else { return };
         let Ok(alert) = rt.new("NSAlert") else { return };
@@ -600,7 +677,7 @@ extern "C" fn icon_clicked(this: Id, sel: Sel, sender: Id) {
         let ctrl = !event.is_null() && rt.send_u64_ret(event, "modifierFlags") & (1 << 18) != 0;
         // NSEventTypeRightMouseUp = 4
         if kind == 4 || ctrl {
-            menu_needs_update(this, sel, std::ptr::null_mut());
+            // popUpStatusItemMenu: asks the delegate (menuNeedsUpdate:) itself.
             let (item, menu) = (STATUS_ITEM.load(Ordering::Acquire) as Id, STATUS_MENU.load(Ordering::Acquire) as Id);
             rt.send_id(item, "popUpStatusItemMenu:", menu);
             return;
@@ -676,6 +753,9 @@ pub fn tray(speaker_host: &str, open_now: bool) -> Result<(), String> {
             (rt.add_method)(k, rt.s("openInstaller:"), open_installer as *mut c_void, t.as_ptr());
             (rt.add_method)(k, rt.s("sizeMedium:"), size_medium as *mut c_void, t.as_ptr());
             (rt.add_method)(k, rt.s("sizeLarge:"), size_large as *mut c_void, t.as_ptr());
+            (rt.add_method)(k, rt.s("toggleTodo:"), toggle_todo as *mut c_void, t.as_ptr());
+            (rt.add_method)(k, rt.s("applyMenuStatus:"), apply_menu_status_sel as *mut c_void, t.as_ptr());
+            (rt.add_method)(k, rt.s("showConnectResult:"), show_connect_result as *mut c_void, t.as_ptr());
             (rt.register)(k);
         }
         let target = rt.send(rt.send(k, "alloc"), "init");
@@ -714,6 +794,10 @@ pub fn tray(speaker_host: &str, open_now: bool) -> Result<(), String> {
         rt.send_id(menu, "addItem:", rt.send(rt.class("NSMenuItem")?, "separatorItem"));
         rt.send_id(open, "setTarget:", target);
         rt.send_id(menu, "addItem:", open);
+        let todo = rt.item("Задачи поверх окон", "toggleTodo:", "t")?;
+        rt.send_id(todo, "setTarget:", target);
+        TODO_ITEM.store(todo as usize, Ordering::Release);
+        rt.send_id(menu, "addItem:", todo);
         // «Размер»: three steps; the window's edges resize it freely too.
         let size_item = rt.item("Размер окна", "", "")?;
         let sizes = rt.new("NSMenu")?;
@@ -751,6 +835,11 @@ pub fn tray(speaker_host: &str, open_now: bool) -> Result<(), String> {
                 }
             }
         });
+        // The to-do window was on when the Mac was last on: on again.
+        if todo_flag().exists() {
+            let f: unsafe extern "C" fn(Id, Sel, Sel, Id, f64) = std::mem::transmute(rt.msg);
+            f(target, rt.s("performSelector:withObject:afterDelay:"), rt.s("toggleTodo:"), std::ptr::null_mut(), 1.0);
+        }
         if open_now {
             let f: unsafe extern "C" fn(Id, Sel, Sel, Id, f64) = std::mem::transmute(rt.msg);
             f(target, rt.s("performSelector:withObject:afterDelay:"), rt.s("showPanel:"), std::ptr::null_mut(), 0.3);
@@ -765,4 +854,96 @@ impl Rt {
         let f: unsafe extern "C" fn(Id, Sel, i8) -> Id = std::mem::transmute(self.msg);
         Ok(f(self.class("NSNumber")?, self.s("numberWithBool:"), b as i8))
     }
+}
+
+// ------------------------------------------------------------------ to-do over windows
+
+/// The small window with the speaker's to-do list (its /todo page) that stays above other
+/// windows, on every desktop and over full-screen apps. A click on a task's dot marks it done.
+static TODO: AtomicUsize = AtomicUsize::new(0);
+static TODO_ITEM: AtomicUsize = AtomicUsize::new(0);
+
+/// Present while the window is on: it comes back after a restart.
+fn todo_flag() -> std::path::PathBuf {
+    crate::agent::dir(&crate::agent::home()).join("todo-on")
+}
+
+/// «Задачи поверх окон»: shows or hides the window (the menu item gets a tick).
+extern "C" fn toggle_todo(_this: Id, _sel: Sel, _sender: Id) {
+    unsafe {
+        let Ok(rt) = Rt::load() else { return };
+        let mut win = TODO.load(Ordering::Acquire) as Id;
+        let shown = !win.is_null() && rt.send_u64_ret(win, "isVisible") != 0;
+        let item = TODO_ITEM.load(Ordering::Acquire) as Id;
+        if shown {
+            rt.send_id(win, "orderOut:", std::ptr::null_mut());
+            let _ = std::fs::remove_file(todo_flag());
+            if !item.is_null() {
+                rt.send_long(item, "setState:", 0);
+            }
+            return;
+        }
+        if win.is_null() {
+            match todo_window(&rt) {
+                Ok(w) => {
+                    win = w;
+                    TODO.store(w as usize, Ordering::Release);
+                }
+                Err(e) => {
+                    eprintln!("soundya: окно задач: {e}");
+                    return;
+                }
+            }
+        }
+        // Above the others without taking the focus from the app in front.
+        rt.send(win, "orderFrontRegardless");
+        let _ = std::fs::create_dir_all(crate::agent::dir(&crate::agent::home()));
+        let _ = std::fs::write(todo_flag(), "");
+        if !item.is_null() {
+            rt.send_long(item, "setState:", 1);
+        }
+    }
+}
+
+unsafe fn todo_window(rt: &Rt) -> Result<Id, String> {
+    let (w, h) = (300.0, 380.0);
+    let screen = rt.send(rt.class("NSScreen")?, "mainScreen");
+    let area = if screen.is_null() { Rect { x: 0.0, y: 0.0, w: 1440.0, h: 900.0 } } else { rt.rect_of(screen, "visibleFrame") };
+    // Top right corner, a little in from the edges; macOS keeps where it is dragged to (autosave).
+    let frame = Rect { x: area.x + area.w - w - 16.0, y: area.y + area.h - h - 16.0, w, h };
+    // titled | closable | resizable | full size content view: the page fills it, the title bar is see-through.
+    let win = rt.init_window(rt.send(rt.class("NSWindow")?, "alloc"), frame, 1 | 2 | 8 | (1 << 15));
+    if win.is_null() {
+        return Err("окно не создалось".into());
+    }
+    rt.send_bool(win, "setReleasedWhenClosed:", false);
+    rt.send_id(win, "setTitle:", rt.string("Задачи")?);
+    rt.send_long(win, "setTitleVisibility:", 1); // hidden
+    rt.send_bool(win, "setTitlebarAppearsTransparent:", true);
+    // No close/minimise/zoom over the page's «Задачи»: it is switched off from the menu bar.
+    for b in 0..3 {
+        let button = rt.send_long(win, "standardWindowButton:", b);
+        if !button.is_null() {
+            rt.send_bool(button, "setHidden:", true);
+        }
+    }
+    rt.send_bool(win, "setOpaque:", false);
+    rt.send_id(win, "setBackgroundColor:", rt.send(rt.class("NSColor")?, "clearColor"));
+    rt.send_bool(win, "setHasShadow:", true);
+    rt.send_bool(win, "setMovableByWindowBackground:", true);
+    rt.send_bool(win, "setHidesOnDeactivate:", false);
+    rt.send_long(win, "setLevel:", 3); // NSFloatingWindowLevel: above ordinary windows
+    // canJoinAllSpaces | stationary | fullScreenAuxiliary: on every desktop, over full-screen apps.
+    rt.send_ulong(win, "setCollectionBehavior:", 1 | 16 | 256);
+    rt.send_size(win, "setContentMinSize:", Size { w: 220.0, h: 160.0 });
+    if let Ok(appearance) = rt.class("NSAppearance") {
+        let dark = rt.send_id(appearance, "appearanceNamed:", rt.string("NSAppearanceNameDarkAqua")?);
+        if !dark.is_null() {
+            rt.send_id(win, "setAppearance:", dark);
+        }
+    }
+    let web = web_view(rt, &format!("http://{}:8765/todo", speaker()), Rect { x: 0.0, y: 0.0, w, h })?;
+    rt.send_id(win, "setContentView:", web);
+    rt.send_id(win, "setFrameAutosaveName:", rt.string("soundya-todo")?);
+    Ok(win)
 }

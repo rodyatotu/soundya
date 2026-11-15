@@ -801,6 +801,10 @@ pub fn run(shared: Arc<Shared>) {
         // What the LEDs held at the last tick (after our own writes), to see others' writes.
         let mut seen: Option<Vec<u32>> = ring.snapshot();
         let mut yielding = Yield::default();
+        // How much of our light shows (0..1): it rises from nothing after any break (Alice's or
+        // the firmware's animation, the mic switched back on) and fades out when the mic goes
+        // off — it jumped straight to full and broke off before.
+        let mut fade = 0f32;
         loop {
             let light = *shared.light.lock().unwrap();
             let on = shared.ring.load(Ordering::Acquire);
@@ -808,7 +812,9 @@ pub fn run(shared: Arc<Shared>) {
             // Sound analysis only when the light moves with it.
             crate::vis::ON.store(on && light.mode != Mode::Solid, Ordering::Relaxed);
             // Smoother while it moves with the music.
-            let tick = if on && music && light.mode != Mode::Solid { 40 } else { TICK_MS };
+            let mic_off = crate::mic::silent_now() || crate::mic::muted() == Some(true);
+            let fading = (mic_off && fade > 0.0) || (!mic_off && fade < 1.0 && shown.is_some());
+            let tick = if (on && music && light.mode != Mode::Solid) || fading { 40 } else { TICK_MS };
             thread::sleep(Duration::from_millis(tick));
             clock += tick;
             let now_seen = ring.snapshot();
@@ -884,6 +890,23 @@ pub fn run(shared: Arc<Shared>) {
                 Some(vec![scale(light.quiet, light.bright * PAUSED); zones])
             } else {
                 None
+            };
+            // Fade in from nothing after a break; out while the mic is off, then the ring goes dark.
+            let want = match want {
+                Some(frame) if idle_ms >= IDLE_MS => {
+                    if shown.is_none() && !mic_off {
+                        fade = 0.0;
+                    }
+                    fade = if mic_off { (fade - tick as f32 / 700.0).max(0.0) } else { (fade + tick as f32 / 1200.0).min(1.0) };
+                    if mic_off && fade <= 0.0 {
+                        None
+                    } else {
+                        // Eased: slow at the ends, as a lamp dims.
+                        let k = fade * fade * (3.0 - 2.0 * fade);
+                        Some(frame.iter().map(|c| scale(*c, k)).collect::<Vec<_>>())
+                    }
+                }
+                other => other,
             };
             match want {
                 Some(frame) if idle_ms >= IDLE_MS => {

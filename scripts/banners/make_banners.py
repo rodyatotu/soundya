@@ -182,8 +182,8 @@ def paste_icon(img, cx, cy, size):
     img.alpha_composite(icon, (int(cx - size / 2), int(cy - size / 2)))
 
 
-VERSION = "0.5.9"
-FEATURES = ["Голосом Алисы", "Mac: строка меню", "Пульт ТВ", "Планы + Google", "Будильник", "AirPlay", "Ambilight"]
+VERSION = "0.6.0"
+FEATURES = ["Голосом Алисы", "Mac и Windows", "Пульт ТВ", "Планы + Google", "Bluetooth", "AirPlay", "Ambilight"]
 
 
 def stat_card(img, cx, cy, big, small):
@@ -227,7 +227,7 @@ def whatsnew(out):
     neon_text(img, (140, 205), "Что нового", font(112, "Black", italic=True), anchor="lm")
     text(img, (140, 380), f"в soundya {VERSION}", font(48, "Bold"), (255, 255, 255), anchor="lm")
     # Right: a stack of small glass tiles with the headline features.
-    tiles = [("", "Mac: трей"), ("", "Фильмы ТВ"), ("", "Планы"), ("", "Будильник"), ("", "Ambilight"), ("", "Обложки")]
+    tiles = [("", "Цепочки"), ("", "Bluetooth"), ("", "Windows"), ("", "Задачи"), ("", "Сценарии"), ("", "Telegram")]
     f = font(30, "Semibold")
     x0, y0, tw, th, gap = 990, 95, 250, 96, 22
     for i, (_, label) in enumerate(tiles):
