@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.jpg" alt="soundya 0.5.10 — SoundCloud на Яндекс Станции: голосом Алисы, с телефона и из строки меню Mac" width="100%">
+  <img src="docs/banner.jpg" alt="soundya 0.6.0 — SoundCloud на Яндекс Станции: голосом Алисы, с телефона и из строки меню Mac" width="100%">
 </p>
 
 <h1 align="center">soundya</h1>
@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/Rust-armv7-dea584?logo=rust&logoColor=white" alt="Rust, armv7">
   <img src="https://img.shields.io/badge/лицензия-MIT-blue" alt="MIT">
   <a href="http://195.209.211.30:8787/"><img src="http://195.209.211.30:8787/badge.svg" alt="Работает на колонках"></a>
-  <img src="https://img.shields.io/badge/версия-0.5.10-ff5500" alt="Версия 0.5.10">
+  <img src="https://img.shields.io/badge/версия-0.6.0-ff5500" alt="Версия 0.6.0">
   <a href="https://t.me/+ftjTac-KQkgxY2E0"><img src="https://img.shields.io/badge/Telegram-сообщество-229ED9?logo=telegram&logoColor=white" alt="Сообщество в Telegram"></a>
 </p>
 
@@ -28,9 +28,9 @@
   <img src="docs/showcase.jpg" alt="Панель soundya на телефоне: главная, ваша музыка, планы и пульт для телевизора" width="100%">
 </p>
 
-## Что нового в 0.5.10
+## Что нового в 0.6.0
 
-<p align="center"><img src="docs/banner-whatsnew.jpg" alt="Что нового в soundya 0.5.10" width="100%"></p>
+<p align="center"><img src="docs/banner-whatsnew.jpg" alt="Что нового в soundya 0.6.0" width="100%"></p>
 
 - **Несколько команд одной фразой** — «Алиса, включи проектор, открой впн и потом найди на рутубе фильм Дюна»: всё по порядку, устройство называть заново не нужно.
 - **Алиса реже отвечает вместо soundya** — понимаются «вруби», «выруби», «можешь включить», «давай открой» и другие живые формулировки.
