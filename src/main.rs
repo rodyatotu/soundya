@@ -564,6 +564,7 @@ impl Controller {
         settings["tg_on"] = self.settings.tg_on.into();
         settings["autostart"] = serde_json::to_value(&self.settings.autostart).unwrap_or_default();
         settings["resume_music"] = self.settings.resume_music.into();
+        settings["search_originals"] = self.settings.search_originals.into();
         settings["display_on"] = self.settings.display_on.into();
         settings["display_widgets"] = self.settings.display_widgets.clone().into();
         settings["display_secs"] = self.settings.display_secs.into();
@@ -709,6 +710,8 @@ impl Controller {
         // soundya's own question that waits for an answer («На каком устройстве?»): the panel may show it.
         out["question"] = alice::question_json();
         out["mentions"] = mentions::json();
+        // «Алиса, играй в браузере»: an open page takes the sound when this changes.
+        out["listen"]["want"] = web::LISTEN_WANT.load(Ordering::Acquire).into();
         out["cover"] = current.filter(|t| t.cover().is_some()).map(|t| format!("/cover?{}", t.id)).into();
         out.to_string()
     }
@@ -1139,6 +1142,7 @@ impl Controller {
         self.shared.tv.store(new.tv_configured(), Ordering::Release);
         alice::set_tv(new.tv_configured());
         alice::set_tv_off(!new.tv_on && !new.tvs().is_empty());
+        sc::set_originals(new.search_originals);
         // Only the TVs there are, each with a package name (or none: its own search).
         let hosts: Vec<String> = new.tvs().into_iter().map(|t| t.host).collect();
         new.tv_search = std::mem::take(&mut new.tv_search)
@@ -1674,6 +1678,7 @@ impl Controller {
             self.history.track(track.name(), track.permalink_url.as_deref(), track.cover(), track.id);
         }
         let duration_ms = track.duration.unwrap_or(0);
+        flags.seekable.store(track.stream_seekable(), Ordering::Release);
         thread::spawn(move || {
             if delay_ms > 0 {
                 thread::sleep(Duration::from_millis(delay_ms));
@@ -1688,9 +1693,15 @@ impl Controller {
                     }
                 }
             };
+            // A resume or a jump: the stream is opened at the segment holding that moment
+            // where it can be (HLS), not from the track's start with minutes decoded in silence.
             let opened = match ready {
-                Some(r) => Ok(r),
-                None => client.open(&track),
+                Some(r) if skip_ms == 0 => Ok(r),
+                _ if skip_ms > 0 && track.stream_seekable() => client.open_from(&track, skip_ms).map(|(reader, kind, started)| {
+                    flags.start_ms.store(started.min(skip_ms), Ordering::Release);
+                    (reader, kind)
+                }),
+                _ => client.open(&track),
             };
             let outcome = match opened {
                 Ok((source, kind)) => {
@@ -2210,9 +2221,12 @@ impl Controller {
             // device is let go, so a phone can take it.
             Intent::BtOut(false) => {
                 let mac = self.settings.bt_mac.clone();
-                let text = if !bt::valid_mac(&mac) || !self.settings.bt_on {
-                    "Музыка и так на колонке"
-                } else {
+                // «Включи на колонке»: back from a browser too («Где играет → здесь»).
+                let browsers = web::listeners() > 0;
+                if browsers {
+                    web::stop_listeners();
+                }
+                let text = if bt::valid_mac(&mac) && self.settings.bt_on {
                     self.settings.bt_on = false;
                     self.bt_save();
                     bt::set_connected(&mac, false);
@@ -2222,8 +2236,32 @@ impl Controller {
                         }
                     });
                     "Музыка снова на колонке"
+                } else if browsers {
+                    "Музыка снова на колонке"
+                } else {
+                    "Музыка и так на колонке"
                 };
                 respond(reply, &format!("OK: {text}"), Some(text.to_owned()));
+            }
+            // «Играй в браузере»: an open page of the panel takes the sound (it sees
+            // listen.want change); said so if none did.
+            Intent::Listen => {
+                if web::listeners() > 0 {
+                    return respond(reply, "OK: музыка уже в браузере", Some("Музыка уже играет в браузере".into()));
+                }
+                web::want_listener();
+                thread::spawn(move || {
+                    let t0 = std::time::Instant::now();
+                    while t0.elapsed() < Duration::from_secs(8) && web::listeners() == 0 {
+                        thread::sleep(Duration::from_millis(300));
+                    }
+                    if web::listeners() > 0 {
+                        respond(reply, "OK: музыка в браузере", Some("Музыка в браузере".into()));
+                    } else {
+                        let text = "Не вижу открытой страницы саунди. Откройте её в браузере или окно приложения и нажмите Где играет, здесь";
+                        respond(reply, &format!("error: {text}"), Some(text.into()));
+                    }
+                });
             }
             // «Подключись к новому устройству блютус»: look around, read the names, ask which.
             Intent::BtFind => self.bt_find(reply, ""),
@@ -4126,6 +4164,7 @@ fn daemon() {
     adbkeep::configure(settings.adb_keep);
     alice::set_tv(settings.tv_configured());
     alice::set_tv_off(!settings.tv_on && !settings.tvs().is_empty());
+    sc::set_originals(settings.search_originals);
     tv::set_search_apps(settings.tv_search.clone());
     alice::set_devices(device_names(&settings));
     alice::set_pc_rules(pc_rules(&settings));

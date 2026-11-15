@@ -410,6 +410,9 @@ pub struct Settings {
     /// goes on where it was, if it is under 20 minutes ago.
     #[serde(default)]
     pub resume_music: bool,
+    /// Search: no slowed / reverb / sped up versions, originals before remixes and covers.
+    #[serde(default = "yes")]
+    pub search_originals: bool,
     /// Optional PIN for changing anything from the panel ("" = no PIN).
     /// Never sent to the page; `soundya pin off` on the speaker removes it.
     #[serde(default)]
@@ -761,6 +764,7 @@ impl Default for Settings {
             alice_voice_max: 10,
             autostart: Vec::new(),
             resume_music: false,
+            search_originals: true,
             display_on: false,
             display_widgets: display_widgets(),
             display_secs: 10,

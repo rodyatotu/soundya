@@ -353,6 +353,60 @@ pub struct PlaylistInfo {
     pub art: String,
 }
 
+/// «Искать оригиналы» (the settings): search results without slowed / reverb / sped up
+/// versions, remixes and covers after the originals.
+static ORIGINALS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_originals(on: bool) {
+    ORIGINALS.store(on, std::sync::atomic::Ordering::Release);
+}
+
+/// What a title says the track is: 2 — a remade sound of someone's track (slowed, reverb,
+/// sped up, nightcore, 8D, bass boosted); 1 — another take on it (remix, cover, edit, live,
+/// instrumental); 0 — nothing of the kind, the original as far as a title can tell.
+pub fn variant(title: &str) -> u8 {
+    // Whole words: «Olive» is not «live», «Реверберация» is not «реверб».
+    let t = title.to_lowercase().replace('ё', "е");
+    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let line = format!(" {} ", words.join(" "));
+    let word = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    let phrase = |list: &[&str]| list.iter().any(|p| line.contains(&format!(" {p} ")));
+    let starts = |list: &[&str]| words.iter().any(|w| list.iter().any(|p| w.starts_with(p)));
+    if word(&["slowed", "reverb", "reverbed", "nightcore", "daycore", "pitched", "spedup", "speedup", "bassboosted", "реверб"])
+        || phrase(&["sped up", "speed up", "slow version", "8d audio", "8d", "bass boosted", "bass boost", "tiktok version", "tik tok version"])
+        || starts(&["замедлен", "ускорен"])
+    {
+        2
+    } else if word(&["remix", "rmx", "mix", "hardstyle", "cover", "edit", "mashup", "bootleg", "flip", "live", "instrumental", "karaoke", "rework", "ремикс", "кавер", "мэшап", "караоке", "минус", "минусовка"])
+        || starts(&["инструментал"])
+    {
+        1
+    } else {
+        0
+    }
+}
+
+/// The order to show `titles` in for the search `q` (indexes into `titles`): remade versions
+/// left out, other takes after the originals, SoundCloud's own order kept within each. What
+/// the search itself asks for stays: «… slowed» finds slowed ones, «… remix» keeps remixes
+/// where they were. Nothing but remade versions found: all of them, rather than nothing.
+pub fn originals_first(q: &str, titles: &[&str]) -> Vec<usize> {
+    let asked = variant(q);
+    let all: Vec<usize> = (0..titles.len()).collect();
+    if asked == 2 {
+        return all;
+    }
+    let kinds: Vec<u8> = titles.iter().map(|t| variant(t)).collect();
+    let mut kept: Vec<usize> = all.iter().copied().filter(|i| kinds[*i] < 2).collect();
+    if kept.is_empty() {
+        return all;
+    }
+    if asked == 0 {
+        kept.sort_by_key(|i| kinds[*i]);
+    }
+    kept
+}
+
 fn playlist_info(v: &Value) -> Option<PlaylistInfo> {
     let id = match v.get("id") {
         Some(Value::Number(n)) => n.to_string(),
@@ -784,13 +838,19 @@ impl Client {
     }
 
     pub fn search_tracks(&self, q: &str) -> Res<Vec<Track>> {
-        let v = self.api("/search/tracks", &[("q", q), ("limit", "30"), ("offset", "0")])?;
+        let v = self.api("/search/tracks", &[("q", q), ("limit", "50"), ("offset", "0")])?;
         let c: Collection<Track> = serde_json::from_value(v)?;
         let (ok, skipped): (Vec<Track>, Vec<Track>) = c.collection.into_iter().partition(|t| t.transcoding().is_some());
         for t in skipped.iter().take(5) {
             eprintln!("search: skipped {}: {}", t.name(), t.why_not_playable());
         }
-        Ok(ok)
+        if !ORIGINALS.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(ok);
+        }
+        let named: Vec<(String, Track)> = ok.into_iter().map(|t| (t.name(), t)).collect();
+        let order = originals_first(q, &named.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>());
+        let mut slots: Vec<Option<Track>> = named.into_iter().map(|(_, t)| Some(t)).collect();
+        Ok(order.into_iter().filter_map(|i| slots[i].take()).collect())
     }
 
     /// Tracks and playlists for the web page.
@@ -2137,6 +2197,20 @@ mod tests {
         let mut snip = t.clone();
         snip.policy = Some("SNIP".into());
         assert!(snip.transcoding().is_none());
+    }
+
+    #[test]
+    fn originals_come_first() {
+        let found = ["Habits (slowed + reverb)", "Tove Lo — Habits (Stay High)", "Habits (Hippie Sabotage Remix)", "habits sped up", "Habits — live at x", "Tove Lo - Habits"];
+        let names = |q: &str| originals_first(q, &found).into_iter().map(|i| found[i]).collect::<Vec<_>>();
+        assert_eq!(names("habits"), ["Tove Lo — Habits (Stay High)", "Tove Lo - Habits", "Habits (Hippie Sabotage Remix)", "Habits — live at x"]);
+        // Asked for by name: as SoundCloud gave them.
+        assert_eq!(names("habits slowed").len(), 6);
+        assert_eq!(names("habits remix"), ["Tove Lo — Habits (Stay High)", "Habits (Hippie Sabotage Remix)", "Habits — live at x", "Tove Lo - Habits"]);
+        // Only remade ones exist: better them than nothing.
+        assert_eq!(originals_first("x", &["x slowed", "x (reverb)"]), [0, 1]);
+        assert_eq!((variant("Реверберация души"), variant("Ремикс на хит"), variant("Olive — You're Not Alone")), (0, 1, 0), "whole words only");
+        assert_eq!((variant("track (Slowed+Reverb)"), variant("песня (замедленная версия)"), variant("song [8D AUDIO]"), variant("Alive (Live)")), (2, 2, 2, 1));
     }
 
     #[test]

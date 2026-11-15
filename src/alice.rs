@@ -67,6 +67,9 @@ pub enum Intent {
     Address,
     /// «Включи музыку в наушниках» (true) / «верни музыку на колонку» (false): Bluetooth output (bt.rs).
     BtOut(bool),
+    /// «Играй в браузере», «включи в приложении»: the sound goes to an open page of the
+    /// panel or the Mac / Windows window («Где играет → здесь», by voice).
+    Listen,
     /// «Подключись к новому устройству блютус»: find Bluetooth devices nearby, read their
     /// names aloud and ask which one to connect.
     BtFind,
@@ -1603,6 +1606,22 @@ fn bt_voice(n: &str) -> Option<Intent> {
     if let Some(on) = bt_out(n) {
         return Some(Intent::BtOut(on));
     }
+    // «Где играет» by voice, said while the music is in a browser or a Bluetooth device:
+    // «включи на колонке», «играй в браузере». Without this «включи на колонке» was a search
+    // for a track called «на колонке».
+    {
+        let words: Vec<&str> = n.split_whitespace().filter(|w| !matches!(*w, "пожалуйста" | "музыку" | "звук" | "трек" | "песню" | "это" | "ее" | "его" | "снова" | "обратно")).collect();
+        if let Some((&verb, rest)) = words.split_first() {
+            let rest = rest.join(" ");
+            let moves = matches!(verb, "включи" | "играй" | "поставь" | "продолжи" | "запусти" | "переключи" | "переключись" | "переведи" | "выведи" | "пусти" | "перекинь" | "воспроизводи" | "воспроизведи");
+            if moves && matches!(rest.as_str(), "на колонке" | "на колонку" | "на станции" | "на станцию" | "на самой колонке" | "на саму колонку" | "на алисе" | "из колонки" | "через колонку") {
+                return Some(Intent::BtOut(false));
+            }
+            if moves && matches!(rest.as_str(), "в браузере" | "в браузер" | "на браузер" | "на браузере" | "через браузер" | "в приложении" | "в приложение" | "в окне" | "в окно" | "на странице" | "в приложении саундя" | "в окне саундя") {
+                return Some(Intent::Listen);
+            }
+        }
+    }
     let words: Vec<&str> = n.split_whitespace().filter(|w| !matches!(*w, "пожалуйста" | "мне" | "мою" | "мои" | "мой")).collect();
     let (&verb, rest) = words.split_first()?;
     let bt = bt_word(n);
@@ -1745,8 +1764,8 @@ pub fn plain_command(text: &str) -> String {
         ("покажите", "покажи"), ("показать", "покажи"), ("показывай", "покажи"),
     ];
     // The rules' own first words: after small talk they are a command too («давай открой ютуб»).
-    const KNOWN: [&str; 26] = [
-        "включи", "выключи", "открой", "запусти", "закрой", "найди", "поищи", "поставь", "сделай", "нажми", "переключи", "перемотай",
+    const KNOWN: [&str; 28] = [
+        "играй", "воспроизведи", "включи", "выключи", "открой", "запусти", "закрой", "найди", "поищи", "поставь", "сделай", "нажми", "переключи", "перемотай",
         "останови", "продолжи", "убавь", "прибавь", "покажи", "подключи", "отключи", "усыпи", "разбуди", "верни", "вернись", "отмотай", "выбери", "зайди",
     ];
     let n = normalize(text);
@@ -2689,7 +2708,7 @@ fn read_frames(
             // messages are ours; all music stays Alice's.
             let music = !matches!(
                 intent,
-                Intent::Pc(_) | Intent::Tv(_) | Intent::On(..) | Intent::Address | Intent::BtOut(_) | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
+                Intent::Pc(_) | Intent::Tv(_) | Intent::On(..) | Intent::Address | Intent::BtOut(_) | Intent::Listen | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
             ) && !is_alarm(&intent);
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
@@ -2806,7 +2825,7 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
-        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
+        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::Listen | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
         Intent::Alarm(_) => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
@@ -3431,6 +3450,15 @@ mod routing_tests {
             assert_eq!(i(t), Some(Intent::BtFind), "{t}");
         }
         // Back to the speaker.
+        for t in ["включи на колонке", "Алиса, играй на колонке", "включи музыку на колонке", "переключи звук на колонку", "продолжи на станции"] {
+            assert_eq!(intent(t, false), Some(Intent::BtOut(false)), "{t}");
+        }
+        for t in ["играй в браузере", "включи в браузере", "переключи музыку в браузер", "включи в приложении", "давай играй в окне"] {
+            assert_eq!(intent(t, false), Some(Intent::Listen), "{t}");
+        }
+        // A browser as a place for something else is not «where it plays».
+        assert_ne!(intent("открой ютуб в браузере", false), Some(Intent::Listen));
+        assert_ne!(intent("включи колонку", false), Some(Intent::BtOut(false)));
         for t in ["верни звук на колонку", "вернись на колонку", "вернись на станцию", "возвращайся на колонку", "верни музыку на колонку", "отключи блютуз колонку", "переключи музыку на колонку", "выключи блютуз наушники"] {
             assert_eq!(i(t), Some(Intent::BtOut(false)), "{t}");
         }

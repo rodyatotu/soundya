@@ -1064,7 +1064,7 @@
     <button class="icon psearchbtn" id="psearchbtn" onclick="toggleSearch()" title="Поиск" aria-label="Поиск" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></button>
     <div class="psearch" id="psearch" hidden>
     <div class="search">
-      <input type="text" id="query" placeholder="Трек, исполнитель или ссылка soundcloud.com" autocomplete="off">
+      <input type="text" id="query" placeholder="Трек, исполнитель, плейлист, альбом или ссылка soundcloud.com" autocomplete="off">
       <button class="primary" onclick="search()">Найти</button>
     </div>
     <div class="msg" id="searchmsg"></div>
@@ -1652,6 +1652,8 @@
       <button data-music="yandex" role="radio">Яндекс Музыка</button>
     </div>
     <p class="hint" id="musichint"></p>
+    <label class="check"><input type="checkbox" id="searchorig" onchange="saveSearchOrig()"><span>Искать оригиналы
+      <small>Без slowed, reverb, sped up, nightcore и 8D; ремиксы и каверы — после оригиналов. Если в запросе само слово «slowed» или «remix», они находятся как обычно.</small></span></label>
     <div class="field">Будильник</div>
     <div class="seg" id="alarmkind" role="radiogroup">
       <button data-alarm="own" role="radio">soundya</button>
@@ -3417,6 +3419,9 @@ async function saveMacro() {
 // this page plays the same track from the same place and follows it.
 const tabId = Math.random().toString(36).slice(2, 12);
 let listening = false, listenTrack = null, listenOffset = 0, listenGen = null, listenBeat = null;
+// «Алиса, играй в браузере»: the speaker's counter; a change while this page is on screen
+// (and has been touched: a browser lets sound start only then) takes the sound here.
+let listenWant = null;
 // Where this browser is in the track: `listenOffset` (asked from the speaker) +
 // what played since the audio started (`currentTime` then = `listenBase`: an MP4
 // started at a segment reports its time in the track, not 0) + `listenAlign`,
@@ -3570,6 +3575,14 @@ function syncListen(s) {
       : `Музыка звучит в браузере у ${L.listeners} слушател${L.listeners === 1 ? 'я' : 'ей'}; колонка молчит.`);
     const b = document.createElement('button'); b.className = 'link'; b.textContent = 'Вернуть звук на колонку'; b.onclick = stopAllListeners;
     note.appendChild(b);
+  }
+  if (L.want !== undefined) {
+    const asked = listenWant !== null && L.want !== listenWant;
+    listenWant = L.want;
+    if (asked && !listening && document.visibilityState === 'visible' && (!navigator.userActivation || navigator.userActivation.hasBeenActive)) {
+      setOutput('here');
+      return;
+    }
   }
   if (!listening) return;
   if (listenGen === null) listenGen = L.gen;
@@ -5748,6 +5761,9 @@ const MUSIC_HINT = {
   soundcloud: '«Алиса, включи Bonobo» — SoundCloud. «… в яндекс музыке», плейлист дня, подкасты, радио и книги остаются Алисе.',
   yandex: '«Алиса, включи Bonobo» — Яндекс Музыка (нужна подписка). SoundCloud — только когда он назван: «включи Bonobo в саундклауде», «включи мои лайки на саундклауде».',
 };
+async function saveSearchOrig() {
+  show($('spkmsg'), await post('/api/settings', JSON.stringify({ search_originals: $('searchorig').checked })));
+}
 function renderMusic(m) {
   document.querySelectorAll('#musicdefault button').forEach(b => {
     b.classList.toggle('on', b.dataset.music === m); b.setAttribute('aria-checked', String(b.dataset.music === m));
@@ -6067,6 +6083,7 @@ async function refresh(force = false) {
     $('proxy').value = settings.proxy;
     $('keyword').checked = settings.keyword_only;
     renderMusic(settings.music_default || (settings.keyword_only ? 'yandex' : 'soundcloud'));
+    if (document.activeElement !== $('searchorig')) $('searchorig').checked = settings.search_originals !== false;
     renderAlarmKind(settings.alarm_own);
     $('ring').checked = settings.ring !== false;
     renderLight(settings);
@@ -6208,22 +6225,26 @@ async function search() {
   if (r.error) { show($('searchmsg'), r.error, true); return; }
   $('searchmsg').textContent = '';
   if (!r.tracks.length && !r.playlists.length) { show($('searchmsg'), 'Ничего не нашлось', true); return; }
-  if (r.tracks.length) {
-    const h = document.createElement('h3'); h.textContent = 'Треки';
-    const ul = document.createElement('ul'); ul.className = 'list';
-    r.tracks.forEach((t, i) => ul.appendChild(item(t.name, '', mmss(t.duration_ms), async () => {
-      busy($('searchmsg'), 'Включаю…');
-      show($('searchmsg'), await post('/api/cmd', 'pick ' + i));
-      refresh();
-    }, '', writes && settings.token ? heart(t.id, t.liked, refresh) : null)));
-    box.append(h, ul);
-  }
-  if (r.playlists.length) {
-    const h = document.createElement('h3'); h.textContent = 'Плейлисты';
-    const ul = document.createElement('ul'); ul.className = 'list';
-    playlistItems(ul, r.playlists, $('searchmsg'));
-    box.append(h, ul);
-  }
+  // Tracks and playlists side by side under a switch: the playlists used to sit below all the
+  // tracks, out of sight («плейлисты не ищет»).
+  const tracks = document.createElement('ul'); tracks.className = 'list';
+  r.tracks.forEach((t, i) => tracks.appendChild(item(t.name, '', mmss(t.duration_ms), async () => {
+    busy($('searchmsg'), 'Включаю…');
+    show($('searchmsg'), await post('/api/cmd', 'pick ' + i));
+    refresh();
+  }, '', writes && settings.token ? heart(t.id, t.liked, refresh) : null)));
+  const lists = document.createElement('ul'); lists.className = 'list';
+  playlistItems(lists, r.playlists, $('searchmsg'));
+  const seg = document.createElement('div'); seg.className = 'seg';
+  const tabs = [['Треки', tracks, r.tracks.length], ['Плейлисты и альбомы', lists, r.playlists.length]];
+  const pick = n => tabs.forEach(([, ul], i) => { ul.style.display = i === n ? '' : 'none'; seg.children[i].classList.toggle('on', i === n); });
+  tabs.forEach(([name, , count], i) => {
+    const b = document.createElement('button'); b.textContent = `${name} · ${count}`; b.disabled = !count; b.onclick = () => pick(i);
+    seg.appendChild(b);
+  });
+  box.append(seg, tracks, lists);
+  // Asked for a playlist by the word, or no tracks at all: the playlists first.
+  pick(r.playlists.length && (!r.tracks.length || /плейлист|playlist|альбом|album|сборник|подборк|микс|\bmix\b/i.test(q)) ? 1 : 0);
 }
 $('query').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
 

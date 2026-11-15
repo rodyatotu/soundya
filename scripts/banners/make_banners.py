@@ -244,17 +244,27 @@ def whatsnew(out):
 
 
 def telegram(out):
+    """The picture for the release's Telegram post (docs/posts/): python3 -c
+    "import sys; sys.path.insert(0, 'scripts/banners'); import make_banners as m; m.telegram('docs/posts/soundya-0.6.png')" """
     w, h = 1280, 720
     img = background(w, h)
-    cx, cy = 1010, 270
+    cx, cy = 1030, 262
     ring(img, cx, cy, 135, bars=56, length=(20, 75), width=11)
     paste_icon(img, cx, cy, 225)
-    text(img, (78, 96), "ОБНОВЛЕНИЕ 0.5.00", font(26, "Heavy"), PINK, spacing=6)
-    neon_text(img, (66, 128), "soundya", font(150, "Black", italic=True))
-    text(img, (78, 330), "Нас больше ста!", font(56, "Heavy"), (255, 255, 255))
-    text(img, (78, 400), "Спасибо, что слушаете и рассказываете друзьям", font(28, "Medium"), (210, 200, 240))
-    chips(img, 78, 470, ["Пульт ТВ", "Планы", "Помодоро", "Bluetooth", "Mac и Windows", "Откат"], font(25, "Semibold"), max_x=800)
-    stat_card(img, cx, 560, 60, 24)
+    text(img, (78, 84), "ОБНОВЛЕНИЕ 0.6", font(26, "Heavy"), PINK, spacing=6)
+    neon_text(img, (66, 112), "soundya", font(150, "Black", italic=True))
+    text(img, (78, 312), "Несколько команд подряд", font(54, "Heavy"), (255, 255, 255))
+    # What is said, in a glass bubble: the release's main trick.
+    said = "«Алиса, включи проектор, открой впн"
+    said2 = "и потом найди на рутубе фильм Дюна»"
+    f = font(27, "Medium")
+    d = ImageDraw.Draw(img)
+    bw = max(d.textlength(said, font=f), d.textlength(said2, font=f)) + 56
+    glass(img, [70, 392, 70 + bw, 392 + 104], 28, alpha=30, edge=80)
+    text(img, (98, 408), said, f, (225, 215, 250))
+    text(img, (98, 446), said2, f, (225, 215, 250))
+    chips(img, 78, 528, ["Bluetooth голосом", "Windows", "Задачи поверх окон", "Сценарии", "Telegram"], font(25, "Semibold"), max_x=860)
+    stat_card(img, cx, 548, 60, 24)
     img.convert("RGB").save(out, quality=93)
 
 
