@@ -67,6 +67,9 @@ pub enum Intent {
     Address,
     /// «Включи музыку в наушниках» (true) / «верни музыку на колонку» (false): Bluetooth output (bt.rs).
     BtOut(bool),
+    /// «Играй в браузере», «включи в приложении»: the sound goes to an open page of the
+    /// panel or the Mac / Windows window («Где играет → здесь», by voice).
+    Listen,
     /// «Подключись к новому устройству блютус»: find Bluetooth devices nearby, read their
     /// names aloud and ask which one to connect.
     BtFind,
@@ -1603,6 +1606,22 @@ fn bt_voice(n: &str) -> Option<Intent> {
     if let Some(on) = bt_out(n) {
         return Some(Intent::BtOut(on));
     }
+    // «Где играет» by voice, said while the music is in a browser or a Bluetooth device:
+    // «включи на колонке», «играй в браузере». Without this «включи на колонке» was a search
+    // for a track called «на колонке».
+    {
+        let words: Vec<&str> = n.split_whitespace().filter(|w| !matches!(*w, "пожалуйста" | "музыку" | "звук" | "трек" | "песню" | "это" | "ее" | "его" | "снова" | "обратно")).collect();
+        if let Some((&verb, rest)) = words.split_first() {
+            let rest = rest.join(" ");
+            let moves = matches!(verb, "включи" | "играй" | "поставь" | "продолжи" | "запусти" | "переключи" | "переключись" | "переведи" | "выведи" | "пусти" | "перекинь" | "воспроизводи" | "воспроизведи");
+            if moves && matches!(rest.as_str(), "на колонке" | "на колонку" | "на станции" | "на станцию" | "на самой колонке" | "на саму колонку" | "на алисе" | "из колонки" | "через колонку") {
+                return Some(Intent::BtOut(false));
+            }
+            if moves && matches!(rest.as_str(), "в браузере" | "в браузер" | "на браузер" | "на браузере" | "через браузер" | "в приложении" | "в приложение" | "в окне" | "в окно" | "на странице" | "в приложении саундя" | "в окне саундя") {
+                return Some(Intent::Listen);
+            }
+        }
+    }
     let words: Vec<&str> = n.split_whitespace().filter(|w| !matches!(*w, "пожалуйста" | "мне" | "мою" | "мои" | "мой")).collect();
     let (&verb, rest) = words.split_first()?;
     let bt = bt_word(n);
@@ -1745,8 +1764,8 @@ pub fn plain_command(text: &str) -> String {
         ("покажите", "покажи"), ("показать", "покажи"), ("показывай", "покажи"),
     ];
     // The rules' own first words: after small talk they are a command too («давай открой ютуб»).
-    const KNOWN: [&str; 26] = [
-        "включи", "выключи", "открой", "запусти", "закрой", "найди", "поищи", "поставь", "сделай", "нажми", "переключи", "перемотай",
+    const KNOWN: [&str; 28] = [
+        "играй", "воспроизведи", "включи", "выключи", "открой", "запусти", "закрой", "найди", "поищи", "поставь", "сделай", "нажми", "переключи", "перемотай",
         "останови", "продолжи", "убавь", "прибавь", "покажи", "подключи", "отключи", "усыпи", "разбуди", "верни", "вернись", "отмотай", "выбери", "зайди",
     ];
     let n = normalize(text);
@@ -1846,6 +1865,55 @@ pub fn chain(text: &str, keyword_only: bool) -> Option<Vec<Intent>> {
         out.push(step);
     }
     Some(out)
+}
+
+/// What to search SoundCloud for when the owner asked for «мне какой-нибудь лоуфай хипхоп»:
+/// the small talk out («мне», «какой-нибудь», «немного»), and a genre said in Russian in its
+/// own spelling — SoundCloud finds nothing for «лоуфай хипхоп» and plenty for «lofi hip hop».
+/// Genres are respelled only when the whole request is genre words: an artist's or a
+/// track's name is never touched.
+pub fn music_query(q: &str) -> String {
+    const GENRES: [(&str, &str); 52] = [
+        ("лоуфай", "lofi"), ("лофай", "lofi"), ("лоуфи", "lofi"), ("лофи", "lofi"), ("хипхоп", "hip hop"), ("хип", "hip"), ("хоп", "hop"),
+        ("рэп", "rap"), ("реп", "rap"), ("джаз", "jazz"), ("рок", "rock"), ("техно", "techno"), ("хаус", "house"), ("фонк", "phonk"),
+        ("трэп", "trap"), ("чилл", "chill"), ("чил", "chill"), ("чилаут", "chillout"), ("эмбиент", "ambient"), ("синтвейв", "synthwave"),
+        ("поп", "pop"), ("метал", "metal"), ("панк", "punk"), ("регги", "reggae"), ("фанк", "funk"), ("соул", "soul"), ("блюз", "blues"),
+        ("диско", "disco"), ("транс", "trance"), ("дабстеп", "dubstep"), ("днб", "drum and bass"), ("драм", "drum"), ("энд", "and"),
+        ("бейс", "bass"), ("бэйс", "bass"), ("инди", "indie"), ("электроника", "electronic"), ("электронику", "electronic"),
+        ("классика", "classical"), ("классику", "classical"), ("хардстайл", "hardstyle"), ("гиперпоп", "hyperpop"), ("дрилл", "drill"),
+        ("биты", "beats"), ("битов", "beats"), ("гранж", "grunge"), ("шугейз", "shoegaze"), ("эйсид", "acid"), ("гараж", "garage"),
+        ("дип", "deep"), ("лоу", "lo"), ("фай", "fi"),
+    ];
+    let n = normalize(q).replace('-', " ");
+    let mut words: Vec<&str> = n.split_whitespace().collect();
+    while matches!(words.first(), Some(&"мне") | Some(&"нам") | Some(&"пожалуйста") | Some(&"немного") | Some(&"чуть")) {
+        words.remove(0);
+    }
+    // «какой нибудь», «что нибудь», «какую то»
+    let mut kept: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let some = matches!(words[i], "какой" | "какую" | "какое" | "какие" | "какого" | "что" | "чего");
+        if some && matches!(words.get(i + 1), Some(&"нибудь") | Some(&"то") | Some(&"либо")) {
+            i += 2;
+            continue;
+        }
+        if words[i] != "пожалуйста" {
+            kept.push(words[i]);
+        }
+        i += 1;
+    }
+    if kept.is_empty() {
+        return q.trim().to_owned();
+    }
+    // Words that only say «music»: dropped next to a genre («лоуфай музыку»).
+    let filler = |w: &str| matches!(w, "музыку" | "музыка" | "музыки" | "музон" | "треки" | "песни");
+    let genre = |w: &str| GENRES.iter().find(|(ru, _)| *ru == w).map(|(_, en)| *en);
+    let meaningful: Vec<&str> = kept.iter().copied().filter(|w| !filler(w)).collect();
+    if !meaningful.is_empty() && meaningful.iter().all(|w| genre(w).is_some()) {
+        return meaningful.iter().filter_map(|w| genre(w)).collect::<Vec<_>>().join(" ").replace("lo fi", "lofi");
+    }
+    kept.join(" ")
 }
 
 /// Does it begin like a command (after `plain_command`'s easing)?
@@ -2283,6 +2351,24 @@ fn quiet() -> bool {
     QUIET_UNTIL.load(std::sync::atomic::Ordering::Acquire) > now_ms()
 }
 
+/// Is the silencing of Alice over because the owner speaks to her again? `state`: her new
+/// state (0 idle, 1 listening, 2 speaking, 3 preparing an answer); `idle_seen`: she has been
+/// idle since the silencing began — kept between calls. Her late answer to the phrase soundya
+/// took comes as «preparing → speaking» with no listening before it; «listening» after she
+/// went idle is a new «Алиса, …», and its answer is hers to give. Without this, a question
+/// asked within six seconds of a soundya command (or of the ▶‖ button) was heard and then
+/// cut off: «Алиса иногда не отвечает».
+fn spoken_to_again(state: u64, idle_seen: &mut bool) -> bool {
+    match state {
+        0 => {
+            *idle_seen = true;
+            false
+        }
+        1 => *idle_seen,
+        _ => false,
+    }
+}
+
 fn alice_busy(data: &[u8]) -> Option<bool> {
     if number(data, 253) != Some(3) {
         return None;
@@ -2550,6 +2636,8 @@ fn read_frames(
     let mut data = Vec::with_capacity(4096);
     // After taking over a phrase, Alice's own late answer («нужна подписка…») is cut off.
     let mut suppress_until: Option<std::time::Instant> = None;
+    // Alice has been idle since the silencing began (see `spoken_to_again`).
+    let mut idle_seen = false;
     let mut last_cancel = std::time::Instant::now();
     loop {
         let mut len = [0u8; 4];
@@ -2569,6 +2657,18 @@ fn read_frames(
             SPEAKING.store(state == 2, std::sync::atomic::Ordering::Release);
             #[cfg(feature = "dev")]
             eprintln!("dev: alice state {state}");
+        }
+        // The owner speaks to her again: what she answers now is not the late answer.
+        if let Some(state) = alice_state(&data) {
+            let silencing = suppress_until.is_some_and(|t| std::time::Instant::now() < t) || quiet();
+            if !silencing {
+                idle_seen = false;
+            } else if spoken_to_again(state, &mut idle_seen) {
+                eprintln!("voice: Alice is spoken to again; her answer is not cut off");
+                suppress_until = None;
+                QUIET_UNTIL.store(0, std::sync::atomic::Ordering::Release);
+                idle_seen = false;
+            }
         }
         // A phrase we took over: her answer is cancelled while she is still preparing it
         // (state 3, «думаю»). The cancel sent with the phrase itself comes while she is still
@@ -2615,6 +2715,7 @@ fn read_frames(
                 OWN_SPEECH.store(false, std::sync::atomic::Ordering::Release);
                 cancel_alice();
                 suppress_until = Some(std::time::Instant::now() + Duration::from_secs(6));
+                idle_seen = false;
             };
             // An answer to soundya's own question first («Алиса, на проекторе», «Алиса, первое»).
             // Not while the alarm rings: its «стоп» and its sum come before everything.
@@ -2668,6 +2769,9 @@ fn read_frames(
                     shared.set_alice_music();
                 }
                 eprintln!("voice: {text:?} left to Alice");
+                // Hers to answer, even right after a phrase soundya took.
+                suppress_until = None;
+                QUIET_UNTIL.store(0, std::sync::atomic::Ordering::Release);
                 // Her own «громче» / «тише»: soundya only follows the level.
                 crate::volume::heard(&text);
                 continue;
@@ -2689,7 +2793,7 @@ fn read_frames(
             // messages are ours; all music stays Alice's.
             let music = !matches!(
                 intent,
-                Intent::Pc(_) | Intent::Tv(_) | Intent::On(..) | Intent::Address | Intent::BtOut(_) | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
+                Intent::Pc(_) | Intent::Tv(_) | Intent::On(..) | Intent::Address | Intent::BtOut(_) | Intent::Listen | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
             ) && !is_alarm(&intent);
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
@@ -2806,7 +2910,7 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
-        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
+        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::Listen | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
         Intent::Alarm(_) => true,
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
@@ -3431,6 +3535,15 @@ mod routing_tests {
             assert_eq!(i(t), Some(Intent::BtFind), "{t}");
         }
         // Back to the speaker.
+        for t in ["включи на колонке", "Алиса, играй на колонке", "включи музыку на колонке", "переключи звук на колонку", "продолжи на станции"] {
+            assert_eq!(intent(t, false), Some(Intent::BtOut(false)), "{t}");
+        }
+        for t in ["играй в браузере", "включи в браузере", "переключи музыку в браузер", "включи в приложении", "давай играй в окне"] {
+            assert_eq!(intent(t, false), Some(Intent::Listen), "{t}");
+        }
+        // A browser as a place for something else is not «where it plays».
+        assert_ne!(intent("открой ютуб в браузере", false), Some(Intent::Listen));
+        assert_ne!(intent("включи колонку", false), Some(Intent::BtOut(false)));
         for t in ["верни звук на колонку", "вернись на колонку", "вернись на станцию", "возвращайся на колонку", "верни музыку на колонку", "отключи блютуз колонку", "переключи музыку на колонку", "выключи блютуз наушники"] {
             assert_eq!(i(t), Some(Intent::BtOut(false)), "{t}");
         }
@@ -3633,5 +3746,51 @@ mod chain_tests {
             "включи проектор и расскажи анекдот"] {
             assert_eq!(chain(said, false), None, "{said}");
         }
+    }
+}
+
+#[cfg(test)]
+mod music_query_tests {
+    use super::music_query;
+
+    #[test]
+    fn small_talk_goes_and_genres_are_spelled_as_soundcloud_knows_them() {
+        for (said, query) in [
+            ("какой нибудь лоуфай хипхоп", "lofi hip hop"),
+            ("мне какой-нибудь лоу фай хип хоп", "lofi hip hop"),
+            ("что нибудь фонк", "phonk"),
+            ("немного джаз музыку", "jazz"),
+            ("драм энд бейс", "drum and bass"),
+            // A name is a name: only the small talk goes.
+            ("мне Кино группа крови", "кино группа крови"),
+            ("рок острова", "рок острова"),
+            ("Bonobo", "bonobo"),
+            ("что нибудь", "что нибудь"),
+        ] {
+            assert_eq!(music_query(said), query, "{said}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod silencing_tests {
+    use super::spoken_to_again;
+
+    #[test]
+    fn a_new_request_ends_the_silencing() {
+        // A phrase soundya took while she listened: her late answer (3, then 2) is still
+        // cut off — no «listening» after «idle» yet.
+        let mut idle = false;
+        for state in [1, 3, 2] {
+            assert!(!spoken_to_again(state, &mut idle), "state {state}");
+        }
+        // She went idle, then the owner said «Алиса, …» again: over.
+        assert!(!spoken_to_again(0, &mut idle));
+        assert!(spoken_to_again(1, &mut idle));
+        // The ▶‖ button: idle, then her answer to the press (3) — still silenced.
+        let mut idle = false;
+        assert!(!spoken_to_again(0, &mut idle));
+        assert!(!spoken_to_again(3, &mut idle));
+        assert!(spoken_to_again(1, &mut idle), "but a word to her after it is hers");
     }
 }

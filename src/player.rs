@@ -90,12 +90,22 @@ pub struct Flags {
     /// Another sound card for the rest of the track (Bluetooth on/off): the same download goes
     /// on, only the card is reopened — no new stream, no jump.
     move_to: std::sync::Mutex<Option<String>>,
+    /// The stream can be opened in the middle (HLS, by its segments): a far jump forward ends
+    /// the track with `Outcome::Seek` too, and it is opened again right at the target.
+    pub seekable: AtomicBool,
+    /// Where this stream starts in the track, ms (opened in the middle): positions count from it.
+    pub start_ms: AtomicU64,
 }
 
+/// A jump forward further than this is a new stream at the target, where the stream allows
+/// it: decoding the whole way there («нажал 11-ю минуту — крутил две минуты») downloads and
+/// decodes everything in between. Nearer than this the audio is mostly downloaded already.
+const FAR_JUMP_MS: u64 = 20_000;
+
 impl Flags {
-    /// Jumps to `ms`. Forward jumps continue the same download (the audio in
-    /// between is decoded silently); a jump back ends the track with
-    /// `Outcome::Seek`, so it is opened again from the start.
+    /// Jumps to `ms`. A near jump forward continues the same download (the audio in between
+    /// is decoded silently); a jump back or far forward ends the track with `Outcome::Seek`,
+    /// so it is opened again — at the target if the stream can start in the middle.
     pub fn seek(&self, ms: u64) {
         self.seek.store(ms + 1, Ordering::Release);
     }
@@ -232,7 +242,7 @@ fn run(
         if seek > 0 {
             let target = seek - 1;
             let now = if rate > 0 { frames_played * 1000 / rate } else { 0 };
-            if target < now {
+            if target < now || (flags.seekable.load(Ordering::Acquire) && target > now + FAR_JUMP_MS) {
                 if let Some(o) = out.as_mut() {
                     o.stop_now();
                 }
@@ -289,6 +299,10 @@ fn run(
         };
         let spec = *decoded.spec();
         let channels = spec.channels.count();
+        // The stream was opened in the middle: its first frame is not the track's first.
+        if rate == 0 {
+            frames_played = flags.start_ms.load(Ordering::Acquire) * u64::from(spec.rate.max(1)) / 1000;
+        }
         rate = u64::from(spec.rate.max(1));
         if skip_until > 0 && (frames_played * 1000 / rate) < skip_until {
             // Catching up to where the track broke off: decode without sound.

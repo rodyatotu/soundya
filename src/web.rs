@@ -27,6 +27,17 @@ mod listen_tests {
         let g = super::LISTEN_GEN.load(std::sync::atomic::Ordering::Acquire);
         super::stop_listeners();
         assert_eq!(super::listeners(), 0);
+        // The tab has not noticed yet and says «still listening»: the speaker stays on.
+        // (By the tab, not by the count: the other test of this module runs beside this one.)
+        super::listen("tabB", true);
+        assert!(!super::listening_tab("tabB"), "a heartbeat after the sound was taken back");
+        super::listen("tabB", false);
+        super::listen("tabB", true);
+        assert!(!super::listening_tab("tabB"), "its own stop does not shorten that");
+        // Chosen again by hand: it listens.
+        super::listen_from("tabB", true, true);
+        assert!(super::listening_tab("tabB"));
+        super::listen("tabB", false);
         assert_eq!(super::LISTEN_GEN.load(std::sync::atomic::Ordering::Acquire), g + 1);
     }
     #[test]
@@ -264,6 +275,14 @@ const LISTEN_TTL: Duration = Duration::from_secs(90);
 static STREAMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const MAX_STREAMS: usize = 6;
 
+/// Bumped by «Алиса, играй в браузере»: an open page of the panel (or the Mac / Windows
+/// window) that sees it change takes the sound, as its «Где играет → здесь» does.
+pub static LISTEN_WANT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn want_listener() {
+    LISTEN_WANT.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
 /// How many browsers listen now (expired heartbeats dropped).
 pub fn listeners() -> usize {
     let mut g = LISTENERS.lock().unwrap();
@@ -272,10 +291,16 @@ pub fn listeners() -> usize {
     map.len()
 }
 
-/// Tabs that just stopped listening: a late «still listening» (sent a moment before the stop,
-/// arrived after it) must not make the speaker silent again.
+/// Tabs that stopped listening, each until when: a late «still listening» (sent a moment
+/// before the stop, arrived after it) must not make the speaker silent again.
 static STOPPED: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = std::sync::Mutex::new(None);
 const LATE_BEAT: Duration = Duration::from_secs(3);
+/// A tab the speaker took the sound from («верни звук на колонку», «Алиса, включи на
+/// колонке») goes on saying «still listening» until it notices — a hidden window or a
+/// background tab, whose timers are slowed, for a long while. Each such heartbeat made the
+/// speaker silent again: the return «did not always work». Not counted until the tab is
+/// chosen again by hand.
+const TAKEN_BACK: Duration = Duration::from_secs(600);
 
 /// A tab starts (`start`: the user chose «этот браузер»), keeps (`on`) or stops listening.
 pub fn listen_from(id: &str, on: bool, start: bool) -> usize {
@@ -283,7 +308,8 @@ pub fn listen_from(id: &str, on: bool, start: bool) -> usize {
     {
         let mut stopped = STOPPED.lock().unwrap();
         let stopped = stopped.get_or_insert_with(Default::default);
-        stopped.retain(|_, at| at.elapsed() < LATE_BEAT);
+        let now = std::time::Instant::now();
+        stopped.retain(|_, until| now < *until);
         let mut g = LISTENERS.lock().unwrap();
         let map = g.get_or_insert_with(Default::default);
         if on && !id.is_empty() {
@@ -296,7 +322,10 @@ pub fn listen_from(id: &str, on: bool, start: bool) -> usize {
         } else {
             map.remove(&id);
             if !id.is_empty() {
-                stopped.insert(id, std::time::Instant::now());
+                // Not shorter than what the speaker itself set for it.
+                let until = now + LATE_BEAT;
+                let e = stopped.entry(id).or_insert(until);
+                *e = (*e).max(until);
             }
         }
     }
@@ -315,7 +344,15 @@ fn listening_tab(id: &str) -> bool {
 
 /// «Вернуть звук на колонку».
 pub fn stop_listeners() {
-    LISTENERS.lock().unwrap().get_or_insert_with(Default::default).clear();
+    {
+        let mut stopped = STOPPED.lock().unwrap();
+        let stopped = stopped.get_or_insert_with(Default::default);
+        let mut g = LISTENERS.lock().unwrap();
+        let until = std::time::Instant::now() + TAKEN_BACK;
+        for (id, _) in g.get_or_insert_with(Default::default).drain() {
+            stopped.insert(id, until);
+        }
+    }
     LISTEN_GEN.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 

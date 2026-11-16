@@ -211,3 +211,16 @@ IP=$(ip -4 addr show wlan0 2>/dev/null | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | 
 echo "Web page: http://soundya.local:8765/  (or http://${IP:-<IP колонки>}:8765/)"
 echo "AirPlay: the speaker shows up on iPhone and Mac as «Яндекс Станция» (name: settings page)"
 echo "Log: /tmp/soundya.log (survives a reboot as $DIR/previous.log)"
+
+# /tmp is memory on a Station (tmpfs, 244 MB for everything): the package it was installed
+# from — the archive and its unpacked copy, 12 MB — stayed there until the next reboot and
+# left Alice short of memory (she woke to her name seconds late). Only the known places an
+# install comes from, only after it went well; the last thing this script does.
+case "$SRC" in
+    /tmp/soundya)
+        cd / && rm -rf /tmp/soundya /tmp/soundya-armv7.tar
+        ;;
+    /tmp/soundya-update/soundya)
+        cd / && rm -rf /tmp/soundya-update /tmp/soundya-update.tar
+        ;;
+esac
