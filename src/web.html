@@ -467,6 +467,14 @@
   @keyframes ambieq { from { opacity: var(--b); } to { opacity: calc(var(--b) * .2); } }
   .seg { display: flex; gap: 4px; padding: 4px; margin-top: 6px; border-radius: 16px; background: var(--bg); border: 1px solid var(--glass-edge); }
   .seg button { flex: 1; border: 0; background: transparent; padding: 9px 6px; border-radius: 12px; }
+  /* Tokens, keys and the PIN: shown as dots, but plain text fields. As type="password" the
+     browser took any of them for a login form and kept offering «Сохранить пароль?» with the
+     search box's text as the user name. */
+  input.secret { -webkit-text-security: disc; text-security: disc; }
+  /* Search results' «Треки / Плейлисты» switch: stays at the top while the list scrolls under it. */
+  .rseg { position: sticky; top: 0; z-index: 2; margin: 0 0 6px; background: var(--bg, #14121c); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  /* The scenario open in the editor. */
+  #macrolist li.on { box-shadow: inset 3px 0 0 #ff7a1a; background: rgba(255, 122, 26, .08); }
   .seg button.on { background: linear-gradient(135deg, #ff7a1a, #ff3d5a); color: #fff; box-shadow: 0 4px 14px rgba(255, 80, 40, .3); }
   .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
   .eq { display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; margin-top: 14px; padding: 12px 6px 8px;
@@ -1312,7 +1320,7 @@
           <div class="row"><button class="primary" onclick="$('gfile').click()">Выбрать файл ключа (.json)</button></div>
           <details class="guide"><summary>или ввести вручную</summary>
             <label class="field">Client ID<input type="text" id="gid" placeholder="123…apps.googleusercontent.com" autocomplete="off" spellcheck="false" onpaste="setTimeout(googleKeyText, 0)"></label>
-            <label class="field">Client secret<input type="password" id="gsecret" placeholder="GOCSPX-…" autocomplete="off" spellcheck="false"></label>
+            <label class="field">Client secret<input type="text" class="secret" id="gsecret" placeholder="GOCSPX-…" autocomplete="off" spellcheck="false"></label>
             <div class="row"><button onclick="saveGoogleClient()">Сохранить ключ</button></div>
           </details>
         </li>
@@ -1351,7 +1359,7 @@
         вырезается из отчётов об ошибках. Если он утёк — в тех же настройках Google «Сбросить» и вставьте новый.</p>
     </details>
     <label class="field">Секретный адрес iCal
-      <input type="password" id="calurl" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" autocomplete="off" spellcheck="false">
+      <input type="text" class="secret" id="calurl" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" autocomplete="off" spellcheck="false">
     </label>
     <label class="field">Напоминать перед событием (для iCal и Google)
       <select id="calremind"><option value="0">Не напоминать</option><option value="5">За 5 минут</option><option value="10">За 10 минут</option>
@@ -1580,10 +1588,10 @@
       <p class="hint">Лучше войдите на soundcloud.com в <b>приватном окне</b>, скопируйте обе строки и закройте окно,
         <b>не выходя</b> из аккаунта: продлевать вход тогда будет только колонка, и браузер её не перебьёт.</p>
       <div class="row">
-        <input type="password" id="token" placeholder="oauth_token" autocomplete="off" spellcheck="false">
+        <input type="text" class="secret" id="token" placeholder="oauth_token" autocomplete="off" spellcheck="false">
       </div>
       <div class="row">
-        <input type="password" id="screfresh" placeholder="oauth_refresh_token" autocomplete="off" spellcheck="false">
+        <input type="text" class="secret" id="screfresh" placeholder="oauth_refresh_token" autocomplete="off" spellcheck="false">
       </div>
       <div class="row">
         <button class="primary" onclick="login()">Войти</button>
@@ -1598,14 +1606,14 @@
         <b>Вход в SoundCloud устарел.</b> <span id="reloginwhy"></span> Поиск и музыка работают, а лайки, плейлисты и
         рекомендации — нет. Возьмите <code>oauth_token</code> и <code>oauth_refresh_token</code> так же, как в первый раз
         (лучше из приватного окна), и вставьте сюда — остальные настройки не изменятся. Дальше колонка будет продлевать вход сама.
-        <div class="row"><input type="password" id="token2" placeholder="новый oauth_token" autocomplete="off" spellcheck="false"></div>
-        <div class="row"><input type="password" id="screfresh2" placeholder="oauth_refresh_token" autocomplete="off" spellcheck="false"></div>
+        <div class="row"><input type="text" class="secret" id="token2" placeholder="новый oauth_token" autocomplete="off" spellcheck="false"></div>
+        <div class="row"><input type="text" class="secret" id="screfresh2" placeholder="oauth_refresh_token" autocomplete="off" spellcheck="false"></div>
         <div class="row"><button class="primary" onclick="relogin()">Обновить вход</button></div>
       </div>
       <div class="notice" id="renewbox" hidden>
         <span id="renewtext"></span>
         <div id="renewform">
-          <div class="row"><input type="password" id="screfresh3" placeholder="oauth_refresh_token" autocomplete="off" spellcheck="false"></div>
+          <div class="row"><input type="text" class="secret" id="screfresh3" placeholder="oauth_refresh_token" autocomplete="off" spellcheck="false"></div>
           <div class="row"><button class="primary" onclick="saveRefresh()">Продлевать сам</button></div>
         </div>
       </div>
@@ -1928,7 +1936,7 @@
       <input type="text" id="pchost" placeholder="192.168.1.50" autocomplete="off" spellcheck="false">
     </label>
     <label class="field">Ключ
-      <input type="password" id="pctoken" placeholder="ключ из установщика" autocomplete="off" spellcheck="false">
+      <input type="text" class="secret" id="pctoken" placeholder="ключ из установщика" autocomplete="off" spellcheck="false">
     </label>
     <label class="field">MAC-адрес — чтобы включать компьютер
       <input type="text" id="pcmac" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" spellcheck="false">
@@ -2118,7 +2126,9 @@
       подождать 5 с → открыть Кинопоиск. Срабатывает только фраза целиком. Сценарий может управлять музыкой, громкостью,
       компьютером и телевизором — удалить или перенастроить soundya он не может.</p>
     <ul class="list" id="macrolist"></ul>
+    <div class="row"><button onclick="newMacro(true)">＋ Новый сценарий</button></div>
     <div class="macroedit">
+      <p class="hint" id="macroedithint">Новый сценарий</p>
       <label class="field">Фраза
         <input type="text" id="macrophrase" placeholder="включи кино" maxlength="80" autocomplete="off">
       </label>
@@ -2176,7 +2186,8 @@
       </div>
       <div class="row">
         <button onclick="tryMacro()">Проверить</button>
-        <button onclick="newMacro()">Очистить</button>
+        <button onclick="newMacro(true)">Новый сценарий</button>
+        <button id="macrorename" onclick="saveMacro(true)" hidden>Переименовать</button>
         <button class="primary" onclick="saveMacro()">Сохранить сценарий</button>
       </div>
       <div class="msg" id="macromsg"></div>
@@ -2236,7 +2247,7 @@
       если он подключён). С PIN смотреть можно, а менять что-то — только после ввода PIN (один раз на браузере). Забыли PIN —
       на компьютере: <code>adb shell soundya pin off</code>.</p>
     <div class="row">
-      <input type="password" id="pinnew" inputmode="numeric" placeholder="4–12 цифр" autocomplete="new-password">
+      <input type="text" class="secret" id="pinnew" inputmode="numeric" placeholder="4–12 цифр" autocomplete="new-password">
     </div>
     <div class="row">
       <button class="primary" onclick="setPin()">Установить PIN</button>
@@ -2282,7 +2293,7 @@
       с Google Meet, Google разошлёт приглашения на эти почты, а Telegram-бот пришлёт ссылку в группу команды.
       «Пригласи команду маркетинг» — команда по названию; «всю команду» — первая в списке.</p>
     <label class="field">Токен бота для ссылок
-      <input type="password" id="meetbot" placeholder="123456789:AA… — бот, который крутится на вашем VPS" autocomplete="off">
+      <input type="text" class="secret" id="meetbot" placeholder="123456789:AA… — бот, который крутится на вашем VPS" autocomplete="off">
     </label>
     <p class="hint">Этим ботом колонка <b>отправляет</b> ссылку в группу. Пусто — отправит бот из «Устройства → Telegram».</p>
     <label class="field">Прокси для Telegram
@@ -2566,7 +2577,7 @@
       <div class="whead"><b>Сети рядом</b><button class="link" id="wifiscanbtn" onclick="wifiScan()">Обновить</button></div>
       <ul class="list wifilist" id="wifilist"></ul>
       <form class="wifiask" id="wifiask" hidden onsubmit="event.preventDefault(); wifiJoin(wifiAsking, $('wifipsk').value)">
-        <input type="password" id="wifipsk" placeholder="Пароль сети" autocomplete="off" minlength="8" maxlength="64">
+        <input type="text" class="secret" id="wifipsk" placeholder="Пароль сети" autocomplete="off" minlength="8" maxlength="64">
         <button class="primary" type="submit">Подключить</button>
         <button type="button" onclick="$('wifiask').hidden = true">Отмена</button>
       </form>
@@ -3255,7 +3266,25 @@ function openPalette() {
 }
 
 function macroScript() { return macroSteps.map(stepLine).filter(Boolean).join('\n'); }
-function newMacro() { macroSteps = []; macroEditing = null; $('macrophrase').value = ''; renderSteps(); $('macromsg').textContent = ''; }
+// A clean form for a new scenario; `focus`: asked for by its button.
+function newMacro(focus) {
+  macroSteps = []; macroEditing = null; $('macrophrase').value = ''; renderSteps(); $('macromsg').textContent = '';
+  macroEditState();
+  if (focus) { $('macrophrase').focus(); $('macrophrase').scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+}
+// What the form is doing now, in words: a new scenario, an open one, or an open one whose phrase
+// was changed — then «Сохранить» makes a NEW one and the open one stays (it used to be renamed,
+// that is deleted, without a word: «не могу добавить новый сценарий, если открыт старый»).
+function macroEditState() {
+  const phrase = $('macrophrase').value.trim();
+  const changed = !!macroEditing && phrase.toLowerCase() !== macroEditing.toLowerCase();
+  $('macroedithint').textContent = !macroEditing ? 'Новый сценарий'
+    : changed ? `Открыт «${macroEditing}», фраза изменена: «Сохранить сценарий» создаст новый, прежний останется. «Переименовать» — заменит прежний.`
+    : `Открыт «${macroEditing}» — изменения сохранятся в него. Чтобы начать с чистого листа, нажмите «Новый сценарий».`;
+  $('macrorename').hidden = !changed;
+  document.querySelectorAll('#macrolist li').forEach(li => li.classList.toggle('on', !!macroEditing && li.dataset.phrase === macroEditing));
+}
+$('macrophrase').addEventListener('input', macroEditState);
 async function loadMacros() {
   const r = await postJSON('macro json');
   if (r.tv_names) tvNames = Object.assign({}, r.tv_names, tvNames);
@@ -3273,11 +3302,18 @@ async function loadMacros() {
     const kinds = [...new Set(m.script.split('\n').map(x => x.trim()).filter(Boolean).map(l => stepGroup(parseLine(l).kind)))];
     const icons = document.createElement('span'); icons.className = 'micons'; icons.innerHTML = kinds.map(k => `<i class="${k}">${STEP_ICON[k]}</i>`).join('');
     right.prepend(icons);
-    ul.appendChild(item('«' + m.phrase + '»', steps + ' ' + (steps === 1 ? 'шаг' : steps < 5 ? 'шага' : 'шагов'), '', () => {
+    const li = item('«' + m.phrase + '»', steps + ' ' + (steps === 1 ? 'шаг' : steps < 5 ? 'шага' : 'шагов'), '', () => {
       macroEditing = m.phrase; $('macrophrase').value = m.phrase;
       macroSteps = m.script.split('\n').map(x => x.trim()).filter(Boolean).map(parseLine); renderSteps();
-    }, '', right));
+      $('macromsg').textContent = '';
+      macroEditState();
+    }, '', right);
+    li.dataset.phrase = m.phrase;
+    ul.appendChild(li);
   }
+  // The open one was deleted meanwhile: the form is a new scenario again (its steps stay).
+  if (macroEditing && !(r.macros || []).some(m => m.phrase === macroEditing)) macroEditing = null;
+  macroEditState();
 }
 // «Поиск фильмов»: per TV (by its address) the app to search in; '' — the TV's own search.
 const tvSearchApps = {};
@@ -3405,13 +3441,17 @@ async function tryMacro() {
   if (!macroSteps.length) { show($('macromsg'), 'error: добавьте шаги'); return; }
   show($('macromsg'), await post('/api/cmd', 'macro try ' + macroScript()));
 }
-async function saveMacro() {
+// `rename`: the open scenario gets the new phrase (the old one goes). Otherwise a changed
+// phrase is a new scenario and the open one is left as it was.
+async function saveMacro(rename) {
   const phrase = $('macrophrase').value.trim();
   if (!phrase || !macroSteps.length) { show($('macromsg'), 'error: нужны фраза и хотя бы один шаг'); return; }
+  const was = macroEditing, changed = !!was && was.toLowerCase() !== phrase.toLowerCase();
   const r = await post('/api/cmd', 'macro add ' + phrase + ' ||| ' + macroScript());
-  if (!r.startsWith('error') && macroEditing && macroEditing.toLowerCase() !== phrase.toLowerCase()) await post('/api/cmd', 'macro del ' + macroEditing);
-  show($('macromsg'), r);
-  if (!r.startsWith('error')) { macroEditing = phrase; loadMacros(); }
+  if (r.startsWith('error')) { show($('macromsg'), r); return; }
+  if (changed && rename) await post('/api/cmd', 'macro del ' + was);
+  show($('macromsg'), changed && !rename ? `OK: новый сценарий «${phrase}» сохранён; «${was}» остался как был` : r);
+  macroEditing = phrase; loadMacros();
 }
 
 // ---- «Где играет»: колонка или этот браузер ----
@@ -4720,7 +4760,7 @@ function renderTgLists() {
   tgBots.forEach((b, i) => {
     const row = document.createElement('div'); row.className = 'row contact';
     const n = document.createElement('input'); n.type = 'text'; n.placeholder = 'Имя бота'; n.value = b.name || ''; n.oninput = () => b.name = n.value;
-    const t = document.createElement('input'); t.type = 'password'; t.placeholder = 'токен от @BotFather'; t.value = b.token || ''; t.oninput = () => b.token = t.value;
+    const t = document.createElement('input'); t.type = 'text'; t.className = 'secret'; t.autocomplete = 'off'; t.placeholder = 'токен от @BotFather'; t.value = b.token || ''; t.oninput = () => b.token = t.value;
     const x = document.createElement('button'); x.textContent = '✕'; x.onclick = () => { tgBots.splice(i, 1); renderTgLists(); saveTg(); };
     const sv = document.createElement('button'); sv.textContent = 'Сохранить'; sv.onclick = saveTg;
     row.append(n, t, sv, x); bots.appendChild(row);
@@ -6235,7 +6275,7 @@ async function search() {
   }, '', writes && settings.token ? heart(t.id, t.liked, refresh) : null)));
   const lists = document.createElement('ul'); lists.className = 'list';
   playlistItems(lists, r.playlists, $('searchmsg'));
-  const seg = document.createElement('div'); seg.className = 'seg';
+  const seg = document.createElement('div'); seg.className = 'seg rseg';
   const tabs = [['Треки', tracks, r.tracks.length], ['Плейлисты и альбомы', lists, r.playlists.length]];
   const pick = n => tabs.forEach(([, ul], i) => { ul.style.display = i === n ? '' : 'none'; seg.children[i].classList.toggle('on', i === n); });
   tabs.forEach(([name, , count], i) => {
@@ -6505,7 +6545,7 @@ function devRow(kind, d) {
   row.className = 'contact devrow'; row.dataset.kind = kind;
   const field = (cls, ph, val, type) => {
     const i = document.createElement('input');
-    i.className = cls; i.type = type || 'text'; i.placeholder = ph; i.value = val || '';
+    i.className = cls + (type === 'password' ? ' secret' : ''); i.type = type === 'password' ? 'text' : (type || 'text'); i.autocomplete = 'off'; i.placeholder = ph; i.value = val || '';
     i.autocomplete = 'off'; i.spellcheck = false; return i;
   };
   const parts = [field('dname', 'имя: спальня', d.name), field('dhost', '192.168.0.51', d.host)];

@@ -1879,8 +1879,16 @@ impl Controller {
             }
             Intent::Play(q) => {
                 self.asked = Some((format!("Поиск «{q}»"), format!("play {q}")));
-                let query = q.clone();
-                self.fetch(q, reply, move |c| c.search_tracks(&query));
+                // «Мне какой-нибудь лоуфай хипхоп» → «lofi hip hop»; found nothing that way —
+                // as it was said.
+                let (said, query) = (q.clone(), alice::music_query(&q));
+                if query != said.to_lowercase() {
+                    eprintln!("search: {said:?} as {query:?}");
+                }
+                self.fetch(q, reply, move |c| match c.search_tracks(&query) {
+                    Ok(found) if found.is_empty() && query != said => c.search_tracks(&said),
+                    r => r,
+                });
             }
             Intent::Album(q) => {
                 self.asked = Some((format!("Альбом «{q}»"), format!("album {q}")));
