@@ -153,6 +153,59 @@ impl Gain {
     }
 }
 
+/// «Выравнивать громкость» (the settings).
+static LEVELLING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_levelling(on: bool) {
+    LEVELLING.store(on, Ordering::Release);
+}
+
+/// Loud tracks down to an even level. SoundCloud plays every track as it was mastered, and
+/// many are mastered as loud as the format allows: at the same volume they sound far louder
+/// than Yandex Music, which evens its tracks out — and Alice hears «Алиса» worse over them.
+/// Only ever turns down (a quiet track stays as it is), by 9 dB at most, slowly: over seconds,
+/// so the music's own loud and quiet moments stay.
+pub struct Leveller {
+    /// Smoothed power of the signal (mean square of samples).
+    power: f32,
+    gain: f32,
+}
+
+impl Default for Leveller {
+    fn default() -> Self {
+        Self { power: 0.0, gain: 1.0 }
+    }
+}
+
+impl Leveller {
+    /// RMS the music is brought down to: −17 dB of full scale.
+    const TARGET: f32 = 4628.0;
+    /// Never below this (−9 dB).
+    const FLOOR: f32 = 0.355;
+
+    pub fn apply(&mut self, samples: &mut [i16], channels: usize, rate: u32) {
+        if !LEVELLING.load(Ordering::Acquire) || samples.is_empty() {
+            return;
+        }
+        let secs = samples.len() as f32 / (channels.max(1) as f32 * rate.max(1) as f32);
+        let mean: f32 = samples.iter().map(|s| (*s as f32) * (*s as f32)).sum::<f32>() / samples.len() as f32;
+        // Louder: followed in half a second; quieter: over four (a pause is not «a quiet track»).
+        let tau = if mean > self.power { 0.5 } else { 4.0 };
+        self.power += (mean - self.power) * (secs / tau).min(1.0);
+        let rms = self.power.sqrt();
+        let want = if rms > Self::TARGET { (Self::TARGET / rms).max(Self::FLOOR) } else { 1.0 };
+        let from = self.gain;
+        // Down in about a second, back up over three.
+        let step = if want < from { secs / 1.0 } else { secs / 3.0 };
+        self.gain = from + (want - from) * step.min(1.0);
+        let n = samples.len() as f32;
+        for (i, s) in samples.iter_mut().enumerate() {
+            let g = from + (self.gain - from) * (i as f32 / n);
+            *s = (*s as f32 * g) as i16;
+        }
+    }
+}
+
 /// `skip_ms`: resume a track that broke off, without sound up to that point.
 /// `duration_ms`: the track's length, to tell a broken download from the real end.
 pub fn play(
@@ -208,6 +261,7 @@ fn run(
     // track started loud and faded out over a second (half a second of it from the speaker).
     let mut gain = Gain(duck.player_level());
     let mut eq = crate::eq::Eq::new();
+    let mut leveller = Leveller::default();
     let mut frames_played: u64 = 0;
     // Since the card was opened: (when, track position then). A card takes sound only as fast
     // as it plays, but BlueALSA with a stalling headset takes it at once: the track then «played»
@@ -330,6 +384,7 @@ fn run(
         pcm.extend_from_slice(sb.samples());
         let samples = pcm.as_mut_slice();
         eq.apply(samples, channels, spec.rate);
+        leveller.apply(samples, channels, spec.rate);
         gain.apply(samples, channels, spec.rate, duck.player_level());
         if let Err(e) = out.as_mut().unwrap().write(samples) {
             if e.kind() == std::io::ErrorKind::TimedOut && reopened < 2 {
@@ -368,6 +423,35 @@ pub fn new_flags() -> Arc<Flags> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn loud_tracks_are_turned_down_and_quiet_ones_left() {
+        let rms = |v: &[i16]| (v.iter().map(|s| (*s as f32).powi(2)).sum::<f32>() / v.len() as f32).sqrt();
+        super::set_levelling(true);
+        // A track mastered hot: a full-scale square wave, 10 s in blocks of 1024 frames.
+        let mut l = super::Leveller::default();
+        let mut last = Vec::new();
+        for _ in 0..430 {
+            let mut block: Vec<i16> = (0..2048).map(|i| if (i / 2) % 100 < 50 { 30_000 } else { -30_000 }).collect();
+            l.apply(&mut block, 2, 44_100);
+            last = block;
+        }
+        let loud = rms(&last);
+        assert!(loud < 12_000.0 && loud > 9_000.0, "down by 9 dB at most, not to the target: {loud}");
+        // A quiet one is not touched.
+        let mut l = super::Leveller::default();
+        let mut quiet: Vec<i16> = (0..2048).map(|i| if (i / 2) % 100 < 50 { 2_000 } else { -2_000 }).collect();
+        for _ in 0..50 {
+            quiet = (0..2048).map(|i| if (i / 2) % 100 < 50 { 2_000 } else { -2_000 }).collect();
+            l.apply(&mut quiet, 2, 44_100);
+        }
+        assert!((rms(&quiet) - 2_000.0).abs() < 30.0, "{}", rms(&quiet));
+        // Switched off: nothing changes.
+        super::set_levelling(false);
+        let mut same: Vec<i16> = vec![30_000; 2048];
+        super::Leveller::default().apply(&mut same, 2, 44_100);
+        assert!(same.iter().all(|s| *s == 30_000));
+    }
+
     #[test]
     fn a_new_track_is_silent_while_the_browser_listens() {
         let duck = super::Duck::new();

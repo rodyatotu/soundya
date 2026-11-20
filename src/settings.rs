@@ -413,6 +413,9 @@ pub struct Settings {
     /// Search: no slowed / reverb / sped up versions, originals before remixes and covers.
     #[serde(default = "yes")]
     pub search_originals: bool,
+    /// Loud tracks are turned down to an even level (SoundCloud does not do it itself).
+    #[serde(default)]
+    pub level_music: bool,
     /// Optional PIN for changing anything from the panel ("" = no PIN).
     /// Never sent to the page; `soundya pin off` on the speaker removes it.
     #[serde(default)]
@@ -765,6 +768,7 @@ impl Default for Settings {
             autostart: Vec::new(),
             resume_music: false,
             search_originals: true,
+            level_music: false,
             display_on: false,
             display_widgets: display_widgets(),
             display_secs: 10,

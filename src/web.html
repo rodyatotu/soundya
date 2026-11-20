@@ -1662,6 +1662,8 @@
     <p class="hint" id="musichint"></p>
     <label class="check"><input type="checkbox" id="searchorig" onchange="saveSearchOrig()"><span>Искать оригиналы
       <small>Без slowed, reverb, sped up, nightcore и 8D; ремиксы и каверы — после оригиналов. Если в запросе само слово «slowed» или «remix», они находятся как обычно.</small></span></label>
+    <label class="check"><input type="checkbox" id="levelmusic" onchange="saveLevelMusic()"><span>Выравнивать громкость
+      <small>SoundCloud играет каждый трек так, как его свели, и многие заметно громче остальных. Громкие становятся тише (не больше чем на 9 дБ), тихие не меняются. Алисе при этом легче расслышать своё имя под музыку.</small></span></label>
     <div class="field">Будильник</div>
     <div class="seg" id="alarmkind" role="radiogroup">
       <button data-alarm="own" role="radio">soundya</button>
@@ -5801,6 +5803,9 @@ const MUSIC_HINT = {
   soundcloud: '«Алиса, включи Bonobo» — SoundCloud. «… в яндекс музыке», плейлист дня, подкасты, радио и книги остаются Алисе.',
   yandex: '«Алиса, включи Bonobo» — Яндекс Музыка (нужна подписка). SoundCloud — только когда он назван: «включи Bonobo в саундклауде», «включи мои лайки на саундклауде».',
 };
+async function saveLevelMusic() {
+  show($('spkmsg'), await post('/api/settings', JSON.stringify({ level_music: $('levelmusic').checked })));
+}
 async function saveSearchOrig() {
   show($('spkmsg'), await post('/api/settings', JSON.stringify({ search_originals: $('searchorig').checked })));
 }
@@ -6124,6 +6129,7 @@ async function refresh(force = false) {
     $('keyword').checked = settings.keyword_only;
     renderMusic(settings.music_default || (settings.keyword_only ? 'yandex' : 'soundcloud'));
     if (document.activeElement !== $('searchorig')) $('searchorig').checked = settings.search_originals !== false;
+    if (document.activeElement !== $('levelmusic')) $('levelmusic').checked = !!settings.level_music;
     renderAlarmKind(settings.alarm_own);
     $('ring').checked = settings.ring !== false;
     renderLight(settings);
