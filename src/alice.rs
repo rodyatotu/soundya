@@ -67,6 +67,9 @@ pub enum Intent {
     Address,
     /// «Включи музыку в наушниках» (true) / «верни музыку на колонку» (false): Bluetooth output (bt.rs).
     BtOut(bool),
+    /// «Выключи музыку через 30 минут», «таймер сна на час»: the music pauses after that many
+    /// seconds; None — «отмени таймер сна».
+    SleepTimer(Option<u64>),
     /// «Играй в браузере», «включи в приложении»: the sound goes to an open page of the
     /// panel or the Mac / Windows window («Где играет → здесь», by voice).
     Listen,
@@ -1349,6 +1352,13 @@ fn shuffle_words(text: &str) -> Option<(String, bool)> {
         "отключи случайный порядок",
         "выключи рандом",
     ];
+    // «Включи моё любимое, но не вперемешку»: what to play stays, only the order is said.
+    for p in ["но не вперемешку", "только не вперемешку", "не вперемешку", "не в случайном порядке", "без шафла"] {
+        if let Some(at) = text.find(p) {
+            let rest = format!("{} {}", &text[..at], &text[at + p.len()..]);
+            return Some((rest.split_whitespace().collect::<Vec<_>>().join(" "), false));
+        }
+    }
     if OFF.iter().any(|p| text.contains(p)) {
         return Some((String::new(), false));
     }
@@ -1594,6 +1604,51 @@ fn bt_out(n: &str) -> Option<bool> {
 /// «блютуз» as people and the recogniser write it.
 fn bt_word(n: &str) -> bool {
     ["блютуз", "блютус", "блютуф", "блутуз", "bluetooth"].iter().any(|w| n.contains(w))
+}
+
+/// «через минуту», «через 30 минут», «через полчаса», «через полтора часа», «через час» in
+/// the words → (seconds, the words without it).
+fn after_time<'a>(words: &[&'a str]) -> Option<(u64, Vec<&'a str>)> {
+    let at = words.iter().position(|w| *w == "через")?;
+    let num = |w: &str| -> Option<u64> { w.parse::<u64>().ok().or_else(|| number_word(w).map(u64::from)).or(match w {
+        "сорок" => Some(40), "пятьдесят" => Some(50), "шестьдесят" => Some(60), "девяносто" => Some(90), "сто" => Some(100), "одну" | "одна" => Some(1),
+        _ => None,
+    }) };
+    let unit = |w: &str| -> Option<u64> {
+        if w.starts_with("секунд") { Some(1) } else if w.starts_with("минут") { Some(60) } else if w.starts_with("час") { Some(3600) } else { None }
+    };
+    let (secs, used) = match (words.get(at + 1).copied(), words.get(at + 2).copied()) {
+        (Some("полчаса"), _) => (1800, 2),
+        (Some("полминуты"), _) => (30, 2),
+        (Some("полтора"), Some(u)) if u.starts_with("час") => (5400, 3),
+        (Some("полторы"), Some(u)) if u.starts_with("минут") => (90, 3),
+        (Some(n), Some(u)) if num(n).is_some() && unit(u).is_some() => (num(n)? * unit(u)?, 3),
+        (Some(u), _) if unit(u).is_some() => (unit(u)?, 2),
+        _ => return None,
+    };
+    let rest = words.iter().enumerate().filter(|(i, _)| *i < at || *i >= at + used).map(|(_, w)| *w).collect();
+    (10..=12 * 3600).contains(&secs).then_some((secs, rest))
+}
+
+/// «Выключи музыку через 30 минут», «выключись через час», «поставь таймер сна на полчаса»,
+/// «отмени таймер сна», «не выключай музыку». Before this «выключи музыку через минуту»
+/// paused the music at once (#SY-43D942F9).
+fn sleep_timer(n: &str) -> Option<Intent> {
+    if matches!(n, "отмени таймер сна" | "выключи таймер сна" | "убери таймер сна" | "не выключай музыку" | "отмени выключение музыки" | "отмени выключение") {
+        return Some(Intent::SleepTimer(None));
+    }
+    let words: Vec<&str> = n.split_whitespace().filter(|w| !matches!(*w, "пожалуйста" | "мне")).collect();
+    // «(поставь) таймер сна на 30 минут» is the same as «… через 30 минут».
+    let timer = n.contains("таймер сна");
+    let swapped: Vec<&str> = if timer { words.iter().map(|w| if *w == "на" { "через" } else { *w }).collect() } else { words.clone() };
+    let (secs, rest) = after_time(&swapped)?;
+    let rest = rest.join(" ");
+    let off = matches!(
+        rest.as_str(),
+        "выключи музыку" | "выключи" | "выключись" | "выключи звук" | "выключи плеер" | "выключи саундклауд" | "выключи песню" | "останови музыку"
+            | "останови" | "остановись" | "поставь на паузу" | "поставь музыку на паузу" | "пауза" | "стоп" | "усни" | "засыпай"
+    );
+    (off || (timer && matches!(rest.as_str(), "поставь таймер сна" | "таймер сна" | "включи таймер сна" | "заведи таймер сна"))).then_some(Intent::SleepTimer(Some(secs)))
 }
 
 /// Bluetooth by voice. «Переключись на блютус», «включи блютуз колонку», «музыку в наушники» →
@@ -1951,6 +2006,12 @@ fn intent_plain(text: &str, keyword_only: bool) -> Option<Intent> {
     if let Some(on) = remote_phrase(&normalize(text)) {
         return Some(Intent::Tv(TvAction::RemoteMode(on)));
     }
+    // «Выключи музыку через полчаса» before the plain «выключи музыку».
+    if strip_tv(&normalize(text)).is_none() {
+        if let Some(i) = sleep_timer(&normalize(text)) {
+            return Some(i);
+        }
+    }
     // Bluetooth before the TV's follow-ups: in «режим пульта» «найди блютуз устройства» was a
     // search on the TV, and «переключи блютуз» skipped the track. Not when the TV is named.
     if strip_tv(&normalize(text)).is_none() {
@@ -2112,6 +2173,13 @@ fn intent_plain(text: &str, keyword_only: bool) -> Option<Intent> {
     }
     if let Some((core, on)) = shuffle_words(&norm) {
         if !on {
+            // With something to play named: that, in its own order.
+            let named_music = core.split_whitespace().count() >= 2 && ["включи ", "поставь ", "запусти ", "сыграй "].iter().any(|p| core.starts_with(p));
+            if named_music {
+                if let Some(i @ (Intent::Play(_) | Intent::Playlist(_) | Intent::Album(_) | Intent::Likes | Intent::MyPlaylist(_))) = intent_core(&core, keyword_only) {
+                    return Some(i);
+                }
+            }
             return Some(Intent::Shuffle(false));
         }
         let generic = matches!(
@@ -2793,7 +2861,7 @@ fn read_frames(
             // messages are ours; all music stays Alice's.
             let music = !matches!(
                 intent,
-                Intent::Pc(_) | Intent::Tv(_) | Intent::On(..) | Intent::Address | Intent::BtOut(_) | Intent::Listen | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
+                Intent::Pc(_) | Intent::Tv(_) | Intent::On(..) | Intent::Address | Intent::SleepTimer(None) | Intent::BtOut(_) | Intent::Listen | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::Duck(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_)
             ) && !is_alarm(&intent);
             if music && !shared.soundcloud() {
                 eprintln!("voice: {text:?} left to Alice (SoundCloud is off)");
@@ -2910,8 +2978,10 @@ pub fn owns(intent: &Intent, w: &Who) -> bool {
         Intent::Resume => w.playing || (!w.alice_music && (w.has_queue || !w.keyword_only)),
         // «Приглуши/верни» only while our music plays (else it is about Alice's);
         // switching the automatic mode is always ours.
-        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::BtOut(_) | Intent::Listen | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
+        Intent::Duck(DuckCmd::Auto(_)) | Intent::Address | Intent::SleepTimer(None) | Intent::BtOut(_) | Intent::Listen | Intent::BtFind | Intent::BtConnect(..) | Intent::Ask(_) | Intent::VoiceLevel(_) | Intent::UpdateConfirm(_) | Intent::Timer(_) | Intent::Planner(_) | Intent::TgReply(_) | Intent::TgConfirm(_) => true,
         Intent::Alarm(_) => true,
+        // A sleep timer for the music that plays: soundya's or, with hers playing, Alice's own.
+        Intent::SleepTimer(Some(_)) => w.playing || (w.active && !w.alice_music),
         Intent::Duck(_) => w.playing || w.airplay,
         // Only with a PC / TV set up in the settings; otherwise the phrase stays Alice's.
         Intent::Pc(_) => w.pc,
@@ -3792,5 +3862,41 @@ mod silencing_tests {
         assert!(!spoken_to_again(0, &mut idle));
         assert!(!spoken_to_again(3, &mut idle));
         assert!(spoken_to_again(1, &mut idle), "but a word to her after it is hers");
+    }
+}
+
+#[cfg(test)]
+mod sleep_timer_tests {
+    use super::*;
+
+    #[test]
+    fn the_music_goes_off_later_not_now() {
+        for (said, secs) in [
+            ("Выключи музыку через минуту", 60),
+            ("выключи музыку через 30 минут", 1800),
+            ("выключись через полчаса", 1800),
+            ("Алиса, выруби музыку через час", 3600),
+            ("поставь на паузу через полтора часа", 5400),
+            ("поставь таймер сна на 45 минут", 2700),
+            ("таймер сна на час", 3600),
+            ("останови музыку через двадцать минут", 1200),
+        ] {
+            assert_eq!(intent(said, false), Some(Intent::SleepTimer(Some(secs))), "{said}");
+        }
+        assert_eq!(intent("отмени таймер сна", false), Some(Intent::SleepTimer(None)));
+        assert_eq!(intent("не выключай музыку", false), Some(Intent::SleepTimer(None)));
+        // Not a sleep timer: something else in a while, or now.
+        assert_ne!(intent("выключи музыку", false), Some(Intent::SleepTimer(Some(60))));
+        assert!(!matches!(intent("включи bonobo через минуту", false), Some(Intent::SleepTimer(_))));
+        assert!(!matches!(intent("напомни через 30 минут выключить музыку", false), Some(Intent::SleepTimer(_))));
+    }
+
+    #[test]
+    fn not_shuffled_keeps_what_to_play() {
+        assert_eq!(intent("включи мое любимое но не вперемешку", false), Some(Intent::Likes));
+        assert_eq!(intent("включи мои лайки не вперемешку", false), Some(Intent::Likes));
+        assert_eq!(intent("включи bonobo только не вперемешку", false), Some(Intent::Play("bonobo".into())));
+        assert_eq!(intent("не вперемешку", false), Some(Intent::Shuffle(false)));
+        assert_eq!(intent("играй по порядку", false), Some(Intent::Shuffle(false)));
     }
 }

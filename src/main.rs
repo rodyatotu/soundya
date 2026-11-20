@@ -335,6 +335,42 @@ fn run_chain(tx: Sender<Cmd>, steps: Vec<Intent>, reply: Option<Sender<String>>)
     });
 }
 
+/// Scenario runs by their script: the number of the latest one (an older run that still
+/// waits ends when it sees a newer number).
+static MACRO_RUNS: Mutex<std::collections::BTreeMap<String, u64>> = Mutex::new(std::collections::BTreeMap::new());
+/// Bumped by «macro stop»: every waiting scenario ends.
+static MACRO_STOP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The longest «Подождать» of a scenario: 12 hours.
+const MACRO_WAIT_MAX_MS: u64 = 12 * 3600 * 1000;
+/// The sleep timer's number: a new one or a cancel bumps it, and the waiting one ends.
+static SLEEP_TIMER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// When the music will be paused by the sleep timer (unix seconds; 0 — none).
+static SLEEP_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// «через 30 минут», «через 1 час 5 минут», «через 45 секунд» for Alice to say.
+fn in_words(secs: u64) -> String {
+    let (h, m, sec) = (secs / 3600, secs % 3600 / 60, secs % 60);
+    let form = |n: u64, one: &str, few: &str, many: &str| -> String {
+        let w = match (n % 10, n % 100) {
+            (1, x) if x != 11 => one,
+            (2..=4, x) if !(12..=14).contains(&x) => few,
+            _ => many,
+        };
+        format!("{n} {w}")
+    };
+    let mut parts = Vec::new();
+    if h > 0 {
+        parts.push(form(h, "час", "часа", "часов"));
+    }
+    if m > 0 {
+        parts.push(form(m, "минуту", "минуты", "минут"));
+    }
+    if sec > 0 && h == 0 {
+        parts.push(form(sec, "секунду", "секунды", "секунд"));
+    }
+    format!("через {}", parts.join(" "))
+}
+
 fn respond(reply: Option<Sender<String>>, text: &str, speech: Option<String>) {
     match reply {
         Some(r) => {
@@ -566,6 +602,7 @@ impl Controller {
         settings["autostart"] = serde_json::to_value(&self.settings.autostart).unwrap_or_default();
         settings["resume_music"] = self.settings.resume_music.into();
         settings["search_originals"] = self.settings.search_originals.into();
+        settings["level_music"] = self.settings.level_music.into();
         settings["display_on"] = self.settings.display_on.into();
         settings["display_widgets"] = self.settings.display_widgets.clone().into();
         settings["display_secs"] = self.settings.display_secs.into();
@@ -713,6 +750,11 @@ impl Controller {
         out["mentions"] = mentions::json();
         // «Алиса, играй в браузере»: an open page takes the sound when this changes.
         out["listen"]["want"] = web::LISTEN_WANT.load(Ordering::Acquire).into();
+        // The sleep timer: when the music will be paused (unix seconds), or null.
+        out["sleep_at"] = match SLEEP_AT.load(Ordering::Acquire) {
+            0 => serde_json::Value::Null,
+            t => t.into(),
+        };
         out["cover"] = current.filter(|t| t.cover().is_some()).map(|t| format!("/cover?{}", t.id)).into();
         out.to_string()
     }
@@ -1144,6 +1186,7 @@ impl Controller {
         alice::set_tv(new.tv_configured());
         alice::set_tv_off(!new.tv_on && !new.tvs().is_empty());
         sc::set_originals(new.search_originals);
+        player::set_levelling(new.level_music);
         // Only the TVs there are, each with a package name (or none: its own search).
         let hosts: Vec<String> = new.tvs().into_iter().map(|t| t.host).collect();
         new.tv_search = std::mem::take(&mut new.tv_search)
@@ -2252,6 +2295,40 @@ impl Controller {
                 };
                 respond(reply, &format!("OK: {text}"), Some(text.to_owned()));
             }
+            // «Выключи музыку через 30 минут»: paused then, unless set anew or cancelled.
+            Intent::SleepTimer(Some(secs)) => {
+                let n = SLEEP_TIMER.fetch_add(1, Ordering::AcqRel) + 1;
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                SLEEP_AT.store(now + secs, Ordering::Release);
+                let tx = self.tx.clone();
+                thread::spawn(move || {
+                    let t0 = std::time::Instant::now();
+                    let wait = Duration::from_secs(secs);
+                    while t0.elapsed() < wait {
+                        if SLEEP_TIMER.load(Ordering::Acquire) != n {
+                            return;
+                        }
+                        thread::sleep((wait - t0.elapsed()).min(Duration::from_secs(1)));
+                    }
+                    if SLEEP_TIMER.load(Ordering::Acquire) == n {
+                        SLEEP_AT.store(0, Ordering::Release);
+                        eprintln!("sleep timer: time is up, pausing");
+                        let (rtx, _rrx) = mpsc::channel();
+                        let _ = tx.send(Cmd::Control("pause".into(), rtx));
+                    }
+                });
+                let text = format!("Выключу музыку {}", in_words(secs));
+                eprintln!("sleep timer: {secs} s");
+                self.publish();
+                respond(reply, &format!("OK: {text}"), Some(text));
+            }
+            Intent::SleepTimer(None) => {
+                let was = SLEEP_AT.swap(0, Ordering::AcqRel) != 0;
+                SLEEP_TIMER.fetch_add(1, Ordering::AcqRel);
+                let text = if was { "Хорошо, музыку не выключу" } else { "Таймера сна и не было" };
+                self.publish();
+                respond(reply, &format!("OK: {text}"), Some(text.to_owned()));
+            }
             // «Играй в браузере»: an open page of the panel takes the sound (it sees
             // listen.want change); said so if none did.
             Intent::Listen => {
@@ -2354,16 +2431,36 @@ impl Controller {
     fn run_macro(&mut self, script: &str) -> Result<(), String> {
         let lines = macro_lines(script)?;
         let tx = self.tx.clone();
+        // The same scenario started again replaces its run that still waits («я спать» said
+        // three times is one «pause in half an hour», not three).
+        let key = script.to_owned();
+        let run = {
+            let mut runs = MACRO_RUNS.lock().unwrap();
+            let n = runs.entry(key.clone()).or_insert(0);
+            *n += 1;
+            *n
+        };
+        let stop_was = MACRO_STOP.load(Ordering::Acquire);
         thread::spawn(move || {
-            let started = std::time::Instant::now();
+            let replaced = || MACRO_RUNS.lock().unwrap().get(&key).copied() != Some(run) || MACRO_STOP.load(Ordering::Acquire) != stop_was;
             for line in lines {
-                if started.elapsed() > Duration::from_secs(120) {
-                    eprintln!("macro: stopped after 2 minutes");
-                    break;
-                }
                 if let Some(ms) = line.strip_prefix("wait ").or_else(|| line.strip_prefix("sleep ")) {
-                    thread::sleep(Duration::from_millis(ms.trim().parse::<u64>().unwrap_or(0).min(30_000)));
+                    // «Подождать 1800 секунд» waited 30: every pause was cut to half a minute
+                    // and the whole scenario to two (#SY-43D942F9). Up to 12 hours now, in
+                    // steps of a second so a new run or «macro stop» ends it.
+                    let wait = Duration::from_millis(ms.trim().parse::<u64>().unwrap_or(0).min(MACRO_WAIT_MAX_MS));
+                    let t0 = std::time::Instant::now();
+                    while t0.elapsed() < wait {
+                        if replaced() {
+                            eprintln!("macro: a waiting run is over (started again or stopped)");
+                            return;
+                        }
+                        thread::sleep((wait - t0.elapsed()).min(Duration::from_secs(1)));
+                    }
                     continue;
+                }
+                if replaced() {
+                    return;
                 }
                 let (rtx, rrx) = mpsc::channel();
                 if tx.send(Cmd::Control(line.clone(), rtx)).is_err() {
@@ -2647,6 +2744,11 @@ impl Controller {
                 let (sub, rest) = arg.split_once(' ').unwrap_or((arg.as_str(), ""));
                 let rest = rest.trim();
                 match sub {
+                    // Ends every scenario that is waiting at a «Подождать».
+                    "stop" => {
+                        MACRO_STOP.fetch_add(1, Ordering::AcqRel);
+                        send_to(&reply, "OK: ждущие сценарии остановлены".into());
+                    }
                     "json" => send_to(&reply, serde_json::json!({
                         "macros": self.settings.macros,
                         // Names for the TV apps the saved scenarios open (no TV needed).
@@ -4147,6 +4249,7 @@ fn daemon() {
     alsa::watch(device());
     // http://soundya.local:8765 — works whatever IP the router hands out.
     mdns::run(&std::env::var("SOUNDYA_NAME").unwrap_or_else(|_| "soundya".into()));
+    dns::keep_local_resolver();
     // The speaker in the AirPlay list of iPhones and Macs.
     airplay::run(dir.clone(), device(), tx.clone(), shared.clone());
     // Counts running speakers for the README badge (anonymous, can be switched off).
@@ -4174,6 +4277,7 @@ fn daemon() {
     alice::set_tv(settings.tv_configured());
     alice::set_tv_off(!settings.tv_on && !settings.tvs().is_empty());
     sc::set_originals(settings.search_originals);
+    player::set_levelling(settings.level_music);
     tv::set_search_apps(settings.tv_search.clone());
     alice::set_devices(device_names(&settings));
     alice::set_pc_rules(pc_rules(&settings));

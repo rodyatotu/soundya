@@ -320,9 +320,106 @@ fn query(host: &str, server: &str) -> io::Result<Vec<IpAddr>> {
     Err(io::Error::new(io::ErrorKind::TimedOut, format!("DNS {server} did not answer")))
 }
 
+/// The Station's own resolver settings with the missing «run as» line put in; None if
+/// nothing is missing (or it is not a resolver file at all).
+///
+/// The firmware's unbound is restarted on every Wi-Fi reconnect with a file built from
+/// /data/unbound.conf.head. Where that file has no `username:`, unbound wants a user called
+/// «unbound», the system has none, and it never comes up again. Then nothing resolves, the
+/// firmware decides there is no internet and resets Wi-Fi every three minutes — ten seconds
+/// offline each time: Alice answers late or not at all, the panel freezes, playlists load
+/// for ages. Seen on a Station Lite (2026-11-20); «nobody» is what the firmware's own
+/// default file says.
+pub fn with_resolver_user(conf: &str) -> Option<String> {
+    if conf.lines().any(|l| l.trim_start().starts_with("username:")) {
+        return None;
+    }
+    let mut out = String::with_capacity(conf.len() + 24);
+    let mut done = false;
+    for line in conf.lines() {
+        out.push_str(line);
+        out.push('\n');
+        if !done && line.trim_end() == "server:" {
+            out.push_str("\tusername: \"nobody\"\n");
+            done = true;
+        }
+    }
+    done.then_some(out)
+}
+
+const RESOLVER_HEAD: &str = "/data/unbound.conf.head";
+const RESOLVER_CONF: &str = "/etc/unbound/unbound.conf";
+const RESOLVER_INIT: &str = "/etc/init.d/S70unbound";
+
+fn resolver_running() -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return true };
+    dir.flatten().any(|e| crate::fsx::read_string(&e.path().join("comm")).is_some_and(|c| c.trim() == "unbound"))
+}
+
+/// Once a minute: the names go to 127.0.0.1, nobody answers there twice in a row and no
+/// unbound runs → its settings are repaired (see `with_resolver_user`) and it is started
+/// the firmware's own way. Only on a Station that has this resolver and uses it.
+pub fn keep_local_resolver() {
+    use std::path::Path;
+    if !crate::fsx::exists(Path::new(RESOLVER_INIT)) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let mut dead = 0u32;
+        let mut tried = 0u32;
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+            let local = crate::fsx::read_string(Path::new("/etc/resolv.conf")).is_some_and(|t| t.lines().any(|l| l.trim() == "nameserver 127.0.0.1"));
+            if !local || resolver_running() || query("ya.ru", "127.0.0.1").is_ok() {
+                dead = 0;
+                continue;
+            }
+            dead += 1;
+            // Twice in a row: the firmware's own restart (stop, a second, start) is not it.
+            if dead < 2 || tried >= 5 {
+                continue;
+            }
+            tried += 1;
+            eprintln!("dns: the Station's resolver (unbound) is not running; names do not resolve");
+            for file in [RESOLVER_HEAD, RESOLVER_CONF] {
+                let Some(fixed) = crate::fsx::read_string(Path::new(file)).and_then(|t| with_resolver_user(&t)) else { continue };
+                // The firmware's file is kept beside it, once.
+                if file == RESOLVER_HEAD && !crate::fsx::exists(Path::new("/data/unbound.conf.head.bak-soundya")) {
+                    let _ = crate::fsx::copy(Path::new(file), Path::new("/data/unbound.conf.head.bak-soundya"));
+                }
+                match std::fs::write(file, fixed) {
+                    Ok(()) => eprintln!("dns: {file}: the missing «username» is put in"),
+                    Err(e) => eprintln!("dns: {file}: {e}"),
+                }
+            }
+            let started = std::process::Command::new(RESOLVER_INIT)
+                .arg("restart")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            std::thread::sleep(Duration::from_secs(3));
+            eprintln!("dns: resolver restarted ({started:?}); running: {}", resolver_running());
+            dead = 0;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_resolver_gets_its_user() {
+        // /data/unbound.conf.head as found on a Station Lite.
+        let head = "server:\nforward-zone:\n\tname: \".\"\n\tforward-addr: \"77.88.8.1\"\n";
+        let fixed = with_resolver_user(head).unwrap();
+        assert_eq!(fixed, "server:\n\tusername: \"nobody\"\nforward-zone:\n\tname: \".\"\n\tforward-addr: \"77.88.8.1\"\n");
+        assert_eq!(with_resolver_user(&fixed), None, "done once");
+        // The firmware's own default already has it; a file that is something else is left.
+        assert_eq!(with_resolver_user("server:\n\tverbosity: 1\n\tusername: \"nobody\"\n"), None);
+        assert_eq!(with_resolver_user("forward-zone:\n\tname: \".\"\n"), None);
+    }
 
     #[test]
     fn a_failed_server_goes_last() {
