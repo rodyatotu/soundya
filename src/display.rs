@@ -9,6 +9,11 @@
 //! github.com/nyakokitsu/luna, stations/yandexmini3, yandexplum, pickle).
 //! Detected by the sysfs nodes, not by the model name: a station without them
 //! simply has no display here. Not checked on a real speaker.
+//!
+//! The Station Midi (45 segments, digits counted from 1, the colon on two more, a latch the
+//! firmware wants cleared) is drawn through Luna's clock API on the speaker, not through sysfs:
+//! Luna knows its layout and gives the display back to the firmware (`/api/clock`, `/api/clock/off`).
+//! Found by Luna's answer to `GET /api/clock`, and only when sysfs has no display of the above.
 
 use std::{
     collections::HashMap,
@@ -28,6 +33,8 @@ pub struct Clock {
     dots: bool,
     /// The segments' max_brightness.
     max: u32,
+    /// The Station Midi: Luna's API at this address draws the display, `paths` is empty.
+    luna: Option<String>,
 }
 
 /// Segments of one character on a seven-segment digit.
@@ -108,11 +115,56 @@ pub fn spinner(tick: usize) -> Vec<String> {
     vec![path[i].clone(), path[(i + path.len() - 1) % path.len()].clone()]
 }
 
+/// soundya's segment name as Luna calls it on the Station Midi: the digits are counted from 1
+/// («A0» → «A1»), the colon (DH, DL) is PLUS1 and PLUS2. None: the Midi has no such segment
+/// (the dot after a digit, DM).
+fn luna_segment(name: &str) -> Option<String> {
+    match name {
+        "DH" => Some("PLUS1".into()),
+        "DL" => Some("PLUS2".into()),
+        "DEGREE" => Some("DEGREE".into()),
+        _ => {
+            let mut chars = name.chars();
+            let part = chars.next().filter(|p| "ABCDEFG".contains(*p))?;
+            let digit: usize = chars.as_str().parse().ok().filter(|d| *d < DIGITS)?;
+            Some(format!("{part}{}", digit + 1))
+        }
+    }
+}
+
+/// What `show` sends Luna: the lit segments (and the colon) at `level`, by Luna's names.
+fn luna_frame(lit: &[String], colon: bool, level: u32) -> serde_json::Value {
+    let level = level.min(255);
+    let colon: &[&str] = if colon { &["DH", "DL"] } else { &[] };
+    let segments: serde_json::Map<String, serde_json::Value> = lit
+        .iter()
+        .map(String::as_str)
+        .chain(colon.iter().copied())
+        .filter_map(luna_segment)
+        .map(|name| (name, level.into()))
+        .collect();
+    segments.into()
+}
+
 impl Clock {
     pub fn detect() -> Option<Clock> {
         // SOUNDYA_LEDS_ROOT: only for testing on a computer with a fake sysfs.
         let root = std::env::var("SOUNDYA_LEDS_ROOT").unwrap_or_else(|_| ROOT.into());
-        Self::detect_in(Path::new(&root))
+        Self::detect_in(Path::new(&root)).or_else(Self::detect_luna)
+    }
+
+    /// The Station Midi: no sysfs display of the others, but Luna on this speaker drives one.
+    fn detect_luna() -> Option<Clock> {
+        let base = crate::luna::main_api()?;
+        Self::from_luna_segments(&base, &crate::luna::clock_segments(&base)?)
+    }
+
+    /// The Midi's four digits A1..G4 and its colon PLUS1 + PLUS2 among the segments Luna lists.
+    fn from_luna_segments(base: &str, segments: &[String]) -> Option<Clock> {
+        let has = |name: &str| segments.iter().any(|s| s == name);
+        let digits = (1..=DIGITS).all(|d| "ABCDEFG".chars().all(|p| has(&format!("{p}{d}"))));
+        // No dots after the digits, the brightest is 255 (Luna's range).
+        (digits && has("PLUS1") && has("PLUS2")).then(|| Clock { paths: HashMap::new(), dots: false, max: 255, luna: Some(base.to_owned()) })
     }
 
     fn detect_in(root: &Path) -> Option<Clock> {
@@ -147,7 +199,7 @@ impl Clock {
         // sign (no max_brightness of its own) gave 255 now and then.
         let max_of = |p: &PathBuf| crate::fsx::read_string(&p.with_file_name("max_brightness")).and_then(|t| t.trim().parse().ok());
         let max = ["A0", "B0", "G0"].iter().filter_map(|k| paths.get(*k)).find_map(max_of).or_else(|| paths.values().find_map(max_of)).unwrap_or(255);
-        complete.then_some(Clock { paths, dots, max })
+        complete.then_some(Clock { paths, dots, max, luna: None })
     }
 
     fn read(&self) -> HashMap<String, String> {
@@ -163,6 +215,10 @@ impl Clock {
     }
 
     fn show(&self, lit: &[String], colon: bool, level: u32) {
+        if let Some(base) = &self.luna {
+            Self::luna_result(crate::luna::clock_frame(base, &luna_frame(lit, colon, level)));
+            return;
+        }
         let level = level.to_string();
         for (name, path) in &self.paths {
             let on = lit.iter().any(|l| l == name) || (colon && (name == "DH" || name == "DL"));
@@ -171,9 +227,27 @@ impl Clock {
     }
 
     fn restore(&self, saved: &HashMap<String, String>) {
+        // Luna kept the firmware's frame itself (nothing was read into `saved`).
+        if let Some(base) = &self.luna {
+            Self::luna_result(crate::luna::clock_off(base));
+            return;
+        }
         for (name, path) in &self.paths {
             let v = saved.get(name).filter(|v| !v.is_empty()).map_or("0", String::as_str);
             let _ = std::fs::write(path, v);
+        }
+    }
+
+    /// A call to Luna that failed is logged once, not at every frame.
+    fn luna_result(result: Result<(), String>) {
+        static FAILING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        match result {
+            Ok(()) => FAILING.store(false, std::sync::atomic::Ordering::Relaxed),
+            Err(e) => {
+                if !FAILING.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("display: luna: {e}");
+                }
+            }
         }
     }
 }
@@ -546,7 +620,10 @@ const ALICE_GRACE: Duration = Duration::from_millis(2500);
 /// clock back when it is the clock's turn.
 pub fn run() {
     let Some(clock) = Clock::detect() else { return };
-    eprintln!("display: clock found ({} segments)", clock.paths.len());
+    match &clock.luna {
+        Some(base) => eprintln!("display: clock found, drawn through Luna at {base}"),
+        None => eprintln!("display: clock found ({} segments)", clock.paths.len()),
+    }
     thread::spawn(move || {
         let mut saved: Option<HashMap<String, String>> = None;
         let mut started = Instant::now();
@@ -782,5 +859,125 @@ mod tests {
         assert_eq!(std::fs::read_to_string(d.join("mini2:white:clockB1/brightness")).unwrap(), "170");
         assert_eq!(std::fs::read_to_string(d.join("mini2:white:clockA1/brightness")).unwrap(), "0");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// What Luna on a Station Midi answers to `GET /api/clock` (read on a real speaker).
+    const MIDI_CLOCK: &str = r#"{"available":true,"text_available":true,"segments":["A1","B1","C1","D1","E1","F1","G1","A2","B2","C2","D2","E2","F2","G2","A3","B3","C3","D3","E3","F3","G3","A4","B4","C4","D4","E4","F4","G4","PLUS1","PLUS2","DEGREE","H1","H2","L1","L2","M1","M2","P1","P2","P4","P5","Q1","Q2","Q4","Q5"]}"#;
+
+    fn names(list: &str) -> Vec<String> {
+        serde_json::from_str::<serde_json::Value>(list).unwrap()["segments"].as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_owned()).collect()
+    }
+
+    #[test]
+    fn the_midi_names_its_segments_for_luna() {
+        // The digits count from 1, the colon is PLUS1 + PLUS2, the dots and DM are not there.
+        let luna: Vec<Option<String>> = ["A0", "G3", "B2", "DH", "DL", "DEGREE", "H0", "DM", "A4", "A", "X1", ""].iter().map(|n| luna_segment(n)).collect();
+        let want = [Some("A1"), Some("G4"), Some("B3"), Some("PLUS1"), Some("PLUS2"), Some("DEGREE"), None, None, None, None, None, None];
+        assert_eq!(luna, want.map(|n| n.map(str::to_owned)));
+        // «12:» — B C of the first digit, A B D E G of the second, and the colon, at 255 at most.
+        assert_eq!(
+            luna_frame(&segments("12"), true, 300),
+            serde_json::json!({"B1": 255, "C1": 255, "A2": 255, "B2": 255, "D2": 255, "E2": 255, "G2": 255, "PLUS1": 255, "PLUS2": 255})
+        );
+        assert_eq!(luna_frame(&[], false, 255), serde_json::json!({}), "nothing lit: Luna darkens the rest");
+        assert_eq!(luna_frame(&["DEGREE".into()], false, 100), serde_json::json!({"DEGREE": 100}));
+        // Every segment of the install frames has a name on the Midi (it draws no dots).
+        use crate::led::Install;
+        for phase in [Install::Loading, Install::Waiting, Install::Step(3, 4), Install::Done] {
+            for ms in (0..6000u64).step_by(90) {
+                for ip in [None, Some("192.168.0.12")] {
+                    let (lit, colon) = frame(&phase, ms, ip, false);
+                    let sent = luna_frame(&lit, colon, 255);
+                    assert_eq!(sent.as_object().unwrap().len(), lit.len(), "{phase:?} at {ms} ms: {lit:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finds_the_midi_clock_by_lunas_list() {
+        let c = Clock::from_luna_segments("http://127.0.0.1:8099/api", &names(MIDI_CLOCK)).expect("display found");
+        assert!(c.paths.is_empty() && !c.dots && c.luna.as_deref() == Some("http://127.0.0.1:8099/api"));
+        assert_eq!((c.level(100), c.level(50)), (255, 127));
+        assert!(c.read().is_empty(), "nothing to save: Luna keeps the firmware's frame");
+        // Not the Midi's: the digits from 0 (Mini 3, Lite 2 — those have sysfs), no colon, nothing.
+        let from0: Vec<String> = (0..4).flat_map(|d| "ABCDEFG".chars().map(move |p| format!("{p}{d}"))).chain(["DH".to_owned(), "DL".to_owned()]).collect();
+        assert!(Clock::from_luna_segments("x", &from0).is_none());
+        let no_colon: Vec<String> = names(MIDI_CLOCK).into_iter().filter(|s| s != "PLUS2").collect();
+        assert!(Clock::from_luna_segments("x", &no_colon).is_none());
+        let three_digits: Vec<String> = names(MIDI_CLOCK).into_iter().filter(|s| !s.ends_with('4') || s == "Q4" || s == "P4").collect();
+        assert!(Clock::from_luna_segments("x", &three_digits).is_none());
+        assert!(Clock::from_luna_segments("x", &[]).is_none());
+    }
+
+    /// A Luna stand-in on 127.0.0.1: answers each connection with the next of `answers`
+    /// (a status line and a JSON body) and keeps what was asked: (method, path, body).
+    fn fake_luna(answers: Vec<(&'static str, &'static str)>) -> (String, std::thread::JoinHandle<Vec<(String, String, String)>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/api", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for (status, json) in answers {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let line = line.trim_end().to_ascii_lowercase();
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = line.strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                reader.read_exact(&mut body).unwrap();
+                let mut parts = first.split_whitespace();
+                seen.push((parts.next().unwrap_or("").to_owned(), parts.next().unwrap_or("").to_owned(), String::from_utf8(body).unwrap()));
+                let mut out = stream;
+                let _ = write!(out, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}", json.len());
+            }
+            seen
+        });
+        (base, handle)
+    }
+
+    #[test]
+    fn draws_the_midi_through_luna() {
+        let (base, luna) = fake_luna(vec![("200 OK", MIDI_CLOCK), ("200 OK", ""), ("200 OK", ""), ("200 OK", "")]);
+        let listed = crate::luna::clock_segments(&base).expect("Luna lists the display");
+        let c = Clock::from_luna_segments(&base, &listed).expect("display found");
+        // «HI» on the right: lit segments and the colon go to POST /clock at the display's own level.
+        let hi = segments("  HI");
+        c.show(&hi, true, c.level(40));
+        // The next frame with nothing lit, then the display goes back to the firmware.
+        c.show(&[], false, c.level(40));
+        let saved = c.read();
+        c.restore(&saved);
+        let seen = luna.join().unwrap();
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[0], ("GET".into(), "/api/clock".into(), String::new()));
+        assert_eq!((seen[1].0.as_str(), seen[1].1.as_str()), ("POST", "/api/clock"));
+        let body: serde_json::Value = serde_json::from_str(&seen[1].2).unwrap();
+        let lit = serde_json::json!({"B3": 102, "C3": 102, "E3": 102, "F3": 102, "G3": 102, "B4": 102, "C4": 102, "PLUS1": 102, "PLUS2": 102});
+        assert_eq!(body, serde_json::json!({ "segments": lit }), "H is BCEFG, I is BC; 40 % of 255");
+        let blank: serde_json::Value = serde_json::from_str(&seen[2].2).unwrap();
+        assert_eq!(blank, serde_json::json!({"segments": {}}));
+        assert_eq!((seen[3].0.as_str(), seen[3].1.as_str()), ("POST", "/api/clock/off"));
+    }
+
+    #[test]
+    fn no_midi_display_when_luna_has_none() {
+        let (base, luna) = fake_luna(vec![("200 OK", r#"{"available":false,"segments":[]}"#), ("404 Not Found", r#"{"error":"no clock"}"#)]);
+        assert!(crate::luna::clock_segments(&base).is_none(), "available: false");
+        assert!(crate::luna::clock_segments(&base).is_none(), "a Luna without the clock API");
+        assert_eq!(luna.join().unwrap().len(), 2);
+        // Luna not answering at all (nothing listens there).
+        assert!(crate::luna::clock_segments("http://127.0.0.1:1/api").is_none());
     }
 }
