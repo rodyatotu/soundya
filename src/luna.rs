@@ -66,7 +66,7 @@ fn post(path: &str, body: &Value) -> Result<Option<Value>, String> {
 /// Luna's API: from the runtime URL when Luna started soundya, otherwise Luna
 /// found running on this speaker (127.0.0.1:8099 or 8100, looked up again
 /// every minute while it is not there).
-fn main_api() -> Option<String> {
+pub fn main_api() -> Option<String> {
     if let Some(url) = api().map(|a| &a.url) {
         return url.find("/api/runtime/").map(|i| url[..i + 4].to_owned());
     }
@@ -99,15 +99,49 @@ pub fn present() -> bool {
 /// A call to Luna's own API (the runtime token when there is one).
 fn post_main(path: &str, body: &Value) -> Result<(), String> {
     let base = main_api().ok_or("no Luna on this speaker")?;
-    let agent = match api() {
+    post_at(&base, path, body)
+}
+
+/// The agent for calls to Luna's own API: the runtime's when Luna started soundya.
+fn main_agent() -> ureq::Agent {
+    match api() {
         Some(a) => a.agent.clone(),
         None => ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(1)).timeout(Duration::from_secs(5)).build(),
-    };
-    let mut req = agent.post(&format!("{base}{path}")).set("Content-Type", "application/json");
+    }
+}
+
+/// The same call to the Luna API at `base` (what `main_api` found).
+fn post_at(base: &str, path: &str, body: &Value) -> Result<(), String> {
+    let mut req = main_agent().post(&format!("{base}{path}")).set("Content-Type", "application/json");
     if let Some(a) = api() {
         req = req.set("X-Luna-Token", &a.token);
     }
     req.send_string(&body.to_string()).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The segments of the clock display that Luna drives at `base` (`GET /api/clock`);
+/// None when it has none.
+pub fn clock_segments(base: &str) -> Option<Vec<String>> {
+    let mut req = main_agent().get(&format!("{base}/clock"));
+    if let Some(a) = api() {
+        req = req.set("X-Luna-Token", &a.token);
+    }
+    let v: Value = req.call().ok()?.into_json().ok()?;
+    if v["available"].as_bool() != Some(true) {
+        return None;
+    }
+    Some(v["segments"].as_array()?.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
+}
+
+/// One frame on the clock display: segment → brightness 0..=255, the segments
+/// not named go dark (`POST /api/clock`).
+pub fn clock_frame(base: &str, segments: &Value) -> Result<(), String> {
+    post_at(base, "/clock", &json!({ "segments": segments }))
+}
+
+/// The clock display back to the firmware (`POST /api/clock/off`).
+pub fn clock_off(base: &str) -> Result<(), String> {
+    post_at(base, "/clock/off", &json!({}))
 }
 
 /// Alice's volume, 0..=100 %, through Luna (`POST /api/volume/set`).
